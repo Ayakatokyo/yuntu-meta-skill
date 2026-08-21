@@ -5,20 +5,36 @@ import json
 from pathlib import Path
 import time
 
-from rpa_io import (
-    download_file,
-    parse_csv_records,
-    unpack_gateway_result,
-    write_json_atomically,
-)
-from yuntu_normalizer import normalize_detail_records, normalize_list_records
-from yuntu_highlights import (
-    details_missing_standard_highlights,
-    generate_standard_highlights_for_detail,
-    load_highlights_manifest,
-    write_highlights_manifest,
-)
-import yuntu_run_state as run_state
+if __package__:
+    from .rpa_io import (
+        download_file,
+        parse_csv_records,
+        unpack_gateway_result,
+        write_json_atomically,
+    )
+    from .yuntu_normalizer import normalize_detail_records, normalize_list_records
+    from .yuntu_highlights import (
+        details_missing_standard_highlights,
+        generate_standard_highlights_for_detail,
+        load_highlights_manifest,
+        write_highlights_manifest,
+    )
+    from . import yuntu_run_state as run_state
+else:
+    from rpa_io import (
+        download_file,
+        parse_csv_records,
+        unpack_gateway_result,
+        write_json_atomically,
+    )
+    from yuntu_normalizer import normalize_detail_records, normalize_list_records
+    from yuntu_highlights import (
+        details_missing_standard_highlights,
+        generate_standard_highlights_for_detail,
+        load_highlights_manifest,
+        write_highlights_manifest,
+    )
+    import yuntu_run_state as run_state
 
 
 class YuntuBatchError(RuntimeError):
@@ -644,6 +660,22 @@ def _selected_entry(manifest, material_id):
     )
 
 
+def _sync_postprocess_counts(summary, manifest):
+    detail_stage = summary["stages"]["details"]
+    detail_stage["postprocessSubmittedCount"] = sum(
+        item.get("postprocessStatus") in {"running", "succeeded", "failed", "reused"}
+        for item in manifest["selectedMaterials"]
+    )
+    detail_stage["postprocessSucceededCount"] = sum(
+        item.get("postprocessStatus") in {"succeeded", "reused"}
+        for item in manifest["selectedMaterials"]
+    )
+    detail_stage["postprocessFailedCount"] = sum(
+        item.get("postprocessStatus") == "failed"
+        for item in manifest["selectedMaterials"]
+    )
+
+
 def fetch_batch(
     *,
     shop_id,
@@ -784,19 +816,7 @@ def fetch_batch(
 
     def checkpoint():
         write_highlights_manifest(root, frames_by_material)
-        detail_stage = summary["stages"]["details"]
-        detail_stage["postprocessSubmittedCount"] = sum(
-            item.get("postprocessStatus") in {"running", "succeeded", "failed", "reused"}
-            for item in manifest["selectedMaterials"]
-        )
-        detail_stage["postprocessSucceededCount"] = sum(
-            item.get("postprocessStatus") in {"succeeded", "reused"}
-            for item in manifest["selectedMaterials"]
-        )
-        detail_stage["postprocessFailedCount"] = sum(
-            item.get("postprocessStatus") == "failed"
-            for item in manifest["selectedMaterials"]
-        )
+        _sync_postprocess_counts(summary, manifest)
         _sync_stage_counts(summary, manifest, root)
         write_json_atomically(manifest, manifest_path)
         _save_summary(root, summary)
@@ -1029,6 +1049,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
 
     selected_ids = _selected_ids(manifest)
     still_retry_items = []
+    recovered_details = []
     for item in retry_items:
         material_id = item.get("material_id")
         if not isinstance(material_id, str) or not material_id.isdigit():
@@ -1036,7 +1057,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             continue
         detail_started = time.monotonic()
         try:
-            _, selected_entry = _persist_detail(
+            detail_record, selected_entry = _persist_detail(
                 root=root,
                 summary=summary,
                 item=item,
@@ -1047,8 +1068,10 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
                 detail_fetch_sec=_elapsed(detail_started),
             )
             if material_id not in selected_ids:
+                selected_entry["postprocessStatus"] = "pending"
                 manifest.setdefault("selectedMaterials", []).append(selected_entry)
                 selected_ids.add(material_id)
+                recovered_details.append(detail_record)
         except Exception as exc:
             retry_count = int(item.get("retryCount", 0)) + 1
             updated = dict(item)
@@ -1057,6 +1080,32 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             updated["retryCount"] = retry_count
             updated["timingsSec"] = {"detailFetchSec": _elapsed(detail_started)}
             still_retry_items.append(updated)
+
+    frames_by_material = load_highlights_manifest(root)
+    with ThreadPoolExecutor(max_workers=HIGHLIGHT_CONCURRENCY) as highlight_executor:
+        pending_highlights = {}
+        for detail in recovered_details:
+            material_id = detail["material_id"]
+            entry = _selected_entry(manifest, material_id)
+            if entry is not None:
+                entry["postprocessStatus"] = "running"
+            pending_highlights[
+                highlight_executor.submit(_generate_highlight_result, detail, root)
+            ] = material_id
+        for future, material_id in pending_highlights.items():
+            result = future.result()
+            entry = _selected_entry(manifest, material_id)
+            if entry is None:
+                continue
+            entry["postprocessTimingsSec"] = {"highlightSec": result["duration"]}
+            if result["error"] is None:
+                entry["postprocessStatus"] = "succeeded"
+                frames_by_material[material_id] = result["frames"]
+            else:
+                entry["postprocessStatus"] = "failed"
+                entry["postprocessError"] = str(result["error"])
+    write_highlights_manifest(root, frames_by_material)
+    _sync_postprocess_counts(summary, manifest)
 
     manifest["selectedMaterials"] = sorted(
         manifest.get("selectedMaterials", []), key=lambda item: item.get("rank", 0)
