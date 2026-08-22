@@ -28,7 +28,8 @@ def parameter_fingerprint(filters):
 
 
 def collection_contract(
-    *, shop_id, list_params, detail_date_params, target_top_n, candidate_top_n
+    *, shop_id, list_params, detail_date_params, target_top_n, candidate_top_n,
+    configuration_fingerprint=None,
 ):
     """Return the complete immutable identity of a resumable collection run."""
     if not isinstance(shop_id, str) or not shop_id.strip():
@@ -44,15 +45,18 @@ def collection_contract(
         or candidate_top_n <= 0
     ):
         raise YuntuRunStateError("collection top-N values must be positive integers")
-    return _snapshot(
-        {
+    contract = {
             "shopId": shop_id.strip(),
             "listParams": list_params,
             "detailDateRange": detail_date_params,
             "targetTopN": target_top_n,
             "candidateTopN": candidate_top_n,
-        }
-    )
+    }
+    if configuration_fingerprint is not None:
+        if not isinstance(configuration_fingerprint, str) or len(configuration_fingerprint) != 64:
+            raise YuntuRunStateError("configuration_fingerprint must be a SHA-256 hex digest")
+        contract["configurationFingerprint"] = configuration_fingerprint
+    return _snapshot(contract)
 
 
 def new_collection_summary(contract):

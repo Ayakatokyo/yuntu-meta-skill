@@ -663,20 +663,20 @@ def load_highlights_manifest(output_dir):
     }
 
 
-def write_highlights_manifest(output_dir, frames_by_material):
+def write_highlights_manifest(output_dir, frames_by_material, highlight_spec_fingerprint=None):
     """Atomically publish complete frame records from the scheduler thread."""
     materials = [
         {"material_id": material_id, "frames": frames}
         for material_id, frames in sorted(frames_by_material.items())
     ]
-    _write_json_atomically(
-        {
+    payload = {
             "schemaVersion": 2,
             "standard": "cover_plus_click_top5",
             "materials": materials,
-        },
-        Path(output_dir) / "highlights-manifest.json",
-    )
+    }
+    if highlight_spec_fingerprint is not None:
+        payload["highlightSpecFingerprint"] = highlight_spec_fingerprint
+    _write_json_atomically(payload, Path(output_dir) / "highlights-manifest.json")
 
 
 def _reusable_standard_frames(detail, root):

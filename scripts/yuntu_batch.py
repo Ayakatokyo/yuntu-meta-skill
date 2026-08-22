@@ -15,7 +15,9 @@ if __package__:
     from .yuntu_normalizer import normalize_detail_records, normalize_list_records
     from .yuntu_highlights import (
         details_missing_standard_highlights,
+        details_missing_highlights_by_spec,
         generate_standard_highlights_for_detail,
+        generate_highlights_for_detail,
         load_highlights_manifest,
         write_highlights_manifest,
     )
@@ -30,7 +32,9 @@ else:
     from yuntu_normalizer import normalize_detail_records, normalize_list_records
     from yuntu_highlights import (
         details_missing_standard_highlights,
+        details_missing_highlights_by_spec,
         generate_standard_highlights_for_detail,
+        generate_highlights_for_detail,
         load_highlights_manifest,
         write_highlights_manifest,
     )
@@ -576,13 +580,13 @@ def _persist_detail(*, root, summary, item, gateway_result, downloader, detail_f
     }
 
 
-def _generate_highlight_result(detail, root):
+def _generate_highlight_result(detail, root, highlight_spec=None):
     """Run a material's video download and frame extraction in a worker."""
     started = time.monotonic()
     try:
         return {
             "material_id": detail["material_id"],
-            "frames": generate_standard_highlights_for_detail(detail, root),
+            "frames": generate_highlights_for_detail(detail, root, highlight_spec) if highlight_spec is not None else generate_standard_highlights_for_detail(detail, root),
             "duration": _elapsed(started),
             "error": None,
         }
@@ -686,6 +690,8 @@ def fetch_batch(
     output_dir,
     invoker,
     downloader=None,
+    highlight_spec=None,
+    configuration_fingerprint=None,
 ):
     target_top_n = _validate_positive_int(target_top_n, "target_top_n")
     candidate_top_n = _validate_positive_int(candidate_top_n, "candidate_top_n")
@@ -702,6 +708,7 @@ def fetch_batch(
         detail_date_params=detail_date_params,
         target_top_n=target_top_n,
         candidate_top_n=candidate_top_n,
+        configuration_fingerprint=configuration_fingerprint,
     )
     try:
         summary = _open_collection_summary(root, contract)
@@ -815,7 +822,7 @@ def fetch_batch(
     next_index = 0
 
     def checkpoint():
-        write_highlights_manifest(root, frames_by_material)
+        write_highlights_manifest(root, frames_by_material, configuration_fingerprint)
         _sync_postprocess_counts(summary, manifest)
         _sync_stage_counts(summary, manifest, root)
         write_json_atomically(manifest, manifest_path)
@@ -826,7 +833,7 @@ def fetch_batch(
         entry = _selected_entry(manifest, material_id)
         if entry is not None:
             entry["postprocessStatus"] = "running"
-        future = executor.submit(_generate_highlight_result, detail, root)
+        future = executor.submit(_generate_highlight_result, detail, root, highlight_spec)
         pending_highlights[future] = material_id
 
     # Resume never repeats a persisted detail. Missing frames are a separate job.
@@ -843,7 +850,8 @@ def fetch_batch(
     with ThreadPoolExecutor(max_workers=DETAIL_WAVE_CONCURRENCY) as detail_executor, ThreadPoolExecutor(
         max_workers=HIGHLIGHT_CONCURRENCY
     ) as highlight_executor:
-        for detail in details_missing_standard_highlights(restored_details, root):
+        missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else details_missing_standard_highlights(restored_details, root)
+        for detail in missing_details:
             submit_highlight(highlight_executor, detail)
 
         while True:
@@ -1005,7 +1013,7 @@ def collection_status(*, output_dir):
     }
 
 
-def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=None):
+def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=None, highlight_spec=None):
     if not isinstance(shop_id, str) or not shop_id.strip():
         raise YuntuBatchError("shop_id is required")
     downloader = FileDownloader() if downloader is None else downloader
@@ -1090,7 +1098,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             if entry is not None:
                 entry["postprocessStatus"] = "running"
             pending_highlights[
-                highlight_executor.submit(_generate_highlight_result, detail, root)
+                highlight_executor.submit(_generate_highlight_result, detail, root, highlight_spec)
             ] = material_id
         for future, material_id in pending_highlights.items():
             result = future.result()
@@ -1104,7 +1112,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             else:
                 entry["postprocessStatus"] = "failed"
                 entry["postprocessError"] = str(result["error"])
-    write_highlights_manifest(root, frames_by_material)
+    write_highlights_manifest(root, frames_by_material, contract.get("configurationFingerprint"))
     _sync_postprocess_counts(summary, manifest)
 
     manifest["selectedMaterials"] = sorted(
@@ -1114,23 +1122,25 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
     return _finalize_details(root, manifest, summary, manifest_path)
 
 
-def retry_failed_batch(*, shop_id, output_dir, invoker, downloader=None):
+def retry_failed_batch(*, shop_id, output_dir, invoker, downloader=None, highlight_spec=None):
     return _retry_batch_items(
         shop_id=shop_id,
         output_dir=output_dir,
         invoker=invoker,
         item_key="rejectedMaterials",
         downloader=downloader,
+        highlight_spec=highlight_spec,
     )
 
 
-def retry_unresolved_batch(*, shop_id, output_dir, invoker, downloader=None):
+def retry_unresolved_batch(*, shop_id, output_dir, invoker, downloader=None, highlight_spec=None):
     return _retry_batch_items(
         shop_id=shop_id,
         output_dir=output_dir,
         invoker=invoker,
         item_key="unresolvedMaterials",
         downloader=downloader,
+        highlight_spec=highlight_spec,
     )
 
 
