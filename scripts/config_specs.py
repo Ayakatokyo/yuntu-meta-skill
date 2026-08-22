@@ -1,0 +1,218 @@
+"""Resolve and persist the public query and highlight configuration contracts."""
+
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+import hashlib
+import json
+from pathlib import Path
+
+from .rpa_io import write_json_atomically
+
+
+SOURCE = "juliang_yuntu_industry_content_rankings"
+DATE_TYPES = {"LAST_7_DAYS", "LAST_30_DAYS", "CUSTOM"}
+RANKING_METRICS = {
+    "EXPOSURE_TOP1000",
+    "CTR_TOP1000",
+    "INTERACTION_RATE_TOP1000",
+    "COMPLETION_RATE_TOP1000",
+}
+BRAND_SCOPES = {"ALL_INDUSTRY", "SPECIFIED_BRANDS"}
+AGE_VALUES = {
+    "AGE_18_19", "AGE_20_23", "AGE_24_30", "AGE_31_35", "AGE_36_40",
+    "AGE_41_45", "AGE_46_50", "AGE_51_55", "AGE_56_59", "AGE_60_PLUS",
+}
+GENDER_VALUES = {"MALE", "FEMALE"}
+CROWD_GROUP_VALUES = {
+    "TOWN_YOUTH", "GENZ", "SENIOR_MIDDLE", "REFINED_MOM", "NEW_WHITE_COLLAR",
+    "URBAN_SILVER", "TOWN_MIDDLE_ELDER", "URBAN_BLUE_COLLAR",
+}
+HIGHLIGHT_METRICS = ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数")
+HIGHLIGHT_STRATEGIES = {"local_peaks", "absolute_max"}
+
+
+class ConfigSpecError(ValueError):
+    """Raised when a public configuration cannot be resolved safely."""
+
+
+def _object(value, label):
+    if not isinstance(value, dict):
+        raise ConfigSpecError(f"{label} must be an object")
+    return value
+
+
+def _keys(value, allowed, label):
+    unknown = set(value) - set(allowed)
+    if unknown:
+        raise ConfigSpecError(f"unknown {label} fields: {', '.join(sorted(unknown))}")
+
+
+def _strings(value, label, allowed=None):
+    if value is None or value == []:
+        return []
+    if not isinstance(value, list) or not value:
+        raise ConfigSpecError(f"{label} must be a non-empty array")
+    result = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ConfigSpecError(f"{label} values must be nonblank strings")
+        item = item.strip()
+        if item in result:
+            raise ConfigSpecError(f"{label} cannot contain duplicates")
+        if allowed is not None and item not in allowed:
+            raise ConfigSpecError(f"{label} contains an unsupported value: {item}")
+        result.append(item)
+    return result
+
+
+def _date(value, label):
+    if not isinstance(value, str):
+        raise ConfigSpecError(f"{label} must use YYYYMMDD or YYYY-MM-DD format")
+    for fmt in ("%Y%m%d", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    raise ConfigSpecError(f"{label} must use YYYYMMDD or YYYY-MM-DD format")
+
+
+def _positive(value, label):
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ConfigSpecError(f"{label} must be a positive integer")
+    return value
+
+
+def resolve_query_spec(payload: dict) -> dict:
+    payload = _object(payload, "QuerySpec")
+    _keys(payload, {"schema_version", "source", "industry", "period", "filters", "ranking", "collection"}, "QuerySpec")
+    if payload.get("schema_version") != 1:
+        raise ConfigSpecError("schema_version must be 1")
+    if payload.get("source") != SOURCE:
+        raise ConfigSpecError(f"source must be {SOURCE}")
+    industry = payload.get("industry")
+    if not isinstance(industry, str) or not industry.strip():
+        raise ConfigSpecError("industry must be a nonblank string")
+
+    period = _object(payload.get("period"), "period")
+    _keys(period, {"type", "start_date", "end_date"}, "period")
+    period_type = period.get("type")
+    if period_type not in DATE_TYPES:
+        raise ConfigSpecError("period.type must be LAST_7_DAYS, LAST_30_DAYS, or CUSTOM")
+    normalized_period = {"type": period_type}
+    if period_type == "CUSTOM":
+        if not period.get("start_date") or not period.get("end_date"):
+            raise ConfigSpecError("CUSTOM requires period.start_date and period.end_date")
+        start = _date(period["start_date"], "period.start_date")
+        end = _date(period["end_date"], "period.end_date")
+        today = date.today()
+        if start < today - timedelta(days=369):
+            raise ConfigSpecError("period.start_date cannot be more than 369 days before today")
+        if end > today - timedelta(days=4):
+            raise ConfigSpecError("period.end_date cannot be later than today-4")
+        if end < start or (end - start).days > 44:
+            raise ConfigSpecError("period must be an inclusive range of 1 to 45 days")
+        normalized_period.update(start_date=period["start_date"], end_date=period["end_date"])
+    elif period.get("start_date") is not None or period.get("end_date") is not None:
+        raise ConfigSpecError("period dates are only valid for CUSTOM")
+
+    filters = _object(payload.get("filters", {}), "filters")
+    _keys(filters, {"ages", "genders", "crowd_groups", "brand_scope"}, "filters")
+    brand_scope = _object(filters.get("brand_scope", {}), "brand_scope")
+    _keys(brand_scope, {"type", "brands"}, "brand_scope")
+    scope_type = brand_scope.get("type", "ALL_INDUSTRY")
+    if scope_type not in BRAND_SCOPES:
+        raise ConfigSpecError("brand_scope.type must be ALL_INDUSTRY or SPECIFIED_BRANDS")
+    brands = _strings(brand_scope.get("brands", []), "brand_scope.brands")
+    if scope_type == "SPECIFIED_BRANDS" and not 3 <= len(brands) <= 10:
+        raise ConfigSpecError("SPECIFIED_BRANDS requires 3 to 10 brands")
+    if scope_type == "ALL_INDUSTRY" and brands:
+        raise ConfigSpecError("ALL_INDUSTRY cannot include brands")
+    normalized_filters = {
+        "ages": _strings(filters.get("ages", []), "filters.ages", AGE_VALUES),
+        "genders": _strings(filters.get("genders", []), "filters.genders", GENDER_VALUES),
+        "crowd_groups": _strings(filters.get("crowd_groups", []), "filters.crowd_groups", CROWD_GROUP_VALUES),
+        "brand_scope": {"type": scope_type, "brands": brands},
+    }
+
+    ranking = _object(payload.get("ranking"), "ranking")
+    _keys(ranking, {"metric"}, "ranking")
+    if ranking.get("metric") not in RANKING_METRICS:
+        raise ConfigSpecError("ranking.metric is unsupported")
+    collection = _object(payload.get("collection", {}), "collection")
+    _keys(collection, {"target_top_n", "candidate_top_n"}, "collection")
+    target = _positive(collection.get("target_top_n", 10), "collection.target_top_n")
+    candidate = _positive(collection.get("candidate_top_n", target * 2), "collection.candidate_top_n")
+    if candidate < target:
+        raise ConfigSpecError("candidate_top_n cannot be smaller than target_top_n")
+
+    return {
+        "schema_version": 1,
+        "source": SOURCE,
+        "industry": industry.strip(),
+        "period": normalized_period,
+        "filters": normalized_filters,
+        "ranking": {"metric": ranking["metric"]},
+        "collection": {"target_top_n": target, "candidate_top_n": candidate},
+    }
+
+
+def query_to_rpa_params(resolved: dict) -> dict:
+    period = resolved["period"]
+    params = {"industry": resolved["industry"], "time_range_type": period["type"], "ranking_limit_type": resolved["ranking"]["metric"]}
+    if period["type"] == "CUSTOM":
+        params.update(custom_start_date=period["start_date"], custom_end_date=period["end_date"])
+    filters = resolved["filters"]
+    for key in ("ages", "genders", "crowd_groups"):
+        if filters[key]:
+            params[key] = filters[key]
+    scope = filters["brand_scope"]
+    params["brand_scope_type"] = scope["type"]
+    if scope["brands"]:
+        params["brands"] = scope["brands"]
+    return params
+
+
+def detail_to_rpa_params(resolved: dict) -> dict:
+    period = resolved["period"]
+    params = {"date_range_type": period["type"]}
+    if period["type"] == "CUSTOM":
+        params.update(custom_start_date=period["start_date"], custom_end_date=period["end_date"])
+    return params
+
+
+def resolve_highlight_spec(payload: dict | None) -> dict:
+    payload = {} if payload is None else _object(payload, "HighlightSpec")
+    _keys(payload, {"schema_version", "include_cover", "metrics"}, "HighlightSpec")
+    if payload.get("schema_version", 1) != 1:
+        raise ConfigSpecError("HighlightSpec schema_version must be 1")
+    include_cover = payload.get("include_cover", True)
+    if not isinstance(include_cover, bool):
+        raise ConfigSpecError("include_cover must be boolean")
+    custom = _object(payload.get("metrics", {}), "metrics")
+    unknown = set(custom) - set(HIGHLIGHT_METRICS)
+    if unknown:
+        raise ConfigSpecError(f"unsupported highlight metrics: {', '.join(sorted(unknown))}")
+    metrics = {}
+    for name in HIGHLIGHT_METRICS:
+        item = _object(custom.get(name, {}), f"metrics.{name}")
+        _keys(item, {"strategy", "limit"}, f"metrics.{name}")
+        strategy = item.get("strategy", "local_peaks")
+        if strategy not in HIGHLIGHT_STRATEGIES:
+            raise ConfigSpecError(f"metrics.{name}.strategy is unsupported")
+        metrics[name] = {"strategy": strategy, "limit": _positive(item.get("limit", 3), f"metrics.{name}.limit")}
+    return {"schema_version": 1, "include_cover": include_cover, "metrics": metrics}
+
+
+def spec_fingerprint(query: dict, highlights: dict) -> str:
+    encoded = json.dumps({"query": query, "highlights": highlights}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def write_resolved_specs(output_dir, query: dict, highlights: dict) -> tuple[Path, Path]:
+    root = Path(output_dir)
+    query_path = root / "resolved-query-spec.json"
+    highlight_path = root / "resolved-highlight-spec.json"
+    write_json_atomically(query, query_path)
+    write_json_atomically(highlights, highlight_path)
+    return query_path, highlight_path
