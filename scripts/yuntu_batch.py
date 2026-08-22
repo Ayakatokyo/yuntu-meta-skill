@@ -452,7 +452,7 @@ def _validate_list_context(list_records, list_params):
     if "ranking_limit_type" in list_params:
         expected_labels = {
             "EXPOSURE_TOP1000": {"曝光量TOP1000", "EXPOSURE_TOP1000"},
-            "CTR_TOP1000": {"点击率TOP1000", "CTR_TOP1000"},
+            "CTR_TOP1000": {"点击率TOP1000", "CTR_TOP1000", "CTRTOP1000"},
             "INTERACTION_RATE_TOP1000": {"互动率TOP1000", "INTERACTION_RATE_TOP1000"},
             "COMPLETION_RATE_TOP1000": {"完播率TOP1000", "COMPLETION_RATE_TOP1000"},
         }

@@ -32,6 +32,14 @@ class DetailInvoker:
 
 
 class YuntuBatchTests(unittest.TestCase):
+    def test_list_context_accepts_platform_ctr_alias(self):
+        batch = load_batch()
+        result = batch._validate_list_context(
+            [{"list_context": {"ranking_limit": "CTRTOP1000"}}],
+            {"ranking_limit_type": "CTR_TOP1000"},
+        )
+        self.assertTrue(result["valid"])
+
     def test_retry_failed_batch_postprocesses_recovered_detail_and_preserves_manifest_status(self):
         batch = load_batch()
         generated_material_ids = []
