@@ -7,7 +7,10 @@ import hashlib
 import json
 from pathlib import Path
 
-from .rpa_io import write_json_atomically
+try:
+    from .rpa_io import write_json_atomically
+except ImportError:
+    from rpa_io import write_json_atomically
 
 
 SOURCE = "juliang_yuntu_industry_content_rankings"

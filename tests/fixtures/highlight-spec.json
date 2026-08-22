@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "include_cover": true,
+  "metrics": {
+    "点击指数": {"strategy": "local_peaks", "limit": 3},
+    "点赞指数": {"strategy": "absolute_max", "limit": 1}
+  }
+}
