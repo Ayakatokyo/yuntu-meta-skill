@@ -143,6 +143,50 @@ def select_highlight_candidates(detail, trend_names):
     return [candidates[second] for second in sorted(candidates)]
 
 
+def select_highlight_candidates_by_spec(detail, highlight_spec):
+    """Select one merged candidate list from independently configured metrics."""
+    candidates = {}
+    if highlight_spec.get("include_cover", True):
+        candidates[0] = {
+            "second": 0,
+            "is_cover": True,
+            "frame_type": "cover",
+            "reasons": [{"type": "cover"}],
+        }
+    for trend_name, policy in highlight_spec.get("metrics", {}).items():
+        series = _series_for_trend(detail, trend_name)
+        if policy["strategy"] == "absolute_max":
+            points = _normalized_points(series)
+            selected = []
+            if points:
+                max_value = max(value for _, value in points)
+                selected = [(second, value) for second, value in points if value == max_value][:1]
+            selected_type = "absolute_max"
+        else:
+            selected = _local_peaks(series, limit=policy["limit"])
+            selected_type = "local_peak"
+        for rank, (second, value) in enumerate(selected, start=1):
+            candidate = candidates.setdefault(
+                second,
+                {
+                    "second": second,
+                    "is_cover": second == 0,
+                    "frame_type": "cover" if second == 0 else "custom_highlight",
+                    "reasons": [],
+                },
+            )
+            candidate["reasons"].append(
+                {
+                    "type": selected_type,
+                    "trend_name": trend_name,
+                    "value": value,
+                    "rank": rank,
+                    "within_high_point": _within_high_point(detail, trend_name, second),
+                }
+            )
+    return [candidates[second] for second in sorted(candidates)]
+
+
 def select_standard_highlight_candidates(detail):
     """Select the report's fixed cover plus click-index Top5 peak frames."""
     cover = {
@@ -710,6 +754,49 @@ def generate_standard_highlights_for_detail(
         ffmpeg_bin,
         batch_extractor,
     )
+
+
+def generate_highlights_for_detail(
+    detail,
+    output_dir,
+    highlight_spec,
+    *,
+    downloader=download_video,
+    frame_extractor=extract_frame,
+    batch_extractor=None,
+    ffmpeg_bin=None,
+):
+    """Generate or reuse frames selected by a resolved HighlightSpec."""
+    root = Path(output_dir)
+    return _material_frames(
+        detail,
+        select_highlight_candidates_by_spec(detail, highlight_spec),
+        root,
+        downloader,
+        frame_extractor,
+        ffmpeg_bin,
+        batch_extractor,
+    )
+
+
+def details_missing_highlights_by_spec(details, output_dir, highlight_spec):
+    """Return details whose configured frame files are not all locally available."""
+    root = Path(output_dir)
+    manifest = load_highlights_manifest(root)
+    missing = []
+    for detail in details:
+        material_id = str(detail.get("material_id") or "")
+        expected = select_highlight_candidates_by_spec(detail, highlight_spec)
+        frames = manifest.get(material_id, [])
+        if len(frames) != len(expected) or any(
+            not isinstance(frame, dict)
+            or not frame.get("available")
+            or not isinstance(frame.get("relative_path"), str)
+            or not (root / frame["relative_path"]).is_file()
+            for frame in frames
+        ):
+            missing.append(detail)
+    return missing
 
 
 def generate_highlights(
