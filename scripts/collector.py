@@ -450,85 +450,11 @@ def invoke_detail(shop_id, business_params, environ=None, session=None):
     )
 
 
-def _validate_top_n(top_n):
-    if isinstance(top_n, bool) or not isinstance(top_n, int) or top_n <= 0:
-        raise RpaConnectorError("top_n must be a positive integer")
-    return top_n
-
-
-def _validate_detail_date_params(raw_params):
-    if not isinstance(raw_params, dict):
-        raise RpaConnectorError("detail business_params must be an object")
-    if "material_id" in raw_params:
-        raise RpaConnectorError("material_id is selected from the list response")
-    return validate_detail_business_params({"material_id": "0", **raw_params})
-
-
 def _batch_invoker():
     return ConnectorInvoker(
         lambda sid, params: invoke_list(sid, params),
         lambda sid, params: invoke_detail(sid, params),
     )
-
-
-def fetch_batch_analysis(
-    shop_id,
-    raw_list_params,
-    raw_detail_params,
-    *,
-    target_top_n=10,
-    candidate_top_n=None,
-    output_dir,
-):
-    if fetch_batch is None or ConnectorInvoker is None:
-        raise RpaConnectorError("batch fetch support is unavailable")
-    list_params = validate_list_business_params(raw_list_params)
-    detail_date_params = _validate_detail_date_params(raw_detail_params)
-    detail_date_range = {
-        key: value for key, value in detail_date_params.items() if key != "material_id"
-    }
-    target_top_n = _validate_top_n(target_top_n)
-    candidate_top_n = (
-        target_top_n * 2 if candidate_top_n is None else _validate_top_n(candidate_top_n)
-    )
-    try:
-        return fetch_batch(
-            shop_id=shop_id,
-            list_params=list_params,
-            detail_date_params=detail_date_range,
-            target_top_n=target_top_n,
-            candidate_top_n=candidate_top_n,
-            output_dir=output_dir,
-            invoker=_batch_invoker(),
-        )
-    except Exception as exc:
-        raise RpaConnectorError(str(exc)) from exc
-
-
-def retry_failed_batch_analysis(shop_id, *, output_dir):
-    if retry_failed_batch is None or ConnectorInvoker is None:
-        raise RpaConnectorError("batch retry support is unavailable")
-    try:
-        return retry_failed_batch(
-            shop_id=shop_id,
-            output_dir=output_dir,
-            invoker=_batch_invoker(),
-        )
-    except Exception as exc:
-        raise RpaConnectorError(str(exc)) from exc
-
-
-def retry_unresolved_batch_analysis(shop_id, *, output_dir):
-    if retry_unresolved_batch is None or ConnectorInvoker is None:
-        raise RpaConnectorError("batch unresolved retry support is unavailable")
-    try:
-        return retry_unresolved_batch(
-            shop_id=shop_id,
-            output_dir=output_dir,
-            invoker=_batch_invoker(),
-        )
-    except Exception as exc:
-        raise RpaConnectorError(str(exc)) from exc
 
 
 def _positive_int_argument(value):
@@ -545,7 +471,7 @@ def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list-accounts", help="List available RPA accounts")
-    commands.add_parser("schema", help="Print analysis parameter metadata")
+    commands.add_parser("schema", help="Print collection parameter metadata")
     commands.add_parser("self-test", help="Run offline connector checks")
     status_parser = commands.add_parser("status", help="Read collection lifecycle state")
     status_parser.add_argument("--output-dir", required=True)
