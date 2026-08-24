@@ -5,5 +5,5 @@
   "period": {"type": "LAST_7_DAYS"},
   "filters": {"brand_scope": {"type": "ALL_INDUSTRY", "brands": []}},
   "ranking": {"metric": "CTR_TOP1000"},
-  "collection": {"target_top_n": 2, "candidate_top_n": 4}
+  "collection": {"target_top_n": 2, "candidate_top_n": 1000}
 }

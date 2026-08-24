@@ -2,7 +2,10 @@
   "schema_version": 1,
   "include_cover": true,
   "metrics": {
+    "点赞指数": {"strategy": "absolute_max", "limit": 1},
+    "流失指数": {"strategy": "local_peaks", "limit": 3},
     "点击指数": {"strategy": "local_peaks", "limit": 3},
-    "点赞指数": {"strategy": "absolute_max", "limit": 1}
+    "互动指数": {"strategy": "local_peaks", "limit": 3},
+    "评论指数": {"strategy": "local_peaks", "limit": 3}
   }
 }

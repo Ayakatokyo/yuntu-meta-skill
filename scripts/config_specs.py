@@ -145,9 +145,11 @@ def resolve_query_spec(payload: dict) -> dict:
     collection = _object(payload.get("collection", {}), "collection")
     _keys(collection, {"target_top_n", "candidate_top_n"}, "collection")
     target = _positive(collection.get("target_top_n", 10), "collection.target_top_n")
-    candidate = _positive(collection.get("candidate_top_n", target * 2), "collection.candidate_top_n")
-    if candidate < target:
-        raise ConfigSpecError("candidate_top_n cannot be smaller than target_top_n")
+    if target > 1000:
+        raise ConfigSpecError("collection.target_top_n cannot exceed 1000")
+    candidate = _positive(collection.get("candidate_top_n", 1000), "collection.candidate_top_n")
+    if candidate != 1000:
+        raise ConfigSpecError("collection.candidate_top_n must be 1000")
 
     return {
         "schema_version": 1,
@@ -189,21 +191,23 @@ def resolve_highlight_spec(payload: dict | None) -> dict:
     _keys(payload, {"schema_version", "include_cover", "metrics"}, "HighlightSpec")
     if payload.get("schema_version", 1) != 1:
         raise ConfigSpecError("HighlightSpec schema_version must be 1")
-    include_cover = payload.get("include_cover", True)
-    if not isinstance(include_cover, bool):
-        raise ConfigSpecError("include_cover must be boolean")
-    custom = _object(payload.get("metrics", {}), "metrics")
+    if "include_cover" not in payload or not isinstance(payload["include_cover"], bool):
+        raise ConfigSpecError("HighlightSpec.include_cover must be boolean")
+    include_cover = payload["include_cover"]
+    custom = _object(payload.get("metrics"), "metrics")
     unknown = set(custom) - set(HIGHLIGHT_METRICS)
     if unknown:
         raise ConfigSpecError(f"unsupported highlight metrics: {', '.join(sorted(unknown))}")
+    if set(custom) != set(HIGHLIGHT_METRICS):
+        raise ConfigSpecError("HighlightSpec.metrics must explicitly configure all five metrics")
     metrics = {}
     for name in HIGHLIGHT_METRICS:
-        item = _object(custom.get(name, {}), f"metrics.{name}")
+        item = _object(custom[name], f"metrics.{name}")
         _keys(item, {"strategy", "limit"}, f"metrics.{name}")
-        strategy = item.get("strategy", "local_peaks")
+        strategy = item.get("strategy")
         if strategy not in HIGHLIGHT_STRATEGIES:
             raise ConfigSpecError(f"metrics.{name}.strategy is unsupported")
-        metrics[name] = {"strategy": strategy, "limit": _positive(item.get("limit", 3), f"metrics.{name}.limit")}
+        metrics[name] = {"strategy": strategy, "limit": _positive(item.get("limit"), f"metrics.{name}.limit")}
     return {"schema_version": 1, "include_cover": include_cover, "metrics": metrics}
 
 

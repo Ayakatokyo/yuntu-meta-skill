@@ -53,7 +53,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(captured["list_params"]["time_range_type"], "LAST_7_DAYS")
         self.assertEqual(captured["detail_date_params"], {"date_range_type": "LAST_7_DAYS"})
         self.assertEqual(captured["target_top_n"], 2)
-        self.assertEqual(captured["candidate_top_n"], 4)
+        self.assertEqual(captured["candidate_top_n"], 1000)
         self.assertEqual(captured["highlight_spec"]["metrics"]["点赞指数"]["strategy"], "absolute_max")
         self.assertTrue(query_file_exists)
         self.assertTrue(highlight_file_exists)
