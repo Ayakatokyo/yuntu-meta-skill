@@ -96,19 +96,15 @@ def _selection_group(record):
     }
 
 
-def _candidate_materials_from_list(records, candidate_top_n):
+def _top_ranked_materials_from_list(records, target_top_n):
+    """Return unique global rank leaders while retaining detail validation context."""
     selected = []
     seen = set()
-    for record in records:
+    for record in sorted(records, key=lambda item: item["rank"]):
         material_id = record["material_id"]
         if material_id in seen:
             continue
         group = _selection_group(record)
-        group_count = sum(
-            item["selectionGroupId"] == group["id"] for item in selected
-        )
-        if group_count >= candidate_top_n:
-            continue
         seen.add(material_id)
         selected.append(
             {
@@ -118,6 +114,8 @@ def _candidate_materials_from_list(records, candidate_top_n):
                 "selectionGroup": group,
             }
         )
+        if len(selected) == target_top_n:
+            break
     return selected
 
 
@@ -162,18 +160,10 @@ def _detail_request(item, detail_date_params):
 
 
 def _target_satisfied(manifest):
-    groups = manifest.get("selectionGroups")
-    if not isinstance(groups, list) or not groups:
-        return len(manifest.get("selectedMaterials", [])) >= manifest.get("targetTopN", 0)
-    selected_by_group = {}
-    for item in manifest.get("selectedMaterials", []):
-        group_id = item.get("selectionGroupId", "default")
-        selected_by_group[group_id] = selected_by_group.get(group_id, 0) + 1
-    return all(
-        selected_by_group.get(group.get("selectionGroupId"), 0)
-        >= group.get("targetTopN", 0)
-        for group in groups
-    )
+    candidates = manifest.get("candidateMaterials")
+    if isinstance(candidates, list) and candidates:
+        return len(manifest.get("selectedMaterials", [])) >= len(candidates)
+    return len(manifest.get("selectedMaterials", [])) >= manifest.get("targetTopN", 0)
 
 
 def _materialize_records(result, *, csv_path, json_path, downloader):
@@ -606,47 +596,15 @@ def _next_detail_wave(
     selected_ids,
     rejected_ids,
     unresolved_ids,
-    selected_by_group,
-    target_top_n,
-    manifest,
 ):
-    """Select the next bounded wave while preserving original candidate order."""
+    """Select the next bounded wave from the fixed global Top N list."""
     wave = []
     known_ids = selected_ids | rejected_ids | unresolved_ids
-    remaining_required = sum(
-        max(
-            group.get("targetTopN", target_top_n)
-            - selected_by_group.get(group["selectionGroupId"], 0),
-            0,
-        )
-        for group in manifest.get("selectionGroups", [])
-    )
-    wave_limit = min(DETAIL_WAVE_CONCURRENCY, remaining_required)
-    if wave_limit == 0:
-        while next_index < len(candidates):
-            item = candidates[next_index]
-            next_index += 1
-            material_id = item["material_id"]
-            group_id = item["selectionGroupId"]
-            if material_id in known_ids:
-                continue
-            if selected_by_group.get(group_id, 0) >= target_top_n:
-                manifest["cancelledMaterials"].append(
-                    {**_manifest_material(item), "reason": "target_satisfied"}
-                )
-        return wave, next_index
-    while next_index < len(candidates) and len(wave) < wave_limit:
+    while next_index < len(candidates) and len(wave) < DETAIL_WAVE_CONCURRENCY:
         item = candidates[next_index]
         next_index += 1
         material_id = item["material_id"]
-        group_id = item["selectionGroupId"]
         if material_id in known_ids:
-            continue
-        if selected_by_group.get(group_id, 0) >= target_top_n:
-            manifest["cancelledMaterials"].append(
-                {**_manifest_material(item), "reason": "target_satisfied"}
-            )
-            known_ids.add(material_id)
             continue
         wave.append(item)
         known_ids.add(material_id)
@@ -770,24 +728,9 @@ def fetch_batch(
         _save_summary(root, summary)
         return 1
 
-    candidates = _candidate_materials_from_list(list_records, candidate_top_n)
+    candidates = _top_ranked_materials_from_list(list_records, target_top_n)
     manifest["candidateMaterials"] = [_manifest_material(item) for item in candidates]
-    groups = {}
-    for item in candidates:
-        group = groups.setdefault(
-            item["selectionGroupId"],
-            {
-                "selectionGroupId": item["selectionGroupId"],
-                "brandId": item["selectionGroup"]["brand_id"],
-                "brandName": item["selectionGroup"]["brand_name"],
-                "touchpointCode": item["selectionGroup"]["touchpoint_code"],
-                "touchpointName": item["selectionGroup"]["touchpoint_name"],
-                "targetTopN": target_top_n,
-                "candidateCount": 0,
-            },
-        )
-        group["candidateCount"] += 1
-    manifest["selectionGroups"] = list(groups.values())
+    manifest["selectionGroups"] = []
     _restore_persisted_details(root, manifest, candidates)
     _mark_unresolved_submissions(manifest, candidates)
     detail_requests = [
@@ -801,7 +744,6 @@ def fetch_batch(
     summary["stages"]["details"]["requestStatus"] = "running"
     _sync_stage_counts(summary, manifest, root)
     _save_summary(root, summary)
-    selected_by_group = {}
     selected_ids = _selected_ids(manifest)
     rejected_ids = {
         item.get("material_id")
@@ -813,9 +755,6 @@ def fetch_batch(
         for item in manifest["unresolvedMaterials"]
         if isinstance(item, dict) and isinstance(item.get("material_id"), str)
     }
-    for selected in manifest["selectedMaterials"]:
-        group_id = selected.get("selectionGroupId", "default")
-        selected_by_group[group_id] = selected_by_group.get(group_id, 0) + 1
     frames_by_material = load_highlights_manifest(root)
     pending_details = {}
     pending_highlights = {}
@@ -862,9 +801,6 @@ def fetch_batch(
                     selected_ids=selected_ids,
                     rejected_ids=rejected_ids,
                     unresolved_ids=unresolved_ids,
-                    selected_by_group=selected_by_group,
-                    target_top_n=target_top_n,
-                    manifest=manifest,
                 )
                 if not wave:
                     break
@@ -904,9 +840,6 @@ def fetch_batch(
                         selected_entry["postprocessStatus"] = "pending"
                         manifest["selectedMaterials"].append(selected_entry)
                         selected_ids.add(material_id)
-                        selected_by_group[item["selectionGroupId"]] = (
-                            selected_by_group.get(item["selectionGroupId"], 0) + 1
-                        )
                         submit_highlight(highlight_executor, detail_record)
                     except Exception as exc:
                         rejected_ids.add(material_id)

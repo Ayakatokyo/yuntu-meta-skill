@@ -31,6 +31,63 @@ class DetailInvoker:
         return self.detail_result
 
 
+class BatchInvoker:
+    def __init__(self, list_records, failed_material_ids=()):
+        self.list_records = list_records
+        self.failed_material_ids = set(failed_material_ids)
+        self.detail_calls = []
+
+    def invoke_list(self, _shop_id, _list_params):
+        return {"success": True, "data": self.list_records}
+
+    def invoke_detail(self, _shop_id, detail_params):
+        self.detail_calls.append(detail_params)
+        material_id = detail_params["material_id"]
+        if material_id in self.failed_material_ids:
+            raise RuntimeError(f"detail rejected for {material_id}")
+        return {
+            "success": True,
+            "data": [{
+                "materialId": material_id,
+                "dateRangeType": detail_params["date_range_type"],
+                "trends": [],
+                **{
+                    field: detail_params[field]
+                    for field in (
+                        "selectionGroupId",
+                        "brandId",
+                        "brandName",
+                        "touchpointCode",
+                        "touchpointName",
+                    )
+                    if field in detail_params
+                },
+            }],
+        }
+
+
+def list_record(material_id, group_id):
+    return {
+        "material_id": material_id,
+        "selectionGroupId": group_id,
+        "brandId": f"brand-{group_id}",
+        "brandName": f"Brand {group_id}",
+    }
+
+
+def highlight_spec():
+    return {
+        "include_cover": False,
+        "metrics": {
+            "点赞指数": {"strategy": "local_peaks", "limit": 1},
+            "流失指数": {"strategy": "local_peaks", "limit": 1},
+            "点击指数": {"strategy": "local_peaks", "limit": 1},
+            "互动指数": {"strategy": "local_peaks", "limit": 1},
+            "评论指数": {"strategy": "local_peaks", "limit": 1},
+        },
+    }
+
+
 class YuntuBatchTests(unittest.TestCase):
     def test_list_context_accepts_platform_ctr_alias(self):
         batch = load_batch()
@@ -128,6 +185,62 @@ class YuntuBatchTests(unittest.TestCase):
         self.assertEqual(
             {item["material_id"] for item in highlights["materials"]}, {"101", "202"}
         )
+
+    def test_fetch_batch_requests_global_rank_top_n_across_selection_groups(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: []
+        invoker = BatchInvoker([
+            list_record("101", "A"),
+            list_record("202", "B"),
+            list_record("303", "A"),
+        ])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=2,
+                candidate_top_n=1000,
+                output_dir=root,
+                invoker=invoker,
+                highlight_spec=highlight_spec(),
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertEqual([call["material_id"] for call in invoker.detail_calls], ["101", "202"])
+        self.assertEqual(
+            [item["material_id"] for item in manifest["candidateMaterials"]], ["101", "202"]
+        )
+        self.assertEqual(manifest["selectionGroups"], [])
+
+    def test_fetch_batch_does_not_replace_failed_global_top_n_material(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: []
+        invoker = BatchInvoker(
+            [list_record("101", "A"), list_record("202", "B"), list_record("303", "A")],
+            failed_material_ids={"101"},
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=2,
+                candidate_top_n=1000,
+                output_dir=root,
+                invoker=invoker,
+                highlight_spec=highlight_spec(),
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 1)
+        self.assertEqual({call["material_id"] for call in invoker.detail_calls}, {"101", "202"})
+        self.assertEqual([item["material_id"] for item in manifest["rejectedMaterials"]], ["101"])
 
     def test_scripts_package_imports_from_repository_root(self):
         result = subprocess.run(
