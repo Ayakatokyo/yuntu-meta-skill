@@ -19,6 +19,7 @@
 
 ## 当前技能附加行为
 
-- `material_id` 始终从列表连接器结果中选择，不接受外部覆盖
+- `material_id` 始终从当前列表连接器结果的全局前 `target_top_n` 条中选择，不接受外部覆盖或排名更低素材补位
+- 选择组字段仅用于校验详情归属，不能让详情数量按品牌或触点分组扩张
 - 详情失败时记录到 `rejectedMaterials`，后续可通过 `retry-failed` 定向重试
 - 成功结果会写入 `normalized/detail-records/<material_id>.json`，供分析事实包和最终报告使用

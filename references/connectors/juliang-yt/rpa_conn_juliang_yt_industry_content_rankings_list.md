@@ -27,6 +27,7 @@
 
 ## 当前技能附加行为
 
-- 按列表响应顺序选择最先出现的唯一数字型 `material_id`
-- 以 `candidate_top_n` 建立候选池
-- 为后续详情拉取和分析生成 `normalized/list-records.json`
+- 完整持久化平台返回的 Top1000 列表到 `normalized/list-records.json`
+- 按规范化列表的全局 `rank` 选择前 `target_top_n` 个唯一数字型 `material_id` 进入详情阶段
+- `candidate_top_n` 固定为 1000，仅表示完整列表保留容量，不能扩大详情选择范围
+- 不按品牌、触点或选择组拆分 Top N；选择组只作为后续详情归属校验上下文
