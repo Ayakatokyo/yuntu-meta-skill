@@ -1,7 +1,6 @@
 ---
 name: yuntu-meta-skill
 description: 通过结构化查询配置采集巨量云图行业内容榜、素材秒级详情和可配置高光帧。适用于需要重复运行、校验口径或生成独立采集技能底座的场景。
-argument_hint: 提供 query-spec.json 与 highlight-spec.json，或先将对话需求转换为两份配置并回显确认。
 ---
 
 # 可配置云图采集
@@ -10,7 +9,7 @@ argument_hint: 提供 query-spec.json 与 highlight-spec.json，或先将对话�
 
 ## 输入
 
-对话入口必须从同一句自然语言请求生成两份 JSON，并向用户回显确认；请求必须包含列表筛选条件、全局 Top N、封面是否保留，以及点赞、流失、点击、互动、评论五项指标各自的截帧策略和帧数。文件入口直接读取已保存配置。两种入口必须经过相同的解析器，随后落盘为运行目录中的 `resolved-query-spec.json` 和 `resolved-highlight-spec.json`。
+对话入口必须从同一句自然语言请求生成两份 JSON；请求必须包含列表筛选条件、全局 Top N、封面是否保留，以及点赞、流失、点击、互动、评论五项指标各自的截帧策略和帧数。文件入口直接读取已保存配置。两种入口必须经过相同的解析器；解析和校验成功后，立即落盘为运行目录中的 `resolved-query-spec.json` 和 `resolved-highlight-spec.json` 并执行采集，不等待用户确认。解析或校验失败时停止执行并反馈具体缺失或非法字段。
 
 `query-spec.json` 支持行业、近 7 天/近 30 天/自定义日期、年龄、性别、八大人群、品牌范围、四类榜单指标和全局目标素材数。列表始终完整落盘 Top1000，`candidate_top_n` 固定为 1000，详情只处理列表原始全局排名前 `target_top_n` 条。自定义日期必须是闭区间并遵循云图可用日期与跨度限制。
 
