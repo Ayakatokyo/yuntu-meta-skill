@@ -1,4 +1,4 @@
 interface:
   display_name: "可配置云图采集"
   short_description: "采集榜单、秒级详情和自定义高光帧"
-  default_prompt: "使用 $yuntu-configurable-collection，根据已确认的 QuerySpec 和 HighlightSpec 采集云图榜单、素材详情与高光帧资产。"
+  default_prompt: "使用 $yuntu-meta-skill，根据已确认的 QuerySpec 和 HighlightSpec 采集云图榜单、素材详情与高光帧资产。"

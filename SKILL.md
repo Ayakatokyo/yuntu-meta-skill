@@ -1,5 +1,5 @@
 ---
-name: yuntu-configurable-collection
+name: yuntu-meta-skill
 description: 通过结构化查询配置采集巨量云图行业内容榜、素材秒级详情和可配置高光帧。适用于需要重复运行、校验口径或生成独立采集技能底座的场景。
 argument_hint: 提供 query-spec.json 与 highlight-spec.json，或先将对话需求转换为两份配置并回显确认。
 ---
