@@ -4,7 +4,7 @@
 
 **Goal:** Align `yuntu-meta-skill/SKILL.md` with its runtime configuration contract by adding a precise entry hint and pre-input template without exposing the internal candidate-pool parameter.
 
-**Architecture:** Keep the implementation documentation-only. Extend the YAML frontmatter with `argument_hint` and `metadata.pre_input`, then make the existing input section explicitly map natural-language fields to `QuerySpec` and `HighlightSpec`; leave scripts and schemas unchanged.
+**Architecture:** Keep the change focused on the highlight configuration boundary. Extend the YAML frontmatter and input prose, relax `resolve_highlight_spec` to accept a non-empty subset of supported metrics, and cover the contract with focused tests; leave collection orchestration and frame selection unchanged.
 
 **Tech Stack:** Markdown, YAML frontmatter, Python unittest.
 
@@ -14,15 +14,17 @@
 
 **Files:**
 - Modify: `SKILL.md:1-18`
+- Modify: `scripts/config_specs.py:189-215`
+- Test: `tests/test_config_specs.py:75-125`
 
 - [ ] **Step 1: Extend the frontmatter with user-facing entry metadata**
 
-Add these fields below the existing `description`, preserving the current skill name and description semantics:
+Add these fields below the existing `description`, preserving the current skill name and description semantics. The highlighter prompt must request at least one metric from the five supported metrics; it must not require all five:
 
 ```yaml
-argument_hint: 输入行业、时间周期、榜单指标、详情素材数、年龄/性别/八大人群/品牌筛选，以及封面和五项高光指标的截帧策略与帧数；生成并采集 QuerySpec、HighlightSpec 及高光帧资产。
+argument_hint: 输入行业、时间周期、榜单指标、详情素材数、年龄/性别/八大人群/品牌筛选，以及封面和可选高光指标的截帧策略与帧数；生成并采集 QuerySpec、HighlightSpec 及高光帧资产。
 metadata:
-  pre_input: 请采集云图行业内容榜单和素材高光帧：行业是 ____（必填）；时间周期是 ____（近7天、近30天或自定义起止日期，默认近7天；自定义日期为闭区间）；榜单指标是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）；详情素材数是 ____（正整数，默认10，最多1000）；年龄是 ____（可选，留空不过滤）；性别是 ____（可选，留空不过滤）；八大人群是 ____（可选，留空不过滤）；品牌范围是 ____（全行业，或指定3至10个品牌）；是否保留封面是 ____（是/否）；点赞指数截帧是 ____（local_peaks或top_values，帧数____）；流失指数截帧是 ____（local_peaks或top_values，帧数____）；点击指数截帧是 ____（local_peaks或top_values，帧数____）；互动指数截帧是 ____（local_peaks或top_values，帧数____）；评论指数截帧是 ____（local_peaks或top_values，帧数____）。
+  pre_input: 请采集云图行业内容榜单和素材高光帧：行业是 ____（必填）；时间周期是 ____（近7天、近30天或自定义起止日期，默认近7天；自定义日期为闭区间）；榜单指标是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）；详情素材数是 ____（正整数，默认10，最多1000）；年龄是 ____（可选，留空不过滤）；性别是 ____（可选，留空不过滤）；八大人群是 ____（可选，留空不过滤）；品牌范围是 ____（全行业，或指定3至10个品牌）；是否保留封面是 ____（是/否）；高光指标至少选择一项，可从点赞、流失、点击、互动、评论五项中选择；每个已选指标可按波峰（local_peaks）或数值大小（top_values）截取，并指定帧数。
 ```
 
 - [ ] **Step 2: Rewrite the input section to match the metadata contract**
@@ -36,7 +38,7 @@ Replace the current compact input paragraphs with a concise field mapping that s
 
 `QuerySpec` 支持行业、近 7 天、近 30 天或自定义日期、年龄、性别、八大人群、品牌范围、四类榜单指标和详情目标素材数。周期默认 `LAST_7_DAYS`；自定义日期是闭区间，起止日期均必填并遵循云图可用日期与跨度限制。年龄、性别、八大人群可留空表示不过滤；品牌范围默认为 `ALL_INDUSTRY`，指定品牌时填写 3 至 10 个品牌。详情目标数默认 10，必须为不超过 1000 的正整数。列表候选池由实现固定为 1000，不作为用户输入字段。
 
-`HighlightSpec` 必须显式包含 `include_cover`，以及点赞、流失、点击、互动、评论五个指数维度；每个维度独立选择 `local_peaks` 或 `top_values` 并指定正整数帧数。未知字段、策略、缺失维度或非法帧数直接拒绝。
+`HighlightSpec` 必须显式包含 `include_cover`，并至少配置点赞、流失、点击、互动、评论五个指数中的一项；每个已配置维度独立选择 `local_peaks` 或 `top_values` 并指定正整数帧数。未知字段、策略、空指标集合或非法帧数直接拒绝。
 ```
 
 - [ ] **Step 3: Check the documentation diff**

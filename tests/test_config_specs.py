@@ -72,7 +72,23 @@ class ConfigSpecTests(unittest.TestCase):
         self.assertEqual(query_to_rpa_params(resolved)["brands"], ["甲", "乙", "丙"])
         self.assertEqual(detail_to_rpa_params(resolved)["custom_end_date"], "20260805")
 
-    def test_highlight_requires_explicit_cover_and_all_metrics(self):
+    def test_highlight_accepts_a_subset_of_metrics(self):
+        resolved = resolve_highlight_spec(highlights(
+            metrics={
+                "点赞指数": {"strategy": "top_values", "limit": 2},
+                "流失指数": {"strategy": "local_peaks", "limit": 2},
+            },
+        ))
+        self.assertTrue(resolved["include_cover"])
+        self.assertEqual(
+            resolved["metrics"],
+            {
+                "点赞指数": {"strategy": "top_values", "limit": 2},
+                "流失指数": {"strategy": "local_peaks", "limit": 2},
+            },
+        )
+
+    def test_highlight_requires_explicit_cover_and_at_least_one_metric(self):
         resolved = resolve_highlight_spec(highlights(
             metrics={
                 **highlights()["metrics"],
@@ -84,10 +100,10 @@ class ConfigSpecTests(unittest.TestCase):
         self.assertEqual(set(resolved["metrics"]), {"点赞指数", "流失指数", "点击指数", "互动指数", "评论指数"})
         with self.assertRaisesRegex(ConfigSpecError, "include_cover"):
             resolve_highlight_spec({"metrics": highlights()["metrics"]})
-        with self.assertRaisesRegex(ConfigSpecError, "all five metrics"):
+        with self.assertRaisesRegex(ConfigSpecError, "at least one metric"):
             resolve_highlight_spec({
                 "include_cover": True,
-                "metrics": {"点击指数": {"strategy": "local_peaks", "limit": 1}},
+                "metrics": {},
             })
 
     def test_highlight_rejects_removed_absolute_max_strategy(self):

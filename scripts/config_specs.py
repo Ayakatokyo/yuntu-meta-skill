@@ -198,10 +198,12 @@ def resolve_highlight_spec(payload: dict | None) -> dict:
     unknown = set(custom) - set(HIGHLIGHT_METRICS)
     if unknown:
         raise ConfigSpecError(f"unsupported highlight metrics: {', '.join(sorted(unknown))}")
-    if set(custom) != set(HIGHLIGHT_METRICS):
-        raise ConfigSpecError("HighlightSpec.metrics must explicitly configure all five metrics")
+    if not custom:
+        raise ConfigSpecError("HighlightSpec.metrics must configure at least one metric")
     metrics = {}
     for name in HIGHLIGHT_METRICS:
+        if name not in custom:
+            continue
         item = _object(custom[name], f"metrics.{name}")
         _keys(item, {"strategy", "limit"}, f"metrics.{name}")
         strategy = item.get("strategy")
