@@ -103,7 +103,10 @@ class YuntuBatchTests(unittest.TestCase):
 
         def generate_highlights(detail, _root):
             generated_material_ids.append(detail["material_id"])
-            return [{"relative_path": f"highlights/{detail['material_id']}/cover.jpg"}]
+            return [{
+                "available": True,
+                "relative_path": f"highlights/{detail['material_id']}/cover.jpg",
+            }]
 
         batch.generate_standard_highlights_for_detail = generate_highlights
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -135,7 +138,11 @@ class YuntuBatchTests(unittest.TestCase):
                         "status": "partial",
                         "detailDateRange": {"date_range_type": "LAST_7_DAYS"},
                         "targetTopN": 2,
-                        "selectedMaterials": [{"rank": 2, "material_id": "202"}],
+                        "selectedMaterials": [{
+                            "rank": 2,
+                            "material_id": "202",
+                            "postprocessStatus": "succeeded",
+                        }],
                         "rejectedMaterials": [{"rank": 1, "material_id": "101"}],
                         "unresolvedMaterials": [],
                     }
@@ -241,6 +248,147 @@ class YuntuBatchTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual({call["material_id"] for call in invoker.detail_calls}, {"101", "202"})
         self.assertEqual([item["material_id"] for item in manifest["rejectedMaterials"]], ["101"])
+
+    def test_fetch_batch_is_partial_when_a_configured_highlight_frame_is_unavailable(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: [{"available": False}]
+        invoker = BatchInvoker([list_record("101", "A")])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+                output_dir=root,
+                invoker=invoker,
+                highlight_spec=highlight_spec(),
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 1)
+        self.assertEqual(manifest["status"], "partial")
+        self.assertEqual(manifest["selectedMaterials"][0]["postprocessStatus"], "failed")
+
+    def test_fetch_batch_is_partial_when_a_highlight_has_the_wrong_second(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: [{
+            "available": True,
+            "frame_type": "custom_highlight",
+            "second": 99,
+            "relative_path": "highlights/101/01-099s.jpg",
+        }]
+        invoker = BatchInvoker([list_record("101", "A")])
+
+        def invoke_detail(_shop_id, detail_params):
+            response = BatchInvoker.invoke_detail(invoker, _shop_id, detail_params)
+            response["data"][0]["trends"] = [{
+                "trendName": "点击指数",
+                "tendList": [
+                    {"x": 0, "y": 0},
+                    {"x": 1, "y": 5},
+                    {"x": 2, "y": 0},
+                ],
+            }]
+            return response
+
+        invoker.invoke_detail = invoke_detail
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frame = root / "highlights" / "101" / "01-099s.jpg"
+            frame.parent.mkdir(parents=True)
+            frame.write_bytes(b"jpeg")
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+                output_dir=root,
+                invoker=invoker,
+                highlight_spec=highlight_spec(),
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 1)
+        self.assertEqual(manifest["status"], "partial")
+        self.assertEqual(manifest["selectedMaterials"][0]["postprocessStatus"], "failed")
+
+    def test_retry_highlights_regenerates_only_unavailable_persisted_detail_frames(self):
+        batch = load_batch()
+        generated_material_ids = []
+
+        def generate_highlights(detail, root, _highlight_spec):
+            material_id = detail["material_id"]
+            generated_material_ids.append(material_id)
+            image = Path(root) / "highlights" / material_id / "01-001s.jpg"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"jpeg")
+            return [{
+                "available": True,
+                "frame_type": "custom_highlight",
+                "second": 1,
+                "relative_path": str(image.relative_to(root)),
+            }]
+
+        batch.generate_missing_highlights_for_detail = generate_highlights
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = highlight_spec()
+            contract = batch.run_state.collection_contract(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+            )
+            batch.run_state.save_run_state(
+                batch.run_state.new_collection_summary(contract),
+                root / "run-summary.json",
+            )
+            detail_path = root / "normalized" / "detail-records" / "101.json"
+            detail_path.parent.mkdir(parents=True)
+            detail_path.write_text(json.dumps({
+                "material_id": "101",
+                "trend_series": [{
+                    "trend_name": "点击指数",
+                    "series": [
+                        {"second": 0, "value": 0},
+                        {"second": 1, "value": 5},
+                        {"second": 2, "value": 0},
+                    ],
+                }],
+            }), encoding="utf-8")
+            (root / "normalized" / "list-records.json").write_text(
+                json.dumps([{"material_id": "101", "rank": 1}]), encoding="utf-8"
+            )
+            (root / "batch-manifest.json").write_text(json.dumps({
+                "status": "partial",
+                "targetTopN": 1,
+                "candidateMaterials": [{"rank": 1, "material_id": "101"}],
+                "selectedMaterials": [{
+                    "rank": 1,
+                    "material_id": "101",
+                    "detailRecordPath": "normalized/detail-records/101.json",
+                    "postprocessStatus": "failed",
+                }],
+                "rejectedMaterials": [],
+                "unresolvedMaterials": [],
+                "cancelledMaterials": [],
+            }), encoding="utf-8")
+
+            status = batch.retry_highlights_batch(
+                output_dir=root, highlight_spec=spec
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertEqual(generated_material_ids, ["101"])
+        self.assertEqual(manifest["status"], "success")
+        self.assertEqual(manifest["selectedMaterials"][0]["postprocessStatus"], "succeeded")
 
     def test_scripts_package_imports_from_repository_root(self):
         result = subprocess.run(

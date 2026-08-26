@@ -32,7 +32,7 @@ CROWD_GROUP_VALUES = {
     "URBAN_SILVER", "TOWN_MIDDLE_ELDER", "URBAN_BLUE_COLLAR",
 }
 HIGHLIGHT_METRICS = ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数")
-HIGHLIGHT_STRATEGIES = {"local_peaks", "absolute_max"}
+HIGHLIGHT_STRATEGIES = {"local_peaks", "top_values"}
 
 
 class ConfigSpecError(ValueError):

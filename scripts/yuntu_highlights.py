@@ -91,6 +91,11 @@ def _local_peaks(series, *, limit=3):
     return sorted(peaks, key=lambda point: (-point[1], point[0]))[:limit]
 
 
+def _top_values(series, *, limit):
+    """Return the highest-value distinct seconds, preferring earlier ties."""
+    return sorted(_normalized_points(series), key=lambda point: (-point[1], point[0]))[:limit]
+
+
 def _within_high_point(detail, trend_name, second):
     for high_point in detail.get("high_points", []):
         if not isinstance(high_point, dict) or high_point.get("trend_name") != trend_name:
@@ -155,13 +160,9 @@ def select_highlight_candidates_by_spec(detail, highlight_spec):
         }
     for trend_name, policy in highlight_spec.get("metrics", {}).items():
         series = _series_for_trend(detail, trend_name)
-        if policy["strategy"] == "absolute_max":
-            points = _normalized_points(series)
-            selected = []
-            if points:
-                max_value = max(value for _, value in points)
-                selected = [(second, value) for second, value in points if value == max_value][:1]
-            selected_type = "absolute_max"
+        if policy["strategy"] == "top_values":
+            selected = _top_values(series, limit=policy["limit"])
+            selected_type = "top_values"
         else:
             selected = _local_peaks(series, limit=policy["limit"])
             selected_type = "local_peak"
@@ -528,9 +529,12 @@ def _reused_frame_record(candidate, *, material_id, root, index):
     )
 
 
-def _failed_frames_with_local_reuse(candidates, *, material_id, root, failure_reason):
+def _failed_frames_with_local_reuse(
+    candidates, *, material_id, root, failure_reason, candidate_indexes=None
+):
     frames = []
-    for index, candidate in enumerate(candidates, start=1):
+    indexes = candidate_indexes or range(1, len(candidates) + 1)
+    for index, candidate in zip(indexes, candidates):
         frames.append(
             _reused_frame_record(
                 candidate,
@@ -549,10 +553,18 @@ def _failed_frames_with_local_reuse(candidates, *, material_id, root, failure_re
 
 
 def _extract_frames_individually(
-    video_path, candidates, root, material_id, material_root, frame_extractor, ffmpeg_bin
+    video_path,
+    candidates,
+    root,
+    material_id,
+    material_root,
+    frame_extractor,
+    ffmpeg_bin,
+    candidate_indexes=None,
 ):
     frames = []
-    for index, candidate in enumerate(candidates, start=1):
+    indexes = candidate_indexes or range(1, len(candidates) + 1)
+    for index, candidate in zip(indexes, candidates):
         filename = _highlight_filename(index, candidate)
         target = material_root / filename
         relative_path = str(target.relative_to(root))
@@ -585,9 +597,19 @@ def _extract_frames_individually(
 
 
 def _material_frames(
-    detail, candidates, root, downloader, frame_extractor, ffmpeg_bin, batch_extractor=None
+    detail,
+    candidates,
+    root,
+    downloader,
+    frame_extractor,
+    ffmpeg_bin,
+    batch_extractor=None,
+    candidate_indexes=None,
 ):
     material_id = str(detail.get("material_id") or "")
+    indexes = list(candidate_indexes or range(1, len(candidates) + 1))
+    if len(indexes) != len(candidates):
+        raise HighlightFrameError("candidate indexes must match configured frame candidates")
     video_url = detail.get("video_url")
     if not isinstance(video_url, str) or not video_url.strip():
         return _failed_frames_with_local_reuse(
@@ -595,6 +617,7 @@ def _material_frames(
             material_id=material_id,
             root=root,
             failure_reason="missing_video_url",
+            candidate_indexes=indexes,
         )
 
     material_root = root / "highlights" / material_id
@@ -608,7 +631,7 @@ def _material_frames(
                     "second": candidate["second"],
                     "destination": material_root / _highlight_filename(index, candidate),
                 }
-                for index, candidate in enumerate(candidates, start=1)
+                for index, candidate in zip(indexes, candidates)
             ]
             try:
                 (batch_extractor or extract_frames_batch)(
@@ -623,6 +646,7 @@ def _material_frames(
                     material_root,
                     frame_extractor,
                     ffmpeg_bin,
+                    indexes,
                 )
             return [
                 _frame_record(
@@ -639,6 +663,7 @@ def _material_frames(
             material_id=material_id,
             root=root,
             failure_reason="download_failed",
+            candidate_indexes=indexes,
         )
 
 
@@ -779,22 +804,97 @@ def generate_highlights_for_detail(
     )
 
 
+def _candidate_key(candidate):
+    return candidate["frame_type"], candidate["second"]
+
+
+def _usable_configured_frame(root, candidate, frame):
+    if (
+        not isinstance(frame, dict)
+        or not frame.get("available")
+        or frame.get("frame_type") != candidate["frame_type"]
+        or frame.get("second") != candidate["second"]
+    ):
+        return False
+    relative_path = frame.get("relative_path")
+    if not isinstance(relative_path, str) or not relative_path:
+        return False
+    root_path = Path(root).resolve()
+    path = (root_path / relative_path).resolve()
+    try:
+        path.relative_to(root_path)
+    except ValueError:
+        return False
+    return path.is_file() and path.stat().st_size > 0
+
+
+def _configured_highlight_frame_state(detail, root, highlight_spec):
+    candidates = select_highlight_candidates_by_spec(detail, highlight_spec)
+    material_id = str(detail.get("material_id") or "")
+    frames = load_highlights_manifest(root).get(material_id, [])
+    frames_by_key = {}
+    for frame in frames:
+        if not isinstance(frame, dict):
+            continue
+        key = (frame.get("frame_type"), frame.get("second"))
+        if key in frames_by_key:
+            frames_by_key[key] = None
+        else:
+            frames_by_key[key] = frame
+    available = {}
+    for candidate in candidates:
+        key = _candidate_key(candidate)
+        frame = frames_by_key.get(key)
+        if _usable_configured_frame(root, candidate, frame):
+            available[key] = frame
+    return candidates, available
+
+
+def generate_missing_highlights_for_detail(
+    detail,
+    output_dir,
+    highlight_spec,
+    *,
+    downloader=download_video,
+    frame_extractor=extract_frame,
+    batch_extractor=None,
+    ffmpeg_bin=None,
+):
+    """Regenerate only unavailable configured frames and retain usable local ones."""
+    root = Path(output_dir)
+    candidates, available = _configured_highlight_frame_state(
+        detail, root, highlight_spec
+    )
+    missing = [
+        (index, candidate)
+        for index, candidate in enumerate(candidates, start=1)
+        if _candidate_key(candidate) not in available
+    ]
+    if not missing:
+        return [available[_candidate_key(candidate)] for candidate in candidates]
+    generated = _material_frames(
+        detail,
+        [candidate for _, candidate in missing],
+        root,
+        downloader,
+        frame_extractor,
+        ffmpeg_bin,
+        batch_extractor,
+        candidate_indexes=[index for index, _ in missing],
+    )
+    frames = {**available, **{_candidate_key(frame): frame for frame in generated}}
+    return [frames[_candidate_key(candidate)] for candidate in candidates]
+
+
 def details_missing_highlights_by_spec(details, output_dir, highlight_spec):
     """Return details whose configured frame files are not all locally available."""
     root = Path(output_dir)
-    manifest = load_highlights_manifest(root)
     missing = []
     for detail in details:
-        material_id = str(detail.get("material_id") or "")
-        expected = select_highlight_candidates_by_spec(detail, highlight_spec)
-        frames = manifest.get(material_id, [])
-        if len(frames) != len(expected) or any(
-            not isinstance(frame, dict)
-            or not frame.get("available")
-            or not isinstance(frame.get("relative_path"), str)
-            or not (root / frame["relative_path"]).is_file()
-            for frame in frames
-        ):
+        expected, available = _configured_highlight_frame_state(
+            detail, root, highlight_spec
+        )
+        if len(available) != len(expected):
             missing.append(detail)
     return missing
 

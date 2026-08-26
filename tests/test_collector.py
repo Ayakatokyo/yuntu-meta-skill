@@ -1,6 +1,8 @@
 import json
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -23,7 +25,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(status, 0)
         payload = json.loads(output[0])
         self.assertEqual(payload["query"]["collection"]["target_top_n"], 2)
-        self.assertEqual(payload["highlights"]["metrics"]["点赞指数"]["strategy"], "absolute_max")
+        self.assertEqual(payload["highlights"]["metrics"]["点赞指数"]["strategy"], "top_values")
 
     def test_collector_has_no_analysis_or_report_commands(self):
         commands = collector._parser()._subparsers._group_actions[0].choices
@@ -54,9 +56,53 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(captured["detail_date_params"], {"date_range_type": "LAST_7_DAYS"})
         self.assertEqual(captured["target_top_n"], 2)
         self.assertEqual(captured["candidate_top_n"], 1000)
-        self.assertEqual(captured["highlight_spec"]["metrics"]["点赞指数"]["strategy"], "absolute_max")
+        self.assertEqual(captured["highlight_spec"]["metrics"]["点赞指数"]["strategy"], "top_values")
         self.assertTrue(query_file_exists)
         self.assertTrue(highlight_file_exists)
+
+    def test_retry_highlights_uses_the_saved_spec_without_a_shop_id(self):
+        captured = {}
+
+        def fake_retry_highlights_batch(**kwargs):
+            captured.update(kwargs)
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(collector, "_load_saved_specs", return_value=({}, {"metrics": {}})), \
+                mock.patch.object(
+                    collector, "retry_highlights_batch", fake_retry_highlights_batch
+                ):
+            status = collector.main([
+                "retry-highlights", "--output-dir", directory,
+            ])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured, {
+            "output_dir": directory,
+            "highlight_spec": {"metrics": {}},
+        })
+
+    def test_retry_highlights_rejects_a_saved_spec_with_the_wrong_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "resolved-query-spec.json").write_text(
+                (ROOT / "fixtures/query-spec.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (root / "resolved-highlight-spec.json").write_text(
+                (ROOT / "fixtures/highlight-spec.json").read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            (root / "run-summary.json").write_text(json.dumps({
+                "collectionContract": {"configurationFingerprint": "0" * 64},
+            }), encoding="utf-8")
+            with mock.patch.object(collector, "retry_highlights_batch") as retry:
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        collector.main(["retry-highlights", "--output-dir", directory])
+
+        self.assertEqual(raised.exception.code, 2)
+        retry.assert_not_called()
 
 
 if __name__ == "__main__":

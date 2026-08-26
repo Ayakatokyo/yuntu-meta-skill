@@ -76,11 +76,11 @@ class ConfigSpecTests(unittest.TestCase):
         resolved = resolve_highlight_spec(highlights(
             metrics={
                 **highlights()["metrics"],
-                "点击指数": {"strategy": "absolute_max", "limit": 1},
+                "点击指数": {"strategy": "top_values", "limit": 2},
             },
         ))
         self.assertTrue(resolved["include_cover"])
-        self.assertEqual(resolved["metrics"]["点击指数"], {"strategy": "absolute_max", "limit": 1})
+        self.assertEqual(resolved["metrics"]["点击指数"], {"strategy": "top_values", "limit": 2})
         self.assertEqual(set(resolved["metrics"]), {"点赞指数", "流失指数", "点击指数", "互动指数", "评论指数"})
         with self.assertRaisesRegex(ConfigSpecError, "include_cover"):
             resolve_highlight_spec({"metrics": highlights()["metrics"]})
@@ -89,6 +89,15 @@ class ConfigSpecTests(unittest.TestCase):
                 "include_cover": True,
                 "metrics": {"点击指数": {"strategy": "local_peaks", "limit": 1}},
             })
+
+    def test_highlight_rejects_removed_absolute_max_strategy(self):
+        with self.assertRaisesRegex(ConfigSpecError, "unsupported"):
+            resolve_highlight_spec(highlights(
+                metrics={
+                    **highlights()["metrics"],
+                    "点击指数": {"strategy": "absolute_max", "limit": 1},
+                },
+            ))
 
     def test_highlight_rejects_unknown_strategy_and_nonpositive_limit(self):
         invalid_strategy = highlights(

@@ -23,6 +23,7 @@ try:
         collection_status,
         fetch_batch,
         retry_failed_batch,
+        retry_highlights_batch,
         retry_unresolved_batch,
     )
 except ImportError:
@@ -30,6 +31,7 @@ except ImportError:
     collection_status = None
     fetch_batch = None
     retry_failed_batch = None
+    retry_highlights_batch = None
     retry_unresolved_batch = None
 
 try:
@@ -489,6 +491,11 @@ def _parser():
     )
     retry_unresolved_parser.add_argument("--shop-id", required=True)
     retry_unresolved_parser.add_argument("--output-dir", required=True)
+    retry_highlights_parser = commands.add_parser(
+        "retry-highlights",
+        help="Retry missing or unavailable highlighter assets from persisted details",
+    )
+    retry_highlights_parser.add_argument("--output-dir", required=True)
     fetch_parser = commands.add_parser("collect", help="Collect configured rankings, details, and frames")
     fetch_parser.add_argument("--shop-id", required=True)
     fetch_parser.add_argument("--query-spec", required=True)
@@ -515,6 +522,15 @@ def _load_saved_specs(output_dir):
     root = Path(output_dir)
     query = resolve_query_spec(json.loads((root / "resolved-query-spec.json").read_text(encoding="utf-8")))
     highlights = resolve_highlight_spec(json.loads((root / "resolved-highlight-spec.json").read_text(encoding="utf-8")))
+    summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+    contract = summary.get("collectionContract") if isinstance(summary, dict) else None
+    expected_fingerprint = (
+        contract.get("configurationFingerprint") if isinstance(contract, dict) else None
+    )
+    if expected_fingerprint != spec_fingerprint(query, highlights):
+        raise ConfigSpecError(
+            "saved configuration fingerprint does not match the collection contract; choose a new output directory"
+        )
     return query, highlights
 
 
@@ -549,6 +565,13 @@ def main(argv=None):
         if args.command == "retry-unresolved":
             specs = _load_saved_specs(args.output_dir)
             status = retry_unresolved_batch(args.shop_id, output_dir=args.output_dir, invoker=_batch_invoker(), highlight_spec=specs[1])
+            print(Path(args.output_dir) / "batch-manifest.json")
+            return status
+        if args.command == "retry-highlights":
+            specs = _load_saved_specs(args.output_dir)
+            status = retry_highlights_batch(
+                output_dir=args.output_dir, highlight_spec=specs[1]
+            )
             print(Path(args.output_dir) / "batch-manifest.json")
             return status
         query = resolve_query_spec(json.loads(Path(args.query_spec).read_text(encoding="utf-8")))

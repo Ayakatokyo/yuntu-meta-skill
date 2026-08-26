@@ -13,7 +13,7 @@ description: 通过结构化查询配置采集巨量云图行业内容榜、素�
 
 `query-spec.json` 支持行业、近 7 天/近 30 天/自定义日期、年龄、性别、八大人群、品牌范围、四类榜单指标和全局目标素材数。列表始终完整落盘 Top1000，`candidate_top_n` 固定为 1000，详情只处理列表原始全局排名前 `target_top_n` 条。自定义日期必须是闭区间并遵循云图可用日期与跨度限制。
 
-`highlight-spec.json` 必须显式包含封面设置，以及点赞、流失、点击、互动、评论指数五个维度；每个维度可独立选择 `local_peaks` 或 `absolute_max`，并指定正整数帧数。未知字段、策略或缺失维度直接拒绝。
+`highlight-spec.json` 必须显式包含封面设置，以及点赞、流失、点击、互动、评论指数五个维度；每个维度可独立选择 `local_peaks` 或 `top_values`，并指定正整数帧数。`local_peaks` 按局部峰值选帧；`top_values` 按指数值降序、秒点升序选择前 N 个不同秒点，同值时更早秒点优先并占用一个名额。未知字段、策略或缺失维度直接拒绝。
 
 ## 执行
 
@@ -24,10 +24,11 @@ python scripts/collector.py collect --shop-id "<shop_id>" --query-spec query.jso
 python scripts/collector.py status --output-dir runs/example
 python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs/example
 python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
+python scripts/collector.py retry-highlights --output-dir runs/example
 ```
 
 固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。未知 `shop_id` 先运行 `list-accounts`。
 
 ## 产物与恢复
 
-运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`、`highlights-manifest.json` 和 `highlights/` JPEG 资产。配置、shop ID 或采集参数变化时必须使用新目录。前 N 条中的详情失败会单独落盘，不能用排名更低的素材补位。`retry-failed` 只重试拒绝详情，`retry-unresolved` 只重试未持久化详情；同一批次的重试会沿用保存的高光策略。
+运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`、`highlights-manifest.json` 和 `highlights/` JPEG 资产。配置、shop ID 或采集参数变化时必须使用新目录。前 N 条中的详情失败会单独落盘，不能用排名更低的素材补位。只有所有目标详情成功且按保存的高光策略生成的帧都可用时，运行才是 `success`；高光帧缺失或不可用时为 `partial`。`retry-failed` 只重试拒绝详情，`retry-unresolved` 只重试未持久化详情，`retry-highlights` 只重建缺失或不可用的高光帧，不重新请求榜单或详情；同一批次的重试会沿用保存的高光策略。

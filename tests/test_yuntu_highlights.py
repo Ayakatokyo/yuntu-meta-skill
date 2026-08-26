@@ -25,7 +25,7 @@ def detail_with_trends(*trends, high_points=None):
 
 
 class YuntuHighlightTests(unittest.TestCase):
-    def test_configured_candidates_support_local_peaks_and_absolute_max(self):
+    def test_configured_candidates_support_local_peaks_and_top_values(self):
         highlights = load_module()
         detail = detail_with_trends(
             {
@@ -49,12 +49,12 @@ class YuntuHighlightTests(unittest.TestCase):
                 "include_cover": True,
                 "metrics": {
                     "点击指数": {"strategy": "local_peaks", "limit": 2},
-                    "点赞指数": {"strategy": "absolute_max", "limit": 1},
+                    "点赞指数": {"strategy": "top_values", "limit": 1},
                 },
             },
         )
         self.assertEqual([candidate["second"] for candidate in candidates], [0, 1, 3])
-        self.assertEqual(candidates[1]["reasons"][-1]["type"], "absolute_max")
+        self.assertEqual(candidates[1]["reasons"][-1]["type"], "top_values")
 
     def test_configured_candidates_merge_reasons_at_same_second(self):
         highlights = load_module()
@@ -66,11 +66,143 @@ class YuntuHighlightTests(unittest.TestCase):
             detail,
             {"include_cover": False, "metrics": {
                 "点击指数": {"strategy": "local_peaks", "limit": 1},
-                "点赞指数": {"strategy": "absolute_max", "limit": 1},
+                "点赞指数": {"strategy": "top_values", "limit": 1},
             }},
         )
         self.assertEqual([item["second"] for item in candidates], [5])
         self.assertEqual({reason["trend_name"] for reason in candidates[0]["reasons"]}, {"点击指数", "点赞指数"})
+
+    def test_top_values_selects_distinct_seconds_by_value_then_second(self):
+        highlights = load_module()
+        detail = detail_with_trends(
+            {
+                "trend_name": "点击指数",
+                "series": [
+                    {"second": 20, "value": 8},
+                    {"second": 10, "value": 9},
+                    {"second": 5, "value": 9},
+                    {"second": 15, "value": 7},
+                ],
+            },
+        )
+
+        candidates = highlights.select_highlight_candidates_by_spec(
+            detail,
+            {
+                "include_cover": False,
+                "metrics": {"点击指数": {"strategy": "top_values", "limit": 2}},
+            },
+        )
+
+        self.assertEqual([candidate["second"] for candidate in candidates], [5, 10])
+        self.assertEqual(
+            [candidate["reasons"][0]["rank"] for candidate in candidates], [1, 2]
+        )
+
+    def test_configured_highlights_require_matching_nonempty_local_frames(self):
+        highlights = load_module()
+        detail = {
+            "material_id": "101",
+            "trend_series": [{
+                "trend_name": "点击指数",
+                "series": [
+                    {"second": 0, "value": 0},
+                    {"second": 5, "value": 4},
+                    {"second": 6, "value": 0},
+                ],
+            }],
+        }
+        spec = {"include_cover": False, "metrics": {
+            "点击指数": {"strategy": "local_peaks", "limit": 1},
+        }}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = root / "highlights" / "101" / "wrong-second.jpg"
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"jpeg")
+            highlights.write_highlights_manifest(root, {
+                "101": [{
+                    "available": True,
+                    "frame_type": "custom_highlight",
+                    "second": 9,
+                    "relative_path": "highlights/101/wrong-second.jpg",
+                }],
+            })
+            self.assertEqual(
+                highlights.details_missing_highlights_by_spec([detail], root, spec),
+                [detail],
+            )
+
+            image.unlink()
+            image = root / "highlights" / "101" / "expected-second.jpg"
+            image.touch()
+            highlights.write_highlights_manifest(root, {
+                "101": [{
+                    "available": True,
+                    "frame_type": "custom_highlight",
+                    "second": 5,
+                    "relative_path": "highlights/101/expected-second.jpg",
+                }],
+            })
+            self.assertEqual(
+                highlights.details_missing_highlights_by_spec([detail], root, spec),
+                [detail],
+            )
+
+    def test_generate_missing_highlights_preserves_available_frames(self):
+        highlights = load_module()
+        detail = {
+            "material_id": "101",
+            "video_url": "https://example.test/video.mp4",
+            "trend_series": [{
+                "trend_name": "点击指数",
+                "series": [
+                    {"second": 0, "value": 0},
+                    {"second": 1, "value": 4},
+                    {"second": 2, "value": 0},
+                    {"second": 3, "value": 5},
+                    {"second": 4, "value": 0},
+                ],
+            }],
+        }
+        spec = {"include_cover": False, "metrics": {
+            "点击指数": {"strategy": "local_peaks", "limit": 2},
+        }}
+        requested_seconds = []
+
+        def downloader(_url, destination):
+            Path(destination).write_bytes(b"video")
+
+        def batch_extractor(_video, requests, **_kwargs):
+            requested_seconds.extend(request["second"] for request in requests)
+            for request in requests:
+                Path(request["destination"]).write_bytes(b"new-jpeg")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            preserved = root / "highlights" / "101" / "01-001s.jpg"
+            preserved.parent.mkdir(parents=True)
+            preserved.write_bytes(b"preserved-jpeg")
+            highlights.write_highlights_manifest(root, {
+                "101": [{
+                    "available": True,
+                    "frame_type": "custom_highlight",
+                    "second": 1,
+                    "relative_path": "highlights/101/01-001s.jpg",
+                }],
+            })
+
+            frames = highlights.generate_missing_highlights_for_detail(
+                detail,
+                root,
+                spec,
+                downloader=downloader,
+                batch_extractor=batch_extractor,
+            )
+
+            self.assertEqual(requested_seconds, [3])
+            self.assertEqual(preserved.read_bytes(), b"preserved-jpeg")
+            self.assertEqual([frame["second"] for frame in frames], [1, 3])
 
     def test_normalize_highlight_trends_deduplicates_and_rejects_unknown_names(self):
         highlights = load_module()

@@ -18,6 +18,7 @@ if __package__:
         details_missing_highlights_by_spec,
         generate_standard_highlights_for_detail,
         generate_highlights_for_detail,
+        generate_missing_highlights_for_detail,
         load_highlights_manifest,
         write_highlights_manifest,
     )
@@ -35,6 +36,7 @@ else:
         details_missing_highlights_by_spec,
         generate_standard_highlights_for_detail,
         generate_highlights_for_detail,
+        generate_missing_highlights_for_detail,
         load_highlights_manifest,
         write_highlights_manifest,
     )
@@ -500,21 +502,64 @@ def _finalize_details(
     summary,
     manifest_path,
     *,
+    highlight_spec=None,
     incomplete_status="partial",
     require_no_unresolved=True,
 ):
     """Write the shared collection handoff after fetch or either retry path."""
     _refresh_ready_materials(root, manifest)
+    postprocess_complete = all(
+        item.get("postprocessStatus") in {"succeeded", "reused"}
+        for item in manifest.get("selectedMaterials", [])
+    )
+    highlights_complete = True
+    if highlight_spec is not None:
+        details = []
+        incomplete_highlight_ids = set()
+        for item in manifest.get("selectedMaterials", []):
+            material_id = item.get("material_id")
+            path = item.get("detailRecordPath")
+            if not isinstance(path, str):
+                incomplete_highlight_ids.add(material_id)
+                highlights_complete = False
+                continue
+            try:
+                details.append(_load_json(root / path))
+            except (OSError, ValueError):
+                incomplete_highlight_ids.add(material_id)
+                highlights_complete = False
+        incomplete_highlight_ids.update(
+            detail["material_id"]
+            for detail in details_missing_highlights_by_spec(
+                details, root, highlight_spec
+            )
+        )
+        if incomplete_highlight_ids:
+            highlights_complete = False
+            for item in manifest.get("selectedMaterials", []):
+                if item.get("material_id") in incomplete_highlight_ids:
+                    item["postprocessStatus"] = "failed"
+                    item.setdefault(
+                        "postprocessError",
+                        "configured highlight frames are missing or unavailable",
+                    )
+        postprocess_complete = all(
+            item.get("postprocessStatus") in {"succeeded", "reused"}
+            for item in manifest.get("selectedMaterials", [])
+        )
     succeeded = (
         not manifest.get("rejectedMaterials")
         and (not require_no_unresolved or not manifest.get("unresolvedMaterials"))
         and _target_satisfied(manifest)
+        and postprocess_complete
+        and highlights_complete
     )
     manifest["status"] = "success" if succeeded else incomplete_status
     summary["status"] = manifest["status"]
     summary["stages"]["details"]["requestStatus"] = (
         "completed" if succeeded else "partial"
     )
+    _sync_postprocess_counts(summary, manifest)
     _sync_stage_counts(summary, manifest, root)
     write_json_atomically(manifest, manifest_path)
     _save_summary(root, summary)
@@ -589,6 +634,27 @@ def _generate_highlight_result(detail, root, highlight_spec=None):
         }
 
 
+def _generate_missing_highlight_result(detail, root, highlight_spec):
+    """Run a highlighter-only retry without touching usable local frame assets."""
+    started = time.monotonic()
+    try:
+        return {
+            "material_id": detail["material_id"],
+            "frames": generate_missing_highlights_for_detail(
+                detail, root, highlight_spec
+            ),
+            "duration": _elapsed(started),
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "material_id": detail["material_id"],
+            "frames": [],
+            "duration": _elapsed(started),
+            "error": exc,
+        }
+
+
 def _next_detail_wave(
     candidates,
     next_index,
@@ -636,6 +702,30 @@ def _sync_postprocess_counts(summary, manifest):
         item.get("postprocessStatus") == "failed"
         for item in manifest["selectedMaterials"]
     )
+
+
+def _record_highlight_result(manifest, frames_by_material, result):
+    """Persist frame availability before deriving the material postprocess state."""
+    material_id = result["material_id"]
+    entry = _selected_entry(manifest, material_id)
+    if entry is None:
+        return
+    entry["postprocessTimingsSec"] = {"highlightSec": result["duration"]}
+    if result["frames"]:
+        frames_by_material[material_id] = result["frames"]
+    if result["error"] is None and all(
+        isinstance(frame, dict) and frame.get("available")
+        for frame in result["frames"]
+    ):
+        entry["postprocessStatus"] = "succeeded"
+        entry.pop("postprocessError", None)
+    else:
+        entry["postprocessStatus"] = "failed"
+        entry["postprocessError"] = (
+            str(result["error"])
+            if result["error"] is not None
+            else "one or more configured highlight frames are unavailable"
+        )
 
 
 def fetch_batch(
@@ -790,6 +880,14 @@ def fetch_batch(
         max_workers=HIGHLIGHT_CONCURRENCY
     ) as highlight_executor:
         missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else details_missing_standard_highlights(restored_details, root)
+        missing_highlight_ids = {
+            detail["material_id"] for detail in missing_details
+        }
+        for detail in restored_details:
+            if detail["material_id"] not in missing_highlight_ids:
+                entry = _selected_entry(manifest, detail["material_id"])
+                if entry is not None:
+                    entry["postprocessStatus"] = "reused"
         for detail in missing_details:
             submit_highlight(highlight_executor, detail)
 
@@ -854,18 +952,7 @@ def fetch_batch(
                 else:
                     result = future.result()
                     pending_highlights.pop(future)
-                    material_id = result["material_id"]
-                    entry = _selected_entry(manifest, material_id)
-                    if entry is not None:
-                        entry["postprocessTimingsSec"] = {
-                            "highlightSec": result["duration"]
-                        }
-                        if result["error"] is None:
-                            entry["postprocessStatus"] = "succeeded"
-                            frames_by_material[material_id] = result["frames"]
-                        else:
-                            entry["postprocessStatus"] = "failed"
-                            entry["postprocessError"] = str(result["error"])
+                    _record_highlight_result(manifest, frames_by_material, result)
             checkpoint()
 
     manifest["selectedMaterials"] = sorted(
@@ -877,6 +964,7 @@ def fetch_batch(
         manifest,
         summary,
         manifest_path,
+        highlight_spec=highlight_spec,
         require_no_unresolved=False,
     )
 
@@ -930,6 +1018,9 @@ def collection_status(*, output_dir):
                 "rejectedCount": len(manifest.get("rejectedMaterials", [])),
                 "unresolvedCount": len(manifest.get("unresolvedMaterials", [])),
                 "cancelledCount": len(manifest.get("cancelledMaterials", [])),
+                "postprocessSubmittedCount": detail_stage.get("postprocessSubmittedCount", 0),
+                "postprocessSucceededCount": detail_stage.get("postprocessSucceededCount", 0),
+                "postprocessFailedCount": detail_stage.get("postprocessFailedCount", 0),
             },
         },
         "evidencePaths": {
@@ -1035,16 +1126,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             ] = material_id
         for future, material_id in pending_highlights.items():
             result = future.result()
-            entry = _selected_entry(manifest, material_id)
-            if entry is None:
-                continue
-            entry["postprocessTimingsSec"] = {"highlightSec": result["duration"]}
-            if result["error"] is None:
-                entry["postprocessStatus"] = "succeeded"
-                frames_by_material[material_id] = result["frames"]
-            else:
-                entry["postprocessStatus"] = "failed"
-                entry["postprocessError"] = str(result["error"])
+            _record_highlight_result(manifest, frames_by_material, result)
     write_highlights_manifest(root, frames_by_material, contract.get("configurationFingerprint"))
     _sync_postprocess_counts(summary, manifest)
 
@@ -1052,7 +1134,13 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
         manifest.get("selectedMaterials", []), key=lambda item: item.get("rank", 0)
     )
     manifest[item_key] = still_retry_items
-    return _finalize_details(root, manifest, summary, manifest_path)
+    return _finalize_details(
+        root,
+        manifest,
+        summary,
+        manifest_path,
+        highlight_spec=highlight_spec,
+    )
 
 
 def retry_failed_batch(*, shop_id, output_dir, invoker, downloader=None, highlight_spec=None):
@@ -1073,6 +1161,88 @@ def retry_unresolved_batch(*, shop_id, output_dir, invoker, downloader=None, hig
         invoker=invoker,
         item_key="unresolvedMaterials",
         downloader=downloader,
+        highlight_spec=highlight_spec,
+    )
+
+
+def retry_highlights_batch(*, output_dir, highlight_spec):
+    """Retry only missing configured highlight assets from persisted details."""
+    root = Path(output_dir)
+    manifest_path = root / "batch-manifest.json"
+    summary_path = root / run_state.RUN_SUMMARY_NAME
+    if not summary_path.is_file():
+        raise YuntuBatchError(
+            "output directory contains an unverifiable existing batch; choose a new output directory"
+        )
+    try:
+        summary = run_state.load_run_state(summary_path)
+    except run_state.YuntuRunStateError as exc:
+        raise YuntuBatchError(
+            "output directory contains an unverifiable existing batch; choose a new output directory"
+        ) from exc
+    contract = summary.get("collectionContract")
+    if not isinstance(contract, dict) or not run_state.collection_contract_matches(
+        summary, contract
+    ):
+        raise YuntuBatchError(
+            "output directory contains an unverifiable existing batch; choose a new output directory"
+        )
+    try:
+        manifest = _load_json(manifest_path)
+    except (OSError, ValueError) as exc:
+        raise YuntuBatchError("existing batch manifest is unreadable") from exc
+
+    details = []
+    for item in manifest.get("selectedMaterials", []):
+        path = item.get("detailRecordPath")
+        if not isinstance(path, str):
+            item["postprocessStatus"] = "failed"
+            item["postprocessError"] = "persisted detail record path is missing"
+            continue
+        try:
+            details.append(_load_json(root / path))
+        except (OSError, ValueError):
+            item["postprocessStatus"] = "failed"
+            item["postprocessError"] = "persisted detail record is unreadable"
+
+    missing_details = details_missing_highlights_by_spec(details, root, highlight_spec)
+    missing_ids = {detail["material_id"] for detail in missing_details}
+    for detail in details:
+        if detail["material_id"] not in missing_ids:
+            entry = _selected_entry(manifest, detail["material_id"])
+            if entry is not None:
+                entry["postprocessStatus"] = "reused"
+                entry.pop("postprocessError", None)
+
+    frames_by_material = load_highlights_manifest(root)
+    with ThreadPoolExecutor(max_workers=HIGHLIGHT_CONCURRENCY) as highlight_executor:
+        pending_highlights = {}
+        for detail in missing_details:
+            entry = _selected_entry(manifest, detail["material_id"])
+            if entry is not None:
+                entry["postprocessStatus"] = "running"
+            pending_highlights[
+                highlight_executor.submit(
+                    _generate_missing_highlight_result, detail, root, highlight_spec
+                )
+            ] = detail["material_id"]
+        for future in pending_highlights:
+            _record_highlight_result(
+                manifest, frames_by_material, future.result()
+            )
+
+    write_highlights_manifest(
+        root, frames_by_material, contract.get("configurationFingerprint")
+    )
+    _sync_postprocess_counts(summary, manifest)
+    manifest["selectedMaterials"] = sorted(
+        manifest.get("selectedMaterials", []), key=lambda item: item.get("rank", 0)
+    )
+    return _finalize_details(
+        root,
+        manifest,
+        summary,
+        manifest_path,
         highlight_spec=highlight_spec,
     )
 
