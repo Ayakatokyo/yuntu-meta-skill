@@ -47,6 +47,11 @@ except ImportError:
         write_resolved_specs,
     )
 
+try:
+    from fact_packages import FactPackageError, build_fact_packages
+except ImportError:
+    from .fact_packages import FactPackageError, build_fact_packages
+
 
 LIST_FUNCTION_CODE = "rpa.conn.juliang.yt.industry.content.rankings.list"
 DETAIL_FUNCTION_CODE = "rpa.conn.juliang.yt.industry.content.rankings.detail"
@@ -496,6 +501,10 @@ def _parser():
         help="Retry missing or unavailable highlighter assets from persisted details",
     )
     retry_highlights_parser.add_argument("--output-dir", required=True)
+    facts_parser = commands.add_parser(
+        "build-facts", help="Build source-only fact packages from an existing run"
+    )
+    facts_parser.add_argument("--run-dir", required=True)
     fetch_parser = commands.add_parser("collect", help="Collect configured rankings, details, and frames")
     fetch_parser.add_argument("--shop-id", required=True)
     fetch_parser.add_argument("--query-spec", required=True)
@@ -574,6 +583,13 @@ def main(argv=None):
             )
             print(Path(args.output_dir) / "batch-manifest.json")
             return status
+        if args.command == "build-facts":
+            manifest = build_fact_packages(args.run_dir)
+            print(json.dumps({
+                "manifest_path": str(Path(args.run_dir) / "facts/manifest.json"),
+                "coverage": manifest["coverage"],
+            }, ensure_ascii=False, indent=2))
+            return 0
         query = resolve_query_spec(json.loads(Path(args.query_spec).read_text(encoding="utf-8")))
         highlights = resolve_highlight_spec(json.loads(Path(args.highlight_spec).read_text(encoding="utf-8")))
         write_resolved_specs(args.output_dir, query, highlights)
@@ -588,7 +604,7 @@ def main(argv=None):
         )
         print(Path(args.output_dir) / "batch-manifest.json")
         return status
-    except (RpaConnectorError, ConfigSpecError, OSError, json.JSONDecodeError) as exc:
+    except (RpaConnectorError, ConfigSpecError, FactPackageError, OSError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
 

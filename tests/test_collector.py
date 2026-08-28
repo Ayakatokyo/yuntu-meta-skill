@@ -32,6 +32,38 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn("render-report", commands)
         self.assertNotIn("prepare-analysis", commands)
 
+    def test_build_facts_dispatches_to_local_builder(self):
+        captured = {}
+
+        def fake_build_fact_packages(run_dir):
+            captured["run_dir"] = run_dir
+            return {
+                "packages": {
+                    "material_ranking": {"record_count": 2},
+                    "audience": {"record_count": 2},
+                    "script": {"record_count": 1},
+                    "highlight_frames": {"record_count": 1},
+                },
+                "coverage": {
+                    "ranking_records": 2,
+                    "detail_records": 1,
+                    "script_records": 1,
+                    "highlight_materials": 1,
+                    "available_highlight_frames": 1,
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(collector, "build_fact_packages", fake_build_fact_packages), \
+                mock.patch("builtins.print") as printer:
+            status = collector.main(["build-facts", "--run-dir", directory])
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["run_dir"], directory)
+        output = json.loads(printer.call_args.args[0])
+        self.assertEqual(output["manifest_path"], str(Path(directory) / "facts/manifest.json"))
+        self.assertEqual(output["coverage"]["ranking_records"], 2)
+
     def test_collect_translates_specs_into_batch_and_rpa_parameters(self):
         captured = {}
 
