@@ -29,6 +29,7 @@ python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs
 python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
 python scripts/collector.py retry-highlights --output-dir runs/example
 python scripts/collector.py build-facts --run-dir runs/example
+python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
 固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。未知 `shop_id` 先运行 `list-accounts`。
@@ -37,4 +38,6 @@ python scripts/collector.py build-facts --run-dir runs/example
 
 运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`、`highlights-manifest.json` 和 `highlights/` JPEG 资产。配置、shop ID 或采集参数变化时必须使用新目录。前 N 条中的详情失败会单独落盘，不能用排名更低的素材补位。只有所有目标详情成功且按保存的高光策略生成的帧都可用时，运行才是 `success`；高光帧缺失或不可用时为 `partial`。`retry-failed` 只重试拒绝详情，`retry-unresolved` 只重试未持久化详情，`retry-highlights` 只重建缺失或不可用的高光帧，不重新请求榜单或详情；同一批次的重试会沿用保存的高光策略。
 
-采集完成后可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座。该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
+`collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径与 coverage；事实包构建失败时命令返回非零。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
+
+通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较 `scripts/collector.py` 与 `scripts/fact_packages.py` 的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
