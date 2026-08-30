@@ -60,18 +60,42 @@ except ImportError:
     from .rpa_io import write_json_atomically
 
 try:
-    from workflow_state import build_ready_receipt, get_workflow_status, set_stage
+    from workflow_state import (
+        begin_model_analysis,
+        build_ready_receipt,
+        complete_model_analysis,
+        fail_model_analysis,
+        get_workflow_status,
+        set_stage,
+        WorkflowStateError,
+    )
 except ImportError:
-    from .workflow_state import build_ready_receipt, get_workflow_status, set_stage
+    from .workflow_state import (
+        begin_model_analysis,
+        build_ready_receipt,
+        complete_model_analysis,
+        fail_model_analysis,
+        get_workflow_status,
+        set_stage,
+        WorkflowStateError,
+    )
 
 try:
     from analysis_facts import build_fact_index, load_selected_facts
+    from model_analysis_request import (
+        build_model_analysis_request,
+        validate_model_analysis_request,
+    )
     from analysis_prompt import build_prompt_packet
     from analysis_report import render_analysis_report
     from analysis_result import normalize_analysis_result, validate_analysis_result
     from analysis_spec import parse_analysis_spec
 except ImportError:
     from .analysis_facts import build_fact_index, load_selected_facts
+    from .model_analysis_request import (
+        build_model_analysis_request,
+        validate_model_analysis_request,
+    )
     from .analysis_prompt import build_prompt_packet
     from .analysis_report import render_analysis_report
     from .analysis_result import normalize_analysis_result, validate_analysis_result
@@ -598,51 +622,6 @@ def _print_batch_result(output_dir, facts_manifest):
     }, ensure_ascii=False, indent=2))
 
 
-def _draft_analysis_results(spec, selected_facts):
-    """Create a conservative offline handoff when no model result file is supplied."""
-    results = []
-    for section in spec.sections:
-        package = selected_facts["sections"].get(section, {})
-        records = package.get("records", [])
-        result = {"section": section, "findings": [], "gaps": [], "next_questions": []}
-        if not records:
-            result["gaps"].append("筛选后没有可用事实记录。")
-            results.append(result)
-            continue
-        record_indices = package.get("record_indices", list(range(len(records))))
-        first_index = record_indices[0] if record_indices else 0
-        ref = f"{package['path']}#/records/{first_index}"
-        if section == "material_ranking":
-            result["findings"].append({
-                "claim": f"事实包包含 {len(records)} 条榜单记录，首条记录排名为 {records[0].get('rank')}。",
-                "type": "fact", "confidence": "high", "fact_refs": [ref],
-            })
-        elif section == "audience":
-            result["findings"].append({
-                "claim": f"事实包包含 {len(records)} 条人群记录；标签分布需要基于记录进一步统计。",
-                "type": "fact", "confidence": "high", "fact_refs": [ref],
-            })
-        elif section == "highlight_frames":
-            result["findings"].append({
-                "claim": f"事实包包含 {len(records)} 个素材的高光帧记录；时间段与指标线索需按素材核验。",
-                "type": "fact", "confidence": "high", "fact_refs": [ref],
-            })
-        elif section == "script":
-            result["gaps"].append("脚本字段需检查可用性。")
-            for record in records:
-                availability = record.get("data_availability", {})
-                if any(
-                    isinstance(state, dict) and state.get("missing_reason") == "source_empty"
-                    for state in availability.values()
-                ):
-                    result["gaps"] = [
-                        "script_text、content_formula、script_segments 为 source_empty，脚本不可分析。"
-                    ]
-                    break
-        results.append(result)
-    return results
-
-
 def _load_analysis_results(path):
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if isinstance(payload, dict) and isinstance(payload.get("results"), list):
@@ -661,7 +640,7 @@ def _read_analysis_input(value):
     return value
 
 
-def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=None):
+def _analysis_context(run_dir, spec_path=None, input_payload=None):
     root = Path(run_dir)
     manifest_path = root / "facts" / "manifest.json"
     try:
@@ -683,7 +662,33 @@ def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=
     selected = load_selected_facts(root, spec)
     fact_index = build_fact_index(selected)
     packet = build_prompt_packet(spec, selected, fact_index)
-    results = _load_analysis_results(result_path) if result_path else _draft_analysis_results(spec, selected)
+    request = build_model_analysis_request(spec, selected, fact_index)
+    request_errors = validate_model_analysis_request(request)
+    if request_errors:
+        raise ValueError("ModelAnalysisRequest 校验失败: " + "; ".join(request_errors))
+    return {
+        "root": root,
+        "spec": spec,
+        "selected": selected,
+        "fact_index": fact_index,
+        "packet": packet,
+        "request": request,
+    }
+
+
+def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=None, *, context=None):
+    if not result_path:
+        raise ValueError(
+            "当前对话模型尚未返回 AnalysisResult；请先交接 ModelAnalysisRequest，"
+            "再使用 --analysis-result 回放结构化结果。"
+        )
+    context = context or _analysis_context(run_dir, spec_path, input_payload)
+    root = context["root"]
+    spec = context["spec"]
+    selected = context["selected"]
+    fact_index = context["fact_index"]
+    packet = context["packet"]
+    results = _load_analysis_results(result_path)
     normalized_results = [normalize_analysis_result(result) for result in results]
     result_errors = [
         error
@@ -699,6 +704,7 @@ def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=
         "analysis_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "facts_version": manifest.get("schema_version"),
         "prompt_version": packet["prompt_version"],
+        "request_version": 1,
         "fact_index": fact_index,
         "coverage": manifest.get("coverage", {}),
         "brand_classification": manifest.get("brand_classification", {}),
@@ -716,9 +722,42 @@ def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=
         "analysis_time": metadata["analysis_time"],
         "facts_version": metadata["facts_version"],
         "prompt_version": metadata["prompt_version"],
+        "request_type": "yuntu_commercial_analysis",
+        "request_version": 1,
         "results": normalized_results,
     }
-    return report, result_document, packet
+    return report, result_document, packet, context["request"]
+
+
+def _analysis_output_paths(output_path):
+    output = Path(output_path)
+    return {
+        "report": output,
+        "result": output.with_suffix(".analysis-result.json"),
+        "prompt": output.with_suffix(".prompt-packet.json"),
+        "request": output.with_suffix(".model-analysis-request.json"),
+        "error": output.with_suffix(".analysis-error.json"),
+    }
+
+
+def _write_analysis_handoff(output_path, request, packet):
+    paths = _analysis_output_paths(output_path)
+    paths["request"].parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomically(request, paths["request"])
+    write_json_atomically(packet, paths["prompt"])
+    return paths
+
+
+def _write_analysis_error(output_path, request, error):
+    paths = _analysis_output_paths(output_path)
+    write_json_atomically({
+        "request_type": request.get("request_type"),
+        "request_version": request.get("request_version"),
+        "analysis_id": request.get("analysis_id"),
+        "run_id": request.get("run_id"),
+        "error": str(error),
+    }, paths["error"])
+    return paths["error"]
 
 
 def _write_text_atomically(text, output_path):
@@ -819,19 +858,60 @@ def main(argv=None):
         if args.command == "analyze":
             if not args.input and not args.spec:
                 parser.error("analyze requires --input or legacy --spec")
-            report, result_document, packet = _analysis_pipeline(
-                args.run_dir,
-                args.spec,
-                args.analysis_result,
-                _read_analysis_input(args.input) if args.input else None,
-            )
-            _write_analysis_outputs(args.output, report, result_document, packet)
-            set_stage(args.run_dir, "analysis_running", analysis_id=result_document["analysis_id"])
-            set_stage(args.run_dir, "analysis_completed", analysis_id=result_document["analysis_id"])
+            input_payload = _read_analysis_input(args.input) if args.input else None
+            if not args.analysis_result:
+                context = _analysis_context(args.run_dir, args.spec, input_payload)
+                paths = _write_analysis_handoff(
+                    args.output, context["request"], context["packet"]
+                )
+                print(json.dumps({
+                    "status": "awaiting_model_analysis",
+                    "analysis_id": context["request"]["analysis_id"],
+                    "run_id": context["request"]["run_id"],
+                    "model_analysis_request_path": str(paths["request"]),
+                    "prompt_packet_path": str(paths["prompt"]),
+                    "model_analysis_request": context["request"],
+                    "host_handoff": {
+                        "protocol": "yuntu-current-conversation-model-v1",
+                        "model": "current_conversation_model",
+                        "request": context["request"],
+                        "response_schema": "AnalysisResult",
+                        "response_format": "JSON object or {\"results\": [...]} with no prose",
+                        "resume_with": "将模型返回的 JSON 保存后，使用同一 run-dir 和 --analysis-result 重新执行 analyze。",
+                    },
+                }, ensure_ascii=False, indent=2))
+                return 0
+
+            context = _analysis_context(args.run_dir, args.spec, input_payload)
+            request = context["request"]
+            _write_analysis_handoff(args.output, request, context["packet"])
+            begin_model_analysis(args.run_dir, request["analysis_id"])
+            try:
+                report, result_document, packet, _ = _analysis_pipeline(
+                    args.run_dir,
+                    args.spec,
+                    args.analysis_result,
+                    input_payload,
+                    context=context,
+                )
+                _write_analysis_outputs(args.output, report, result_document, packet)
+                complete_model_analysis(
+                    args.run_dir,
+                    _analysis_output_paths(args.output)["result"],
+                )
+            except Exception as exc:
+                try:
+                    fail_model_analysis(args.run_dir, request["analysis_id"], str(exc))
+                    _write_analysis_error(args.output, request, exc)
+                except WorkflowStateError:
+                    pass
+                raise
             print(json.dumps({
-                "report_path": str(Path(args.output)),
-                "analysis_result_path": str(Path(args.output).with_suffix(".analysis-result.json")),
-                "prompt_packet_path": str(Path(args.output).with_suffix(".prompt-packet.json")),
+                "status": "analysis_completed",
+                "report_path": str(_analysis_output_paths(args.output)["report"]),
+                "analysis_result_path": str(_analysis_output_paths(args.output)["result"]),
+                "model_analysis_request_path": str(_analysis_output_paths(args.output)["request"]),
+                "prompt_packet_path": str(_analysis_output_paths(args.output)["prompt"]),
             }, ensure_ascii=False, indent=2))
             return 0
         query = resolve_query_spec(json.loads(Path(args.query_spec).read_text(encoding="utf-8")))
@@ -849,7 +929,7 @@ def main(argv=None):
         facts_manifest = _build_facts_after_run(args.output_dir)
         _print_batch_result(args.output_dir, facts_manifest)
         return status
-    except (RpaConnectorError, ConfigSpecError, FactPackageError, ValueError, OSError, json.JSONDecodeError) as exc:
+    except (RpaConnectorError, ConfigSpecError, FactPackageError, WorkflowStateError, ValueError, OSError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
 

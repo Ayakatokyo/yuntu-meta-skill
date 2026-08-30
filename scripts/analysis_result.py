@@ -8,6 +8,7 @@ from typing import Any
 
 ALLOWED_TYPES = {"fact", "inference", "recommendation"}
 ALLOWED_CONFIDENCE = {"high", "medium", "low"}
+ALLOWED_SECTIONS = {"material_ranking", "audience", "script", "highlight_frames"}
 CAUSAL_MARKERS = ("导致", "因为", "原因是", "驱动", "造成", "促成", "带来", "说明了")
 BRAND_PROXY_MARKERS = ("标题识别品牌", "标签识别品牌", "品牌识别", "品牌归因", "推断品牌")
 
@@ -26,6 +27,11 @@ def _has_source_empty(value: Any, *, ignore_script_fields: bool = False) -> bool
     if isinstance(value, dict):
         availability = value.get("data_availability")
         if isinstance(availability, dict):
+            if (
+                availability.get("available") is False
+                and availability.get("missing_reason") == "source_empty"
+            ):
+                return True
             for field_name, state in availability.items():
                 if ignore_script_fields and field_name in {
                     "script_text", "content_formula", "script_segments", "selection_group"
@@ -64,7 +70,9 @@ def _record_has_empty_brand(record: Any) -> bool:
     return isinstance(state, dict) and state.get("available") is False
 
 
-def validate_analysis_result(result: dict, fact_index: dict) -> list[str]:
+def validate_analysis_result(
+    result: dict, fact_index: dict, allowed_sections: set[str] | None = None
+) -> list[str]:
     """Return gate failures; a non-empty list must prevent report rendering."""
     errors: list[str] = []
     try:
@@ -74,6 +82,8 @@ def validate_analysis_result(result: dict, fact_index: dict) -> list[str]:
     section = normalized.get("section")
     if not isinstance(section, str) or not section.strip():
         errors.append("section is required")
+    elif section not in (allowed_sections or ALLOWED_SECTIONS):
+        errors.append(f"section is not an allowed analysis module: {section}")
     findings = normalized.get("findings")
     if not isinstance(findings, list):
         return errors + ["findings must be an array"]
@@ -108,10 +118,11 @@ def validate_analysis_result(result: dict, fact_index: dict) -> list[str]:
                 referenced_records.append(fact_index[ref])
         if any(
             _has_source_empty(
-                record,
+                fact_index[ref],
                 ignore_script_fields="highlight-frames.json" in ref,
             )
-            for ref, record in zip(refs, referenced_records)
+            for ref in refs
+            if ref in fact_index
         ):
             errors.append(f"{prefix} references source_empty data; source_empty may only enter gaps")
         claim_text = claim if isinstance(claim, str) else ""

@@ -64,6 +64,12 @@ class AnalysisResultTests(unittest.TestCase):
         self.assertTrue(any("confidence" in error for error in errors))
         self.assertTrue(any("does not resolve" in error for error in errors))
 
+    def test_unknown_result_section_is_invalid(self):
+        errors = validate_analysis_result(
+            self.result(section="not_a_module"), FACT_INDEX
+        )
+        self.assertTrue(any("section" in error for error in errors))
+
     def test_source_empty_can_only_be_reported_as_gap(self):
         invalid = self.result(
             section="script",
@@ -118,6 +124,20 @@ class AnalysisResultTests(unittest.TestCase):
             findings=[self.finding("facts/script.json#/records/0", claim="脚本事实")],
         )
         self.assertTrue(any("source_empty" in error for error in validate_analysis_result(invalid, FACT_INDEX)))
+
+    def test_record_level_source_empty_is_rejected_from_findings(self):
+        fact_index = {
+            "facts/material-ranking.json#/records/0": {
+                "material_id": "101",
+                "data_availability": {"available": False, "missing_reason": "source_empty"},
+            }
+        }
+        invalid = self.result()
+
+        self.assertTrue(any(
+            "source_empty" in error
+            for error in validate_analysis_result(invalid, fact_index)
+        ))
 
 
 if __name__ == "__main__":

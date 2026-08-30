@@ -33,6 +33,9 @@ python scripts/collector.py build-facts --run-dir runs/example
 python -m scripts.collector analyze --run-dir runs/example --input analysis-input.json --output runs/example/analysis.md
 # 历史运行仍可使用旧 AnalysisSpec 入口
 python -m scripts.collector analyze --run-dir runs/example --spec analysis-spec.json --output runs/example/analysis.md
+# analyze 未传 --analysis-result 时只生成宿主交接包，不生成报告；当前对话模型返回 JSON 后回放
+python -m scripts.collector analyze --run-dir runs/example --input analysis-input.json \
+  --analysis-result runs/example/model-result.json --output runs/example/analysis.md
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
@@ -52,6 +55,6 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 
 进入阶段二时必须显式提供 `AnalysisInput`（自然语言问题或结构化 JSON），并选择一个或多个分析模块。`sections` 可选 `material_ranking`、`audience`、`script`、`highlight_frames`；`business_question` 必填，`material_filter.rank_range` 必须位于 1..1000；可选 `brand_filter` 只能取当前 facts manifest 的候选品牌或 `未知品牌`，不允许模型或调用方扩展范围。只有 `ready_for_analysis`（或可验证的历史事实包兼容状态）允许启动分析；未就绪、缺包、未知品牌/素材/指标均返回校验错误。编排器只加载所选事实包，先校验 manifest、包路径、记录数和源文件 SHA-256，再生成带 `fact_refs` 的 PromptPacket。阶段二不重新采集、不重新规范化、不重新分类。
 
-模型结果可通过 `--analysis-result` 传入；未传入时命令只生成保守的事实摘要和数据缺口，不能替代模型洞察。每条 `findings` 结论必须包含可解析的 `fact_refs`、合法的 `type` 和 `confidence`。`source_empty` 只能进入 `gaps`；当前脚本字段为空时不得用标题或标签代替脚本。`selection_group` 品牌字段为空时，标题/标签品牌识别只能标记为推断并降低置信度；标签关联和高光解释不得表述为因果。
+模型结果可通过 `--analysis-result` 传入，作为当前对话模型响应的离线回放/测试入口；未传入时命令只落盘 `*.model-analysis-request.json` 和 `*.prompt-packet.json`，返回 `awaiting_model_analysis` 宿主交接回执，不生成保守分析、结果或报告。宿主协议为 `yuntu-current-conversation-model-v1`：当前对话模型读取请求中的 `request`，只返回 `AnalysisResult` JSON（对象或 `{\"results\": [...]}`），再用同一运行目录和 `--analysis-result` 恢复。技能脚本不调用外部模型 API，也不启动独立模型。每条 `findings` 结论必须包含可解析的 `fact_refs`、合法的模块、`type` 和 `confidence`。`source_empty` 只能进入 `gaps`；当前脚本字段为空时不得用标题或标签代替脚本。`selection_group` 品牌字段为空时，标题/标签品牌识别只能标记为推断并降低置信度；标签关联和高光解释不得表述为因果。
 
-`analyze` 成功后在 `--output` 写入 Markdown 报告，并旁写 `<stem>.analysis-result.json` 和 `<stem>.prompt-packet.json`。报告固定包含执行摘要、范围方法、四类模块、跨模块观察、商业机会、动作建议、限制和事实引用附录；结果校验失败时不生成报告。
+`analyze` 在等待模型时旁写 `<stem>.model-analysis-request.json` 和 `<stem>.prompt-packet.json`；模型结果校验通过后才在 `--output` 写入 Markdown 报告，并旁写 `<stem>.analysis-result.json`。报告固定包含执行摘要、范围方法、四类模块、跨模块观察、商业机会、动作建议、限制和事实引用附录；结果校验失败时只保存 `<stem>.analysis-error.json`、保持运行可重试且不生成报告。

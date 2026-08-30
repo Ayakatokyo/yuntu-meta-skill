@@ -25,6 +25,11 @@ def build_prompt_packet(spec: AnalysisSpec, selected_facts: dict, fact_index: di
         section = sections.get(section_name)
         if isinstance(section, dict) and isinstance(section.get("path"), str):
             facts[section["path"]] = section.get("records", [])
+    selected_fact_refs = sorted(
+        ref
+        for ref in fact_index
+        if any(ref.startswith(f"{path}#") for path in facts)
+    )
     quality_gates = [
         "每条结论必须包含能定位到实际 JSON 记录的 fact_refs；无引用内容只能放入 gaps 或 next_questions。",
         "相关不等于因果；不得使用导致、原因、驱动等因果表述。",
@@ -49,7 +54,7 @@ def build_prompt_packet(spec: AnalysisSpec, selected_facts: dict, fact_index: di
         "business_question": spec.business_question,
         "sections": list(spec.sections),
         "facts": facts,
-        "fact_index_refs": sorted(fact_index),
+        "fact_index_refs": selected_fact_refs,
         "module_requirements": {
             section: MODULE_REQUIREMENTS[section] for section in spec.sections
         },

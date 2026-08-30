@@ -6,7 +6,10 @@ from pathlib import Path
 from scripts.workflow_state import (
     WorkflowStateError,
     build_ready_receipt,
+    begin_model_analysis,
+    complete_model_analysis,
     get_workflow_status,
+    fail_model_analysis,
     set_stage,
 )
 
@@ -64,6 +67,33 @@ class WorkflowStateTests(unittest.TestCase):
 
             status = get_workflow_status(root)
             self.assertEqual(status["status"], "analysis_running")
+
+    def test_model_analysis_helpers_persist_running_and_completed_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            set_stage(root, "ready_for_analysis")
+
+            running = begin_model_analysis(root, "request-1")
+            self.assertEqual(running["workflow"]["stage"], "analysis_running")
+            self.assertEqual(running["workflow"]["metadata"]["request_id"], "request-1")
+
+            result_path = root / "analysis.result.json"
+            result_path.write_text("{}", encoding="utf-8")
+            completed = complete_model_analysis(root, result_path)
+            self.assertEqual(completed["workflow"]["stage"], "analysis_completed")
+            self.assertEqual(completed["workflow"]["metadata"]["result_path"], str(result_path))
+
+    def test_failed_model_analysis_returns_to_ready_for_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            set_stage(root, "ready_for_analysis")
+            begin_model_analysis(root, "request-1")
+
+            failed = fail_model_analysis(root, "request-1", "invalid response")
+
+            self.assertEqual(failed["workflow"]["stage"], "ready_for_analysis")
+            self.assertEqual(get_workflow_status(root)["status"], "ready_for_analysis")
+            self.assertEqual(failed["workflow"]["metadata"]["error"], "invalid response")
 
     def test_ready_receipt_contains_coverage_packages_and_next_step(self):
         with tempfile.TemporaryDirectory() as directory:

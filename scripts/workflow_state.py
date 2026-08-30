@@ -191,7 +191,8 @@ def set_stage(run_root: Path, stage: str, **metadata) -> dict:
         raise WorkflowStateError(f"cannot transition from {current} to {stage}")
     if stage in _STAGE_INDEX and current in _STAGE_INDEX:
         repeat_analysis = current == "analysis_completed" and stage == "analysis_running"
-        if _STAGE_INDEX[stage] < _STAGE_INDEX[current] and not repeat_analysis:
+        retry_analysis = current == "analysis_running" and stage == "ready_for_analysis"
+        if _STAGE_INDEX[stage] < _STAGE_INDEX[current] and not (repeat_analysis or retry_analysis):
             raise WorkflowStateError(f"workflow stage cannot move backward: {current} -> {stage}")
     if current == "not_started" and stage != "collecting":
         raise WorkflowStateError(f"workflow must start at collecting, not {stage}")
@@ -225,6 +226,42 @@ def set_stage(run_root: Path, stage: str, **metadata) -> dict:
     save_run_state(summary, root / RUN_SUMMARY_NAME)
     _refresh_legacy_summary_artifact(root)
     return summary
+
+
+def begin_model_analysis(run_root: Path, request_id: str) -> dict:
+    """Move a ready run into model execution for one request."""
+    if not isinstance(request_id, str) or not request_id.strip():
+        raise WorkflowStateError("request_id is required")
+    status = get_workflow_status(run_root)
+    if status["stage"] not in {"ready_for_analysis", "analysis_completed"}:
+        raise WorkflowStateError(
+            "model analysis requires ready_for_analysis or analysis_completed"
+        )
+    return set_stage(Path(run_root), "analysis_running", request_id=request_id.strip())
+
+
+def complete_model_analysis(run_root: Path, result_path: Path) -> dict:
+    """Persist successful model completion metadata after local validation."""
+    path = Path(result_path)
+    if not path.is_file():
+        raise WorkflowStateError(f"analysis result is missing: {path}")
+    status = get_workflow_status(run_root)
+    if status["stage"] != "analysis_running":
+        raise WorkflowStateError("model analysis is not running")
+    return set_stage(Path(run_root), "analysis_completed", result_path=str(path))
+
+
+def fail_model_analysis(run_root: Path, request_id: str, error: str) -> dict:
+    """Return a failed model attempt to a ready, retryable run."""
+    status = get_workflow_status(run_root)
+    if status["stage"] != "analysis_running":
+        raise WorkflowStateError("model analysis is not running")
+    return set_stage(
+        Path(run_root),
+        "ready_for_analysis",
+        request_id=request_id,
+        error=str(error),
+    )
 
 
 def get_workflow_status(run_root: Path) -> dict:

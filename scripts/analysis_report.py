@@ -7,10 +7,10 @@ import json
 from typing import Any
 
 try:
-    from .analysis_result import normalize_analysis_result, validate_analysis_result
+    from .analysis_result import ALLOWED_SECTIONS, normalize_analysis_result, validate_analysis_result
     from .analysis_spec import AnalysisSpec
 except ImportError:  # pragma: no cover - direct collector execution
-    from analysis_result import normalize_analysis_result, validate_analysis_result
+    from analysis_result import ALLOWED_SECTIONS, normalize_analysis_result, validate_analysis_result
     from analysis_spec import AnalysisSpec
 
 
@@ -98,19 +98,20 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
     if missing:
         raise ValueError("报告元数据缺失: " + ", ".join(missing))
     fact_index = metadata["fact_index"]
-    errors: list[str] = []
-    normalized_results: list[dict] = []
-    for result in results:
-        normalized = normalize_analysis_result(result)
-        errors.extend(validate_analysis_result(normalized, fact_index))
-        normalized_results.append(normalized)
-    if errors:
-        raise ValueError("校验失败，禁止渲染报告: " + "; ".join(errors))
-
     selected = set(spec.sections)
     custom_names = [item if isinstance(item, str) else item["name"] for item in spec.custom_sections]
     custom_names = [name for name in custom_names if isinstance(name, str) and name.strip()]
     allowed = selected | set(custom_names)
+    result_modules = ALLOWED_SECTIONS | set(custom_names)
+    errors: list[str] = []
+    normalized_results: list[dict] = []
+    for result in results:
+        normalized = normalize_analysis_result(result)
+        errors.extend(validate_analysis_result(normalized, fact_index, result_modules))
+        normalized_results.append(normalized)
+    if errors:
+        raise ValueError("校验失败，禁止渲染报告: " + "; ".join(errors))
+
     unknown = sorted({result["section"] for result in normalized_results if result.get("section") not in allowed})
     if unknown:
         raise ValueError("报告包含未选择的结果章节: " + ", ".join(unknown))
@@ -147,7 +148,7 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
         f"- analysis_id：`{spec.analysis_id}`",
         f"- run_id：`{metadata['run_id']}`",
         f"- 分析时间：`{generated_at}`",
-        f"- 事实包版本：`{metadata['facts_version']}`；提示词版本：`{metadata['prompt_version']}`",
+        f"- 事实包版本：`{metadata['facts_version']}`；提示词版本：`{metadata['prompt_version']}`；模型请求版本：`{metadata.get('request_version', 1)}`",
         f"- 选择模块：{', '.join(spec.sections)}；商业问题：{spec.business_question}",
         f"- 样本覆盖：`{coverage}`",
         f"- 品牌筛选：{', '.join(spec.filters.get('brand_filter', ())) or '未指定'}",

@@ -34,10 +34,10 @@
 - `collect` 成功返回 ready 回执，不创建分析产物。
 - `get_workflow_status(run_root: Path) -> dict`
 
-- [ ] 测试阶段一成功时不存在 PromptPacket、AnalysisResult 和报告文件。
-- [ ] 测试 partial/failed 运行拒绝进入分析。
-- [ ] 实现阶段边界检查并保留历史命令兼容。
-- [ ] 运行两阶段状态测试。
+- [x] 测试阶段一成功时不存在 PromptPacket、AnalysisResult 和报告文件。
+- [x] 测试 partial/failed 运行拒绝进入分析。
+- [x] 实现阶段边界检查并保留历史命令兼容。
+- [x] 运行两阶段状态测试。
 
 ### Task 2: 定义 ModelAnalysisRequest
 
@@ -50,15 +50,15 @@
 - `build_model_analysis_request(spec: AnalysisSpec, selected_facts: dict, fact_index: dict) -> dict`
 - `validate_model_analysis_request(request: dict) -> list[str]`
 
-- [ ] 测试请求包含用户问题、分析规格、筛选事实、索引和响应 schema。
-- [ ] 测试未选择事实包不出现在请求中。
-- [ ] 测试脚本、品牌代理和非因果质量规则被写入请求。
-- [ ] 运行请求协议测试。
+- [x] 测试请求包含用户问题、分析规格、筛选事实、索引和响应 schema。
+- [x] 测试未选择事实包不出现在请求中。
+- [x] 测试脚本、品牌代理和非因果质量规则被写入请求。
+- [x] 运行请求协议测试。
 
 ### 阶段一验收
 
-- [ ] 用真实运行目录确认 collect 后停在 ready，不产生 AI 分析结果。
-- [ ] 请求包可被宿主直接转发给当前对话模型。
+- [x] 用真实运行目录确认 collect 后停在 ready，不产生 AI 分析结果。
+- [x] 请求包可被宿主直接转发给当前对话模型。
 
 ## 阶段二：当前模型交接与结果落盘
 
@@ -74,10 +74,10 @@
 - `begin_model_analysis(run_root: Path, request_id: str) -> dict`
 - `complete_model_analysis(run_root: Path, result_path: Path) -> dict`
 
-- [ ] 测试 ready → analysis_running → analysis_completed 状态流转。
-- [ ] 测试模型失败回到可重试状态且不生成报告。
-- [ ] 测试同一运行可再次提交新的 request_id。
-- [ ] 运行状态回归测试。
+- [x] 测试 ready → analysis_running → analysis_completed 状态流转。
+- [x] 测试模型失败回到可重试状态且不生成报告。
+- [x] 测试同一运行可再次提交新的 request_id。
+- [x] 运行状态回归测试。
 
 ### Task 4: 接入 AnalysisResult 校验和持久化
 
@@ -86,15 +86,15 @@
 - Modify: `scripts/collector.py`
 - Test: `tests/test_analysis_result.py`
 
-- [ ] 校验模型返回 JSON、章节、结论类型、置信度和 fact_refs。
-- [ ] 拒绝无引用、越界引用、脚本虚构和品牌范围扩展。
-- [ ] 保存 request、result、错误信息和版本元数据。
-- [ ] 运行结果层完整测试。
+- [x] 校验模型返回 JSON、章节、结论类型、置信度和 fact_refs。
+- [x] 拒绝无引用、越界引用、脚本虚构和品牌范围扩展。
+- [x] 保存 request、result、错误信息和版本元数据。
+- [x] 运行结果层完整测试。
 
 ### 阶段二验收
 
-- [ ] 使用模拟当前模型响应完成一次结构化结果落盘。
-- [ ] 模拟模型失败时不生成报告、不伪造洞察。
+- [x] 使用模拟当前模型响应完成一次结构化结果落盘。
+- [x] 模拟模型失败时不生成报告、不伪造洞察。
 
 ## 阶段三：自动编排与端到端验证
 
@@ -105,10 +105,10 @@
 - Modify: `scripts/collector.py`
 - Test: `tests/test_collector.py`
 
-- [ ] 阶段二入口在解析 AnalysisInput 后输出 ModelAnalysisRequest 交接内容。
-- [ ] 明确由当前对话模型生成 AnalysisResult，禁止外部 API。
-- [ ] 保留 `--analysis-result` 作为离线回放和测试入口。
-- [ ] 运行 CLI 相关测试。
+- [x] 阶段二入口在解析 AnalysisInput 后输出 ModelAnalysisRequest 交接内容。
+- [x] 明确由当前对话模型生成 AnalysisResult，禁止外部 API。
+- [x] 保留 `--analysis-result` 作为离线回放和测试入口。
+- [x] 运行 CLI 相关测试。
 
 ### Task 6: 真实目录端到端回归
 
@@ -116,20 +116,19 @@
 - Modify: `tests/test_two_phase_workflow.py`
 - Create: `tests/fixtures/model-analysis-result-real.json`
 
-- [ ] 阶段一验证 `food-beverage-2026-0810-0820` 停在 ready。
-- [ ] 阶段二输入分析思路，生成请求包并用模拟模型响应完成结果和报告。
-- [ ] 验证所有 finding 有 fact_refs，脚本缺口和品牌限制存在。
-- [ ] 运行完整测试：`pytest -q`。
+- [x] 阶段一验证 `food-beverage-2026-0810-0820` 停在 ready。
+- [x] 阶段二输入分析思路，生成请求包并用模拟模型响应完成结果和报告。
+- [x] 验证所有 finding 有 fact_refs，脚本缺口和品牌限制存在。
+- [x] 运行完整测试：`pytest -q`。
 
 ### 阶段三验收
 
-- [ ] 用户体验为“第一次采集后停止，第二次输入思路后分析并出报告”。
-- [ ] 同一运行可重复分析，不重新触发采集。
-- [ ] 失败可恢复且不产生不完整报告。
+- [x] 用户体验为“第一次采集后停止，第二次输入思路后分析并出报告”。
+- [x] 同一运行可重复分析，不重新触发采集。
+- [x] 失败可恢复且不产生不完整报告。
 
 ## 完成标准
 
-- [ ] 三阶段测试全部通过。
-- [ ] 真实目录端到端验证通过。
-- [ ] 文档、CLI、状态机和模型交接协议一致。
-
+- [x] 三阶段测试全部通过。
+- [x] 真实目录端到端验证通过。
+- [x] 文档、CLI、状态机和模型交接协议一致。

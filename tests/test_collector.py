@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import collector
-from scripts.analysis_spec import parse_analysis_spec
 
 
 ROOT = Path(__file__).resolve().parent
@@ -64,7 +63,20 @@ class CollectorTests(unittest.TestCase):
                 "filters": {"rank_range": [1, 1]},
             }), encoding="utf-8")
             output = root / "analysis.md"
-            status = collector.main(["analyze", "--run-dir", str(root), "--spec", str(spec_path), "--output", str(output)])
+            result_path = root / "model-result.json"
+            result_path.write_text(json.dumps({
+                "section": "material_ranking",
+                "findings": [{
+                    "claim": "排名为1",
+                    "type": "fact",
+                    "confidence": "high",
+                    "fact_refs": ["facts/material-ranking.json#/records/0"],
+                }],
+            }), encoding="utf-8")
+            status = collector.main([
+                "analyze", "--run-dir", str(root), "--spec", str(spec_path),
+                "--analysis-result", str(result_path), "--output", str(output),
+            ])
 
             self.assertEqual(status, 0)
             self.assertTrue(output.is_file())
@@ -100,6 +112,19 @@ class CollectorTests(unittest.TestCase):
             root = Path(directory)
             self._write_phase_two_run(root)
             output = root / "analysis.md"
+            result_path = root / "model-result.json"
+            result_path.write_text(json.dumps({"results": [
+                {
+                    "section": "material_ranking",
+                    "findings": [{
+                        "claim": "排名为1",
+                        "type": "fact",
+                        "confidence": "high",
+                        "fact_refs": ["facts/material-ranking.json#/records/0"],
+                    }],
+                },
+                {"section": "audience", "findings": [], "gaps": ["数据不足"]},
+            ]}), encoding="utf-8")
             with mock.patch.object(collector, "fetch_batch") as fetch, \
                     mock.patch.object(collector, "build_fact_packages") as build:
                 status = collector.main([
@@ -110,6 +135,7 @@ class CollectorTests(unittest.TestCase):
                         "material_filter": {"rank_range": [1, 1]},
                         "business_question": "比较素材和人群",
                     }, ensure_ascii=False),
+                    "--analysis-result", str(result_path),
                     "--output", str(output),
                 ])
 
@@ -119,6 +145,35 @@ class CollectorTests(unittest.TestCase):
             self.assertFalse(build.called)
             summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["workflow"]["stage"], "analysis_completed")
+
+    def test_analyze_without_model_result_persists_handoff_without_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_phase_two_run(root)
+            output = root / "analysis.md"
+            with mock.patch("builtins.print") as printer:
+                status = collector.main([
+                    "analyze", "--run-dir", str(root),
+                    "--input", json.dumps({
+                        "sections": ["material_ranking"],
+                        "material_filter": {"rank_range": [1, 1]},
+                        "business_question": "比较素材",
+                    }, ensure_ascii=False),
+                    "--output", str(output),
+                ])
+
+            self.assertEqual(status, 0)
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".analysis-result.json").exists())
+            request_path = output.with_suffix(".model-analysis-request.json")
+            self.assertTrue(request_path.is_file())
+            request = json.loads(request_path.read_text(encoding="utf-8"))
+            self.assertEqual(request["response_schema"], "AnalysisResult")
+            self.assertEqual(request["analysis_spec"]["business_question"], "比较素材")
+            response = json.loads(printer.call_args.args[0])
+            self.assertEqual(response["status"], "awaiting_model_analysis")
+            self.assertEqual(response["model_analysis_request_path"], str(request_path))
+            self.assertEqual(json.loads((root / "run-summary.json").read_text(encoding="utf-8"))["status"], "ready_for_analysis")
 
     def test_analyze_rejects_phase_two_input_before_ready(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -139,28 +194,6 @@ class CollectorTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.code, 2)
             self.assertFalse(output.exists())
-
-    def test_draft_analysis_uses_original_selected_record_index_for_fact_refs(self):
-        spec = parse_analysis_spec({
-            "analysis_id": "analysis-1",
-            "run_id": "run-1",
-            "sections": ["highlight_frames"],
-            "business_question": "检查指定素材的高光帧",
-        })
-        selected = {"sections": {
-            "highlight_frames": {
-                "path": "facts/highlight-frames.json",
-                "records": [{"material_id": "7668663443726172214", "frames": []}],
-                "record_indices": [3],
-            },
-        }}
-
-        result = collector._draft_analysis_results(spec, selected)
-
-        self.assertEqual(
-            result[0]["findings"][0]["fact_refs"],
-            ["facts/highlight-frames.json#/records/3"],
-        )
 
     def test_invalid_analysis_result_does_not_leave_run_in_analysis_running(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -192,6 +225,8 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, 2)
             summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["status"], "ready_for_analysis")
+            self.assertTrue((root / "analysis.analysis-error.json").is_file())
+            self.assertFalse((root / "analysis.analysis-result.json").exists())
 
     def test_analyze_does_not_write_report_when_result_fails_validation(self):
         with tempfile.TemporaryDirectory() as directory:
