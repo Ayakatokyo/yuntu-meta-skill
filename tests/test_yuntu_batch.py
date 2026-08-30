@@ -89,6 +89,75 @@ def highlight_spec():
 
 
 class YuntuBatchTests(unittest.TestCase):
+    def _write_collection_state(self, root, status="success"):
+        batch = load_batch()
+        contract = batch.run_state.collection_contract(
+            shop_id="shop-42",
+            list_params={},
+            detail_date_params={"date_range_type": "LAST_7_DAYS"},
+            target_top_n=1,
+            candidate_top_n=1000,
+        )
+        summary = batch.run_state.new_collection_summary(contract)
+        summary["status"] = status
+        batch.run_state.save_run_state(summary, root / "run-summary.json")
+        (root / "batch-manifest.json").write_text(
+            json.dumps({"status": status}), encoding="utf-8"
+        )
+
+    def _write_complete_facts(self, root):
+        facts = root / "facts"
+        facts.mkdir(parents=True, exist_ok=True)
+        packages = {
+            "material_ranking": "material-ranking.json",
+            "audience": "audience.json",
+            "script": "script.json",
+            "highlight_frames": "highlight-frames.json",
+        }
+        manifest = {"schema_version": 1, "packages": {}}
+        for name, filename in packages.items():
+            (facts / filename).write_text(
+                json.dumps({"schema_version": 1, "records": []}), encoding="utf-8"
+            )
+            manifest["packages"][name] = {
+                "path": f"facts/{filename}", "record_count": 0
+            }
+        (facts / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_collection_status_reports_complete_facts(self):
+        batch = load_batch()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_collection_state(root)
+            self._write_complete_facts(root)
+
+            status = batch.collection_status(output_dir=root)
+
+        self.assertEqual(status["facts_status"], "complete")
+
+    def test_collection_status_reports_missing_facts_manifest(self):
+        batch = load_batch()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_collection_state(root)
+
+            status = batch.collection_status(output_dir=root)
+
+        self.assertEqual(status["facts_status"], "missing")
+
+    def test_collection_status_reports_invalid_facts_manifest(self):
+        batch = load_batch()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_collection_state(root)
+            facts = root / "facts"
+            facts.mkdir()
+            (facts / "manifest.json").write_text("{broken", encoding="utf-8")
+
+            status = batch.collection_status(output_dir=root)
+
+        self.assertEqual(status["facts_status"], "invalid")
+
     def test_list_context_accepts_platform_ctr_alias(self):
         batch = load_batch()
         result = batch._validate_list_context(

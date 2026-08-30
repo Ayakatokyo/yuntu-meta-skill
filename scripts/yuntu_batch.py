@@ -49,6 +49,12 @@ class YuntuBatchError(RuntimeError):
 
 DETAIL_WAVE_CONCURRENCY = 2
 HIGHLIGHT_CONCURRENCY = 3
+FACT_PACKAGE_NAMES = (
+    "material_ranking",
+    "audience",
+    "script",
+    "highlight_frames",
+)
 SELECTION_GROUP_FIELDS = {
     "selectionGroupId": "id",
     "brandId": "brand_id",
@@ -688,6 +694,52 @@ def _selected_entry(manifest, material_id):
     )
 
 
+def _facts_status(root):
+    """Validate fact-package artifacts without rewriting the run directory."""
+    manifest_path = root / "facts" / "manifest.json"
+    if not manifest_path.is_file():
+        return "missing"
+    try:
+        manifest = _load_json(manifest_path)
+        if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+            return "invalid"
+        packages = manifest.get("packages")
+        if not isinstance(packages, dict):
+            return "invalid"
+        for name in FACT_PACKAGE_NAMES:
+            package = packages.get(name)
+            if not isinstance(package, dict):
+                return "invalid"
+            relative_path = package.get("path")
+            record_count = package.get("record_count")
+            if (
+                not isinstance(relative_path, str)
+                or not relative_path
+                or isinstance(record_count, bool)
+                or not isinstance(record_count, int)
+                or record_count < 0
+            ):
+                return "invalid"
+            package_path = (root / relative_path).resolve()
+            try:
+                package_path.relative_to(root.resolve())
+            except ValueError:
+                return "invalid"
+            if not package_path.is_file():
+                return "invalid"
+            payload = _load_json(package_path)
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema_version") != 1
+                or not isinstance(payload.get("records"), list)
+                or len(payload["records"]) != record_count
+            ):
+                return "invalid"
+    except (OSError, ValueError, TypeError):
+        return "invalid"
+    return "complete"
+
+
 def _sync_postprocess_counts(summary, manifest):
     detail_stage = summary["stages"]["details"]
     detail_stage["postprocessSubmittedCount"] = sum(
@@ -999,6 +1051,7 @@ def collection_status(*, output_dir):
     detail_stage = stages.get("details") if isinstance(stages.get("details"), dict) else {}
     return {
         "status": summary.get("status") or manifest.get("status") or "not_started",
+        "facts_status": _facts_status(root),
         "runId": summary.get("runId") or manifest.get("runId"),
         "parameterFingerprint": summary.get("parameterFingerprint"),
         "collectionContract": summary.get("collectionContract"),
