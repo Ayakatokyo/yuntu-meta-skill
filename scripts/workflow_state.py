@@ -1,0 +1,313 @@
+"""Two-phase workflow state and ready-receipt helpers for Yuntu runs."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import tempfile
+import uuid
+
+try:
+    from .rpa_io import write_json_atomically
+    from .yuntu_run_state import load_run_state, save_run_state, sha256_file
+except ImportError:  # pragma: no cover - direct script imports
+    from rpa_io import write_json_atomically
+    from yuntu_run_state import load_run_state, save_run_state, sha256_file
+
+
+WORKFLOW_PROTOCOL_VERSION = "yuntu-two-phase-v1"
+RUN_SUMMARY_NAME = "run-summary.json"
+FACT_PACKAGE_NAMES = (
+    "material_ranking",
+    "audience",
+    "script",
+    "highlight_frames",
+)
+COLLECTION_STAGES = (
+    "collecting",
+    "normalizing",
+    "fact_packaging",
+    "brand_classifying",
+    "ready_for_analysis",
+)
+ANALYSIS_STAGES = ("analysis_running", "analysis_completed")
+FAILURE_STAGES = ("partial", "failed")
+WORKFLOW_STAGES = set(COLLECTION_STAGES) | set(ANALYSIS_STAGES) | set(FAILURE_STAGES)
+_STAGE_INDEX = {
+    stage: index for index, stage in enumerate(COLLECTION_STAGES + ANALYSIS_STAGES)
+}
+
+
+class WorkflowStateError(RuntimeError):
+    """Raised when a workflow state transition or receipt is invalid."""
+
+
+def _read_json(path: Path):
+    with path.open(encoding="utf-8") as source:
+        return json.load(source)
+
+
+def _manifest_is_complete(root: Path) -> bool:
+    path = root / "facts" / "manifest.json"
+    if not path.is_file():
+        return False
+    try:
+        manifest = _read_json(path)
+        packages = manifest.get("packages") if isinstance(manifest, dict) else None
+        if not isinstance(packages, dict):
+            return False
+        for name in FACT_PACKAGE_NAMES:
+            package = packages.get(name)
+            if not isinstance(package, dict):
+                return False
+            relative = package.get("path")
+            count = package.get("record_count")
+            if (
+                not isinstance(relative, str)
+                or not relative.strip()
+                or isinstance(count, bool)
+                or not isinstance(count, int)
+                or count < 0
+            ):
+                return False
+            package_path = (root / relative).resolve()
+            try:
+                package_path.relative_to(root.resolve())
+            except ValueError:
+                return False
+            if not package_path.is_file():
+                return False
+            payload = _read_json(package_path)
+            if not isinstance(payload, dict) or not isinstance(payload.get("records"), list):
+                return False
+            if len(payload["records"]) != count:
+                return False
+        return True
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+
+
+def _legacy_fact_manifest_exists(root: Path) -> bool:
+    """Recognize pre-protocol runs that only persisted the historical manifest."""
+    path = root / "facts" / "manifest.json"
+    if not path.is_file():
+        return False
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return False
+    packages = payload.get("packages") if isinstance(payload, dict) else None
+    return isinstance(packages, dict) and bool(packages)
+
+
+def _legacy_stage(root: Path, summary: dict | None = None) -> str:
+    summary = summary or {}
+    workflow = summary.get("workflow")
+    if isinstance(workflow, dict) and workflow.get("stage") in WORKFLOW_STAGES:
+        return workflow["stage"]
+    if summary.get("workflowStage") in WORKFLOW_STAGES:
+        return summary["workflowStage"]
+    status = summary.get("status")
+    if status in WORKFLOW_STAGES:
+        return status
+    if status in {"list_failed", "list_context_mismatch"}:
+        return "failed"
+    if status == "success" and _manifest_is_complete(root):
+        return "ready_for_analysis"
+    if _manifest_is_complete(root) or (
+        not summary and _legacy_fact_manifest_exists(root)
+    ):
+        return "ready_for_analysis"
+    if status == "partial":
+        return "partial"
+    if status == "failed":
+        return "failed"
+    return "not_started"
+
+
+def _load_or_create_summary(root: Path) -> dict:
+    path = root / RUN_SUMMARY_NAME
+    if path.is_file():
+        try:
+            summary = load_run_state(path)
+        except Exception as exc:
+            raise WorkflowStateError(f"unable to load workflow state: {path}") from exc
+        return summary
+
+    run_id = None
+    for candidate in (root / "batch-manifest.json", root / "facts" / "manifest.json"):
+        if candidate.is_file():
+            try:
+                payload = _read_json(candidate)
+            except (OSError, ValueError, TypeError):
+                payload = {}
+            if isinstance(payload, dict):
+                run_id = payload.get("runId") or payload.get("run_id")
+                if run_id:
+                    break
+    return {
+        "schemaVersion": 3,
+        "runId": run_id or uuid.uuid4().hex,
+        "status": "collecting",
+    }
+
+
+def _refresh_legacy_summary_artifact(root: Path) -> None:
+    """Keep old manifests valid when the mutable workflow summary is updated."""
+    manifest_path = root / "facts" / "manifest.json"
+    if not manifest_path.is_file():
+        return
+    try:
+        manifest = _read_json(manifest_path)
+    except (OSError, ValueError, TypeError):
+        return
+    artifacts = manifest.get("source_artifacts")
+    if not isinstance(artifacts, list):
+        return
+    summary_path = root / RUN_SUMMARY_NAME
+    for artifact in artifacts:
+        if not isinstance(artifact, dict) or artifact.get("path") != RUN_SUMMARY_NAME:
+            continue
+        if not summary_path.is_file():
+            return
+        artifact["size_bytes"] = summary_path.stat().st_size
+        artifact["sha256"] = sha256_file(summary_path)
+        write_json_atomically(manifest, manifest_path)
+        return
+
+
+def set_stage(run_root: Path, stage: str, **metadata) -> dict:
+    """Persist a monotonic workflow stage while retaining existing run fields."""
+    root = Path(run_root)
+    if stage not in WORKFLOW_STAGES:
+        raise WorkflowStateError(f"unsupported workflow stage: {stage}")
+    root.mkdir(parents=True, exist_ok=True)
+    summary = _load_or_create_summary(root)
+    current = _legacy_stage(root, summary)
+
+    if current in FAILURE_STAGES and stage not in FAILURE_STAGES + ("collecting",):
+        raise WorkflowStateError(f"cannot transition from {current} to {stage}")
+    if stage in _STAGE_INDEX and current in _STAGE_INDEX:
+        repeat_analysis = current == "analysis_completed" and stage == "analysis_running"
+        if _STAGE_INDEX[stage] < _STAGE_INDEX[current] and not repeat_analysis:
+            raise WorkflowStateError(f"workflow stage cannot move backward: {current} -> {stage}")
+    if current == "not_started" and stage != "collecting":
+        raise WorkflowStateError(f"workflow must start at collecting, not {stage}")
+
+    previous_status = summary.get("status")
+    if previous_status not in WORKFLOW_STAGES and previous_status:
+        summary.setdefault("collectionStatus", previous_status)
+    workflow = summary.get("workflow")
+    if not isinstance(workflow, dict):
+        workflow = {}
+    history = workflow.get("history")
+    if not isinstance(history, list):
+        history = []
+    event = {
+        "stage": stage,
+        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    event.update(metadata)
+    history.append(event)
+    workflow.update({
+        "protocol_version": WORKFLOW_PROTOCOL_VERSION,
+        "stage": stage,
+        "history": history,
+    })
+    if metadata:
+        workflow["metadata"] = dict(metadata)
+    summary["workflow"] = workflow
+    summary["workflowProtocolVersion"] = WORKFLOW_PROTOCOL_VERSION
+    summary["workflowStage"] = stage
+    summary["status"] = stage
+    save_run_state(summary, root / RUN_SUMMARY_NAME)
+    _refresh_legacy_summary_artifact(root)
+    return summary
+
+
+def get_workflow_status(run_root: Path) -> dict:
+    """Read workflow status, inferring a ready legacy state without mutation."""
+    root = Path(run_root)
+    summary_path = root / RUN_SUMMARY_NAME
+    summary = {}
+    if summary_path.is_file():
+        try:
+            summary = load_run_state(summary_path)
+        except Exception:
+            return {
+                "status": "failed",
+                "stage": "failed",
+                "ready_for_analysis": False,
+                "run_id": None,
+                "error": "run summary is unreadable",
+            }
+    stage = _legacy_stage(root, summary)
+    return {
+        "status": stage,
+        "stage": stage,
+        "ready_for_analysis": stage == "ready_for_analysis",
+        "run_id": summary.get("runId") or summary.get("run_id"),
+        "summary_path": str(summary_path) if summary_path.is_file() else None,
+        "collection_status": summary.get("collectionStatus") or summary.get("status"),
+        "summary": summary,
+    }
+
+
+def _script_availability(root: Path, manifest: dict) -> dict:
+    package = manifest.get("packages", {}).get("script", {})
+    relative = package.get("path") if isinstance(package, dict) else None
+    if not isinstance(relative, str):
+        return {"record_count": 0, "source_empty_fields": []}
+    try:
+        records = _read_json(root / relative).get("records", [])
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return {"record_count": 0, "source_empty_fields": []}
+    fields = set()
+    for record in records:
+        availability = record.get("data_availability", {}) if isinstance(record, dict) else {}
+        for field, state in availability.items():
+            if isinstance(state, dict) and state.get("missing_reason") == "source_empty":
+                fields.add(field)
+    return {"record_count": len(records), "source_empty_fields": sorted(fields)}
+
+
+def build_ready_receipt(run_root: Path) -> dict:
+    """Build the user-facing handoff from persisted facts and workflow state."""
+    root = Path(run_root)
+    status = get_workflow_status(root)
+    manifest = {}
+    manifest_path = root / "facts" / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            manifest = _read_json(manifest_path)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            manifest = {}
+    packages = manifest.get("packages", {}) if isinstance(manifest, dict) else {}
+    fact_packages = {
+        name: package.get("path")
+        for name, package in packages.items()
+        if name in FACT_PACKAGE_NAMES and isinstance(package, dict) and isinstance(package.get("path"), str)
+    }
+    receipt = {
+        "status": status["status"],
+        "stage": status["stage"],
+        "ready_for_analysis": status["ready_for_analysis"] and _manifest_is_complete(root),
+        "run_id": status.get("run_id") or manifest.get("run_id"),
+        "coverage": manifest.get("coverage", {}) if isinstance(manifest, dict) else {},
+        "fact_packages": fact_packages,
+        "available_modules": [name for name in FACT_PACKAGE_NAMES if name in fact_packages],
+        "brand_classification": manifest.get("brand_classification", {}) if isinstance(manifest, dict) else {},
+        "script_availability": _script_availability(root, manifest) if manifest else {"record_count": 0, "source_empty_fields": []},
+        "data_gaps": [],
+        "next_step": "数据已准备完成，请选择分析内容、品牌/素材范围、指标和商业问题。"
+        if status["status"] == "ready_for_analysis" and _manifest_is_complete(root)
+        else "采集或事实准备尚未完成，请先补齐可用数据。",
+    }
+    brand_metadata = receipt["brand_classification"]
+    if isinstance(brand_metadata, dict) and brand_metadata.get("unknown_count", 0):
+        receipt["data_gaps"].append("存在未知品牌记录；品牌识别仅限运行时候选范围。")
+    for field in receipt["script_availability"]["source_empty_fields"]:
+        receipt["data_gaps"].append(f"脚本字段 {field} 为 source_empty，不能据此生成脚本结论。")
+    return receipt

@@ -27,6 +27,11 @@ class AnalysisSpec:
     report_mode: str = "standard"
     custom_sections: tuple[Any, ...] = ()
 
+    @property
+    def brand_filter(self) -> tuple[str, ...]:
+        """Expose the phase-two brand scope without breaking nested filters."""
+        return tuple(self.filters.get("brand_filter", ()))
+
     def to_dict(self) -> dict[str, Any]:
         filters = dict(self.filters)
         if "rank_range" in filters:
@@ -99,6 +104,22 @@ def parse_analysis_spec(payload: dict) -> AnalysisSpec:
     """Parse a JSON-compatible payload without silently widening its scope."""
     if not isinstance(payload, dict):
         raise ValueError("analysis spec must be an object")
+    payload = dict(payload)
+    filters = payload.get("filters", {})
+    if filters is None:
+        filters = {}
+    if not isinstance(filters, dict):
+        raise ValueError("filters must be an object")
+    filters = dict(filters)
+    if "material_filter" in payload:
+        material_filter = payload["material_filter"]
+        if not isinstance(material_filter, dict):
+            raise ValueError("material_filter must be an object")
+        filters.update(material_filter)
+    if "brand_filter" in payload:
+        if "brand_filter" in filters and filters["brand_filter"] != payload["brand_filter"]:
+            raise ValueError("brand_filter is specified twice with different values")
+        filters["brand_filter"] = payload["brand_filter"]
     sections = _string_tuple(payload.get("sections"), "sections", allow_empty=False)
     unsupported = set(sections) - set(AVAILABLE_SECTIONS)
     if unsupported:
@@ -127,7 +148,7 @@ def parse_analysis_spec(payload: dict) -> AnalysisSpec:
         sections=sections,
         business_question=business_question,
         metric_focus=_string_tuple(payload.get("metric_focus", []), "metric_focus"),
-        filters=_filters(payload.get("filters")),
+        filters=_filters(filters),
         report_mode=report_mode,
         custom_sections=tuple(custom_sections),
     )

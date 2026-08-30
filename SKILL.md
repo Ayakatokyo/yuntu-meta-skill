@@ -8,11 +8,11 @@ metadata:
 
 # 可配置云图采集
 
-该技能负责榜单、详情和高光帧资产，并在采集完成后按用户明确选择的模块进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。
+该技能负责榜单、详情和高光帧资产，并通过同一入口分两阶段运行：首次调用只采集并准备事实资产，停在 `ready_for_analysis`；用户明确选择分析范围后，第二次调用才进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。
 
 ## 输入
 
-自然语言入口必须从同一句请求解析出两份 JSON：`QuerySpec`（行业、周期、筛选、榜单指标、详情素材数）和 `HighlightSpec`（封面及五项指标的策略/帧数）。文件入口直接读取已保存配置；两种入口使用同一解析器，成功后立即落盘并执行，失败则反馈具体字段错误。
+阶段一的 `pre_input` 只解析现有采集字段，生成 `QuerySpec`（行业、周期、筛选、榜单指标、详情素材数）和 `HighlightSpec`（封面及五项指标的策略/帧数）。成功后立即落盘并返回覆盖回执，停在 `ready_for_analysis`，不读取商业问题、不调用分析 Prompt、不渲染报告。
 
 `QuerySpec` 支持行业、近 7 天、近 30 天或自定义日期、年龄、性别、八大人群、品牌范围、四类榜单指标和详情目标素材数。周期默认 `LAST_7_DAYS`；自定义日期是闭区间，起止日期均必填并遵循云图可用日期与跨度限制。年龄、性别、八大人群可留空表示不过滤；品牌范围默认为 `ALL_INDUSTRY`，指定品牌时填写 3 至 10 个品牌。详情目标数默认 10，必须为不超过 1000 的正整数。列表候选池由实现固定为 1000，不作为用户输入字段。
 
@@ -29,6 +29,9 @@ python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs
 python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
 python scripts/collector.py retry-highlights --output-dir runs/example
 python scripts/collector.py build-facts --run-dir runs/example
+# 阶段一返回 ready_for_analysis 后，再提供阶段二 AnalysisInput
+python -m scripts.collector analyze --run-dir runs/example --input analysis-input.json --output runs/example/analysis.md
+# 历史运行仍可使用旧 AnalysisSpec 入口
 python -m scripts.collector analyze --run-dir runs/example --spec analysis-spec.json --output runs/example/analysis.md
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
@@ -39,7 +42,7 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 
 运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`、`highlights-manifest.json` 和 `highlights/` JPEG 资产。配置、shop ID 或采集参数变化时必须使用新目录。前 N 条中的详情失败会单独落盘，不能用排名更低的素材补位。只有所有目标详情成功且按保存的高光策略生成的帧都可用时，运行才是 `success`；高光帧缺失或不可用时为 `partial`。`retry-failed` 只重试拒绝详情，`retry-unresolved` 只重试未持久化详情，`retry-highlights` 只重建缺失或不可用的高光帧，不重新请求榜单或详情；同一批次的重试会沿用保存的高光策略。
 
-`collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径与 coverage；事实包构建失败时命令返回非零。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
+`collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 
 事实包生成时会从本轮 `list_context.brands`（或其 `pre_input.brands`）建立严格的运行时品牌候选范围，不会扩展默认品牌表。标题分类仅对候选品牌执行 Unicode NFKC、`casefold()` 和连续字符串匹配；规范名中的 `/` 表示别名，支持多品牌同时命中，并在 `brand_classification` 中保留 `matchedBrands` 与 `match_tokens` 审计证据。未命中或候选范围缺失时归为 `未知品牌`；`九阳豆浆` 仅支持显式受控的“九阳…豆浆”变体，单独“九阳”不命中。分类不依据品类、功效、标签或画面推断，四类事实包按 `material_id` 传播同一快照。
 
@@ -47,7 +50,7 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 
 ## 商业分析编排
 
-采集完成后必须显式选择一个或多个分析模块，并提供 `AnalysisSpec` JSON。`sections` 可选 `material_ranking`、`audience`、`script`、`highlight_frames`；`business_question` 必填，`filters.rank_range` 必须位于 1..1000；可选 `filters.brand_filter` 只能取当前 facts manifest 的候选品牌或 `未知品牌`，不允许模型或调用方扩展范围。编排器只加载所选事实包，先校验 manifest、包路径、记录数和源文件 SHA-256，再生成带 `fact_refs` 的 PromptPacket。
+进入阶段二时必须显式提供 `AnalysisInput`（自然语言问题或结构化 JSON），并选择一个或多个分析模块。`sections` 可选 `material_ranking`、`audience`、`script`、`highlight_frames`；`business_question` 必填，`material_filter.rank_range` 必须位于 1..1000；可选 `brand_filter` 只能取当前 facts manifest 的候选品牌或 `未知品牌`，不允许模型或调用方扩展范围。只有 `ready_for_analysis`（或可验证的历史事实包兼容状态）允许启动分析；未就绪、缺包、未知品牌/素材/指标均返回校验错误。编排器只加载所选事实包，先校验 manifest、包路径、记录数和源文件 SHA-256，再生成带 `fact_refs` 的 PromptPacket。阶段二不重新采集、不重新规范化、不重新分类。
 
 模型结果可通过 `--analysis-result` 传入；未传入时命令只生成保守的事实摘要和数据缺口，不能替代模型洞察。每条 `findings` 结论必须包含可解析的 `fact_refs`、合法的 `type` 和 `confidence`。`source_empty` 只能进入 `gaps`；当前脚本字段为空时不得用标题或标签代替脚本。`selection_group` 品牌字段为空时，标题/标签品牌识别只能标记为推断并降低置信度；标签关联和高光解释不得表述为因果。
 

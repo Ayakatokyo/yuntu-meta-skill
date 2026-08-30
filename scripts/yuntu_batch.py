@@ -23,6 +23,7 @@ if __package__:
         write_highlights_manifest,
     )
     from . import yuntu_run_state as run_state
+    from .workflow_state import get_workflow_status, set_stage
 else:
     from rpa_io import (
         download_file,
@@ -41,6 +42,7 @@ else:
         write_highlights_manifest,
     )
     import yuntu_run_state as run_state
+    from workflow_state import get_workflow_status, set_stage
 
 
 class YuntuBatchError(RuntimeError):
@@ -569,6 +571,8 @@ def _finalize_details(
     _sync_stage_counts(summary, manifest, root)
     write_json_atomically(manifest, manifest_path)
     _save_summary(root, summary)
+    if not succeeded:
+        set_stage(root, "partial", reason=manifest.get("error") or "collection gate incomplete")
     return 0 if succeeded else 1
 
 
@@ -701,7 +705,8 @@ def _facts_status(root):
         return "missing"
     try:
         manifest = _load_json(manifest_path)
-        if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
+        schema_version = manifest.get("schema_version") if isinstance(manifest, dict) else None
+        if not isinstance(schema_version, int) or schema_version < 1:
             return "invalid"
         packages = manifest.get("packages")
         if not isinstance(packages, dict):
@@ -730,7 +735,7 @@ def _facts_status(root):
             payload = _load_json(package_path)
             if (
                 not isinstance(payload, dict)
-                or payload.get("schema_version") != 1
+                or payload.get("schema_version") != schema_version
                 or not isinstance(payload.get("records"), list)
                 or len(payload["records"]) != record_count
             ):
@@ -814,6 +819,8 @@ def fetch_batch(
         summary = _open_collection_summary(root, contract)
     except run_state.YuntuRunStateError as exc:
         raise YuntuBatchError(str(exc)) from exc
+    if get_workflow_status(root)["stage"] in {"not_started", "collecting"}:
+        summary = set_stage(root, "collecting")
     manifest = _open_or_new_manifest(
         manifest_path=manifest_path,
         list_params=list_params,
@@ -844,6 +851,9 @@ def fetch_batch(
         write_json_atomically(list_records, list_record_path)
         _record_artifact(summary, root, "listRecords", list_record_path, "normalized_list")
         summary["stages"]["list"]["normalized"] = True
+        if get_workflow_status(root)["stage"] in {"collecting", "normalizing"}:
+            _save_summary(root, summary)
+            summary = set_stage(root, "normalizing", normalized_count=len(list_records))
         context_verification = _validate_list_context(list_records, list_params)
         summary["stages"]["list"]["contextVerified"] = context_verification["valid"]
         summary["stages"]["list"]["contextIssues"] = context_verification["issues"]
@@ -858,6 +868,7 @@ def fetch_batch(
             _sync_stage_counts(summary, manifest, root)
             write_json_atomically(manifest, manifest_path)
             _save_summary(root, summary)
+            set_stage(root, "failed", reason="list context mismatch")
             return 1
     except Exception as exc:
         manifest["status"] = "list_failed"
@@ -868,6 +879,7 @@ def fetch_batch(
         _sync_stage_counts(summary, manifest, root)
         write_json_atomically(manifest, manifest_path)
         _save_summary(root, summary)
+        set_stage(root, "failed", reason="list collection failed")
         return 1
 
     candidates = _top_ranked_materials_from_list(list_records, target_top_n)
@@ -1049,8 +1061,12 @@ def collection_status(*, output_dir):
     stages = summary.get("stages") if isinstance(summary.get("stages"), dict) else {}
     list_stage = stages.get("list") if isinstance(stages.get("list"), dict) else {}
     detail_stage = stages.get("details") if isinstance(stages.get("details"), dict) else {}
+    workflow_status = get_workflow_status(root)
     return {
-        "status": summary.get("status") or manifest.get("status") or "not_started",
+        "status": workflow_status["status"],
+        "collection_status": summary.get("status") or manifest.get("status") or "not_started",
+        "ready_for_analysis": workflow_status["ready_for_analysis"],
+        "workflow": workflow_status,
         "facts_status": _facts_status(root),
         "runId": summary.get("runId") or manifest.get("runId"),
         "parameterFingerprint": summary.get("parameterFingerprint"),

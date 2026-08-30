@@ -50,6 +50,19 @@ class AnalysisSpecTests(unittest.TestCase):
 
         self.assertEqual(spec.filters["brand_filter"], ("品牌A", "未知品牌"))
         self.assertEqual(spec.to_dict()["filters"]["brand_filter"], ["品牌A", "未知品牌"])
+        self.assertEqual(spec.brand_filter, ("品牌A", "未知品牌"))
+
+    def test_parse_accepts_phase_two_top_level_filter_aliases(self):
+        payload = self.valid_payload()
+        payload.pop("filters")
+        payload["brand_filter"] = ["品牌A"]
+        payload["material_filter"] = {"rank_range": [2, 4], "material_ids": ["101"]}
+
+        spec = parse_analysis_spec(payload)
+
+        self.assertEqual(spec.filters["brand_filter"], ("品牌A",))
+        self.assertEqual(spec.filters["rank_range"], (2, 4))
+        self.assertEqual(spec.filters["material_ids"], ("101",))
 
     def test_validation_rejects_brand_outside_manifest_scope(self):
         payload = self.valid_payload()

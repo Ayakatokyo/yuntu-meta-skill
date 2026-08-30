@@ -292,6 +292,49 @@ class YuntuBatchTests(unittest.TestCase):
         )
         self.assertEqual(manifest["selectionGroups"], [])
 
+    def test_fetch_batch_records_normalizing_stage_before_fact_packaging(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: []
+        invoker = BatchInvoker([list_record("101", "A")])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+                output_dir=root,
+                invoker=invoker,
+                highlight_spec=highlight_spec(),
+            )
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(status, 0)
+        self.assertEqual(summary["workflow"]["stage"], "normalizing")
+
+    def test_fetch_batch_marks_failed_gate_as_partial_workflow(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: [{"available": False}]
+        invoker = BatchInvoker([list_record("101", "A")])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+                output_dir=root,
+                invoker=invoker,
+                highlight_spec=highlight_spec(),
+            )
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(summary["workflow"]["stage"], "partial")
+
     def test_fetch_batch_does_not_replace_failed_global_top_n_material(self):
         batch = load_batch()
         batch.generate_highlights_for_detail = lambda *_args: []

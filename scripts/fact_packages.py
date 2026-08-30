@@ -21,6 +21,11 @@ try:
 except ImportError:  # pragma: no cover - direct script imports
     from rpa_io import write_json_atomically
 
+try:
+    from .workflow_state import get_workflow_status, set_stage
+except ImportError:  # pragma: no cover - direct script imports
+    from workflow_state import get_workflow_status, set_stage
+
 
 SCHEMA_VERSION = 3
 PACKAGE_NAMES = ("material_ranking", "audience", "script", "highlight_frames")
@@ -272,7 +277,6 @@ def _source_artifacts(root: Path, details: dict[str, dict]) -> list[dict]:
     candidates = [root / "normalized/list-records.json"]
     candidates.extend(root / "normalized/detail-records" / f"{mid}.json" for mid in sorted(details))
     candidates.append(root / "highlights-manifest.json")
-    candidates.append(root / "run-summary.json")
     artifacts = []
     for path in candidates:
         if not path.is_file():
@@ -343,6 +347,11 @@ def _manifest(
             name: {
                 "path": f"facts/{filenames[name]}",
                 "record_count": len(payloads[name]["records"]),
+                "material_ids": sorted({
+                    str(record.get("material_id"))
+                    for record in payloads[name]["records"]
+                    if isinstance(record, dict) and record.get("material_id") is not None
+                }),
                 "source_paths": {
                     "material_ranking": ["normalized/list-records.json", "raw-csv/list.csv"],
                     "audience": ["normalized/list-records.json", "raw-csv/list.csv"],
@@ -356,7 +365,41 @@ def _manifest(
     }
 
 
-def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = None) -> dict:
+def _collection_succeeded(root: Path) -> bool:
+    """Return whether the persisted collection gate permits a ready handoff."""
+    statuses = []
+    for path in (root / "run-summary.json", root / "batch-manifest.json"):
+        if not path.is_file():
+            continue
+        try:
+            payload = _read_json(path, "collection state")
+        except FactPackageError:
+            continue
+        if isinstance(payload, dict):
+            statuses.extend([
+                payload.get("status"),
+                payload.get("collectionStatus"),
+            ])
+    return not any(status in {"partial", "failed", "list_failed", "list_context_mismatch"} for status in statuses)
+
+
+def _legacy_complete_run(root: Path) -> bool:
+    summary_path = root / "run-summary.json"
+    facts_manifest = root / "facts" / "manifest.json"
+    if not summary_path.is_file() or not facts_manifest.is_file():
+        return False
+    try:
+        summary = _read_json(summary_path, "run summary")
+        return (
+            isinstance(summary, dict)
+            and summary.get("status") == "success"
+            and not isinstance(summary.get("workflow"), dict)
+        )
+    except FactPackageError:
+        return False
+
+
+def _build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = None) -> dict:
     """Read a Yuntu run and atomically write four auditable fact packages."""
     root = Path(run_dir)
     if not root.is_dir():
@@ -364,6 +407,12 @@ def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = 
     list_path = root / "normalized" / "list-records.json"
     if not list_path.is_file():
         raise FactPackageError(f"required normalized list is missing: {list_path}")
+    collection_succeeded = _collection_succeeded(root)
+    legacy_complete = _legacy_complete_run(root)
+    current_stage = get_workflow_status(root)["stage"]
+    active_analysis = current_stage in {"analysis_running", "analysis_completed"}
+    if collection_succeeded and not legacy_complete and not active_analysis and current_stage != "ready_for_analysis":
+        set_stage(root, "fact_packaging")
     records = _read_json(list_path, "normalized list")
     if not isinstance(records, list):
         raise FactPackageError("normalized list records must be an array")
@@ -372,6 +421,8 @@ def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = 
     details = _load_details(root)
     highlights = _load_highlights(root)
     runtime_brands = extract_runtime_brands(records)
+    if collection_succeeded and not legacy_complete and not active_analysis and current_stage != "ready_for_analysis":
+        set_stage(root, "brand_classifying", candidate_brands=runtime_brands)
     ranking_payload = _ranking_payload(root, records, runtime_brands)
     classifications = {
         str(record.get("material_id")): record["brand_classification"]
@@ -406,4 +457,21 @@ def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = 
         raise
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+    if collection_succeeded and not active_analysis:
+        set_stage(root, "ready_for_analysis", coverage=manifest["coverage"])
+    elif not collection_succeeded:
+        set_stage(root, "partial", reason="collection did not complete all gates")
     return manifest
+
+
+def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = None) -> dict:
+    """Build facts and persist a failed workflow state when a gate raises."""
+    root = Path(run_dir)
+    try:
+        return _build_fact_packages(root, output_dir=output_dir)
+    except Exception:
+        try:
+            set_stage(root, "failed", error="fact package build failed")
+        except Exception:
+            pass
+        raise
