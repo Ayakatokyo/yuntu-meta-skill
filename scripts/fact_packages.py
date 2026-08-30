@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - direct script imports
     from rpa_io import write_json_atomically
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 PACKAGE_NAMES = ("material_ranking", "audience", "script", "highlight_frames")
 AGE_PATTERN = re.compile(r"^(?:\d{2}-\d{2}|\d+\+)$")
 CROWD_GROUPS = {
@@ -312,6 +312,7 @@ def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = 
         }
         for name, filename in files.items():
             write_json_atomically(payloads[name], staging / filename)
+            manifest["packages"][name]["sha256"] = _sha256(staging / filename)
         write_json_atomically(manifest, staging / "manifest.json")
         destination.mkdir(parents=True, exist_ok=True)
         for path in staging.iterdir():

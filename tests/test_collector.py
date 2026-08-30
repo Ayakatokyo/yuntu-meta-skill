@@ -38,10 +38,57 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(payload["query"]["collection"]["target_top_n"], 2)
         self.assertEqual(payload["highlights"]["metrics"]["点赞指数"]["strategy"], "top_values")
 
-    def test_collector_has_no_analysis_or_report_commands(self):
+    def test_collector_has_analyze_command(self):
         commands = collector._parser()._subparsers._group_actions[0].choices
-        self.assertNotIn("render-report", commands)
-        self.assertNotIn("prepare-analysis", commands)
+        self.assertIn("analyze", commands)
+
+    def test_analyze_writes_report_and_structured_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "facts").mkdir()
+            manifest = {
+                "schema_version": 1, "run_id": "run-1", "source_artifacts": [],
+                "packages": {
+                    "material_ranking": {"path": "facts/material-ranking.json", "record_count": 1, "source_paths": ["normalized/list-records.json"]},
+                },
+            }
+            (root / "facts/manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (root / "facts/material-ranking.json").write_text(json.dumps({
+                "schema_version": 1, "records": [{"material_id": "101", "rank": 1}],
+            }), encoding="utf-8")
+            spec_path = root / "analysis-spec.json"
+            spec_path.write_text(json.dumps({
+                "analysis_id": "analysis-1", "run_id": "run-1",
+                "sections": ["material_ranking"], "business_question": "比较素材表现",
+                "filters": {"rank_range": [1, 1]},
+            }), encoding="utf-8")
+            output = root / "analysis.md"
+            status = collector.main(["analyze", "--run-dir", str(root), "--spec", str(spec_path), "--output", str(output)])
+
+            self.assertEqual(status, 0)
+            self.assertTrue(output.is_file())
+            self.assertTrue((root / "analysis.analysis-result.json").is_file())
+            self.assertIn("执行摘要", output.read_text(encoding="utf-8"))
+
+    def test_analyze_does_not_write_report_when_result_fails_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(collector, "_analysis_pipeline", side_effect=ValueError("校验失败")):
+                with redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        collector.main(["analyze", "--run-dir", str(root), "--spec", str(root / "spec.json"), "--output", str(root / "analysis.md")])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertFalse((root / "analysis.md").exists())
+
+    def test_analysis_outputs_are_not_published_when_staging_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "analysis.md"
+            with mock.patch.object(collector, "write_json_atomically", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    collector._write_analysis_outputs("".join(str(output)), "report", {}, {})
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".analysis-result.json").exists())
+            self.assertFalse(output.with_suffix(".prompt-packet.json").exists())
 
     def test_build_facts_dispatches_to_local_builder(self):
         captured = {}

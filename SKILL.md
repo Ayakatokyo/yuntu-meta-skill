@@ -8,7 +8,7 @@ metadata:
 
 # 可配置云图采集
 
-该技能只负责榜单、详情和高光帧资产，不生成商业分析、模型洞察或报告。
+该技能负责榜单、详情和高光帧资产，并在采集完成后按用户明确选择的模块进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。
 
 ## 输入
 
@@ -29,6 +29,7 @@ python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs
 python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
 python scripts/collector.py retry-highlights --output-dir runs/example
 python scripts/collector.py build-facts --run-dir runs/example
+python -m scripts.collector analyze --run-dir runs/example --spec analysis-spec.json --output runs/example/analysis.md
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
@@ -40,4 +41,12 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 
 `collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径与 coverage；事实包构建失败时命令返回非零。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 
-通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较 `scripts/collector.py` 与 `scripts/fact_packages.py` 的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
+通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较采集器、事实包和分析编排模块的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
+
+## 商业分析编排
+
+采集完成后必须显式选择一个或多个分析模块，并提供 `AnalysisSpec` JSON。`sections` 可选 `material_ranking`、`audience`、`script`、`highlight_frames`；`business_question` 必填，`filters.rank_range` 必须位于 1..1000。编排器只加载所选事实包，先校验 manifest、包路径、记录数和源文件 SHA-256，再生成带 `fact_refs` 的 PromptPacket。
+
+模型结果可通过 `--analysis-result` 传入；未传入时命令只生成保守的事实摘要和数据缺口，不能替代模型洞察。每条 `findings` 结论必须包含可解析的 `fact_refs`、合法的 `type` 和 `confidence`。`source_empty` 只能进入 `gaps`；当前脚本字段为空时不得用标题或标签代替脚本。`selection_group` 品牌字段为空时，标题/标签品牌识别只能标记为推断并降低置信度；标签关联和高光解释不得表述为因果。
+
+`analyze` 成功后在 `--output` 写入 Markdown 报告，并旁写 `<stem>.analysis-result.json` 和 `<stem>.prompt-packet.json`。报告固定包含执行摘要、范围方法、四类模块、跨模块观察、商业机会、动作建议、限制和事实引用附录；结果校验失败时不生成报告。

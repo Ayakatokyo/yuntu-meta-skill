@@ -9,7 +9,15 @@ import subprocess
 import sys
 
 
-RUNTIME_FILES = ("scripts/collector.py", "scripts/fact_packages.py")
+RUNTIME_FILES = (
+    "scripts/collector.py",
+    "scripts/fact_packages.py",
+    "scripts/analysis_spec.py",
+    "scripts/analysis_facts.py",
+    "scripts/analysis_prompt.py",
+    "scripts/analysis_result.py",
+    "scripts/analysis_report.py",
+)
 
 
 def _sha256(path):

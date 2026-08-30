@@ -79,6 +79,12 @@ class FactPackageTests(unittest.TestCase):
             "ranking_records": 2, "detail_records": 1, "script_records": 1,
             "highlight_materials": 1, "available_highlight_frames": 1,
         })
+        manifest = json.loads((self.run_dir / "facts/manifest.json").read_text())
+        package_hash = manifest["packages"]["material_ranking"]["sha256"]
+        self.assertEqual(
+            package_hash,
+            hashlib.sha256((self.run_dir / "facts/material-ranking.json").read_bytes()).hexdigest(),
+        )
         ranking = json.loads((self.run_dir / "facts/material-ranking.json").read_text())
         self.assertEqual([row["rank"] for row in ranking["records"]], [1, 99])
         audience = json.loads((self.run_dir / "facts/audience.json").read_text())

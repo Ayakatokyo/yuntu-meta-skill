@@ -6,7 +6,9 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -51,6 +53,24 @@ try:
     from fact_packages import FactPackageError, build_fact_packages
 except ImportError:
     from .fact_packages import FactPackageError, build_fact_packages
+
+try:
+    from rpa_io import write_json_atomically
+except ImportError:
+    from .rpa_io import write_json_atomically
+
+try:
+    from analysis_facts import build_fact_index, load_selected_facts
+    from analysis_prompt import build_prompt_packet
+    from analysis_report import render_analysis_report
+    from analysis_result import normalize_analysis_result, validate_analysis_result
+    from analysis_spec import parse_analysis_spec
+except ImportError:
+    from .analysis_facts import build_fact_index, load_selected_facts
+    from .analysis_prompt import build_prompt_packet
+    from .analysis_report import render_analysis_report
+    from .analysis_result import normalize_analysis_result, validate_analysis_result
+    from .analysis_spec import parse_analysis_spec
 
 
 LIST_FUNCTION_CODE = "rpa.conn.juliang.yt.industry.content.rankings.list"
@@ -505,6 +525,15 @@ def _parser():
         "build-facts", help="Build source-only fact packages from an existing run"
     )
     facts_parser.add_argument("--run-dir", required=True)
+    analyze_parser = commands.add_parser(
+        "analyze", help="Analyze selected fact packages and render an auditable report"
+    )
+    analyze_parser.add_argument("--run-dir", required=True)
+    analyze_parser.add_argument("--spec", required=True, help="AnalysisSpec JSON path")
+    analyze_parser.add_argument("--output", required=True, help="Markdown report output path")
+    analyze_parser.add_argument(
+        "--analysis-result", help="Optional model-produced AnalysisResult JSON path"
+    )
     fetch_parser = commands.add_parser("collect", help="Collect configured rankings, details, and frames")
     fetch_parser.add_argument("--shop-id", required=True)
     fetch_parser.add_argument("--query-spec", required=True)
@@ -554,6 +583,138 @@ def _print_batch_result(output_dir, facts_manifest):
         "facts_manifest_path": str(Path(output_dir) / "facts/manifest.json"),
         "facts_coverage": facts_manifest["coverage"],
     }, ensure_ascii=False, indent=2))
+
+
+def _draft_analysis_results(spec, selected_facts):
+    """Create a conservative offline handoff when no model result file is supplied."""
+    results = []
+    for section in spec.sections:
+        package = selected_facts["sections"].get(section, {})
+        records = package.get("records", [])
+        result = {"section": section, "findings": [], "gaps": [], "next_questions": []}
+        if not records:
+            result["gaps"].append("筛选后没有可用事实记录。")
+            results.append(result)
+            continue
+        ref = f"{package['path']}#/records/0"
+        if section == "material_ranking":
+            result["findings"].append({
+                "claim": f"事实包包含 {len(records)} 条榜单记录，首条记录排名为 {records[0].get('rank')}。",
+                "type": "fact", "confidence": "high", "fact_refs": [ref],
+            })
+        elif section == "audience":
+            result["findings"].append({
+                "claim": f"事实包包含 {len(records)} 条人群记录；标签分布需要基于记录进一步统计。",
+                "type": "fact", "confidence": "high", "fact_refs": [ref],
+            })
+        elif section == "highlight_frames":
+            result["findings"].append({
+                "claim": f"事实包包含 {len(records)} 个素材的高光帧记录；时间段与指标线索需按素材核验。",
+                "type": "fact", "confidence": "high", "fact_refs": [ref],
+            })
+        elif section == "script":
+            result["gaps"].append("脚本字段需检查可用性。")
+            for record in records:
+                availability = record.get("data_availability", {})
+                if any(
+                    isinstance(state, dict) and state.get("missing_reason") == "source_empty"
+                    for state in availability.values()
+                ):
+                    result["gaps"] = [
+                        "script_text、content_formula、script_segments 为 source_empty，脚本不可分析。"
+                    ]
+                    break
+        results.append(result)
+    return results
+
+
+def _load_analysis_results(path):
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+        return payload["results"]
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        return [payload]
+    raise ValueError("analysis result must be an object, result array, or {results: [...]}")
+
+
+def _analysis_pipeline(run_dir, spec_path, result_path=None):
+    root = Path(run_dir)
+    spec = parse_analysis_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
+    selected = load_selected_facts(root, spec)
+    fact_index = build_fact_index(selected)
+    packet = build_prompt_packet(spec, selected, fact_index)
+    results = _load_analysis_results(result_path) if result_path else _draft_analysis_results(spec, selected)
+    normalized_results = [normalize_analysis_result(result) for result in results]
+    result_errors = [
+        error
+        for result in normalized_results
+        for error in validate_analysis_result(result, fact_index)
+    ]
+    if result_errors:
+        raise ValueError("AnalysisResult 校验失败: " + "; ".join(result_errors))
+    manifest = selected["manifest"]
+    metadata = {
+        "run_id": spec.run_id,
+        "analysis_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
+        "facts_version": manifest.get("schema_version"),
+        "prompt_version": packet["prompt_version"],
+        "fact_index": fact_index,
+        "coverage": manifest.get("coverage", {}),
+        "package_paths": [
+            package["path"]
+            for package in manifest.get("packages", {}).values()
+            if isinstance(package, dict) and isinstance(package.get("path"), str)
+        ],
+    }
+    report = render_analysis_report(spec, normalized_results, metadata)
+    result_document = {
+        "analysis_id": spec.analysis_id,
+        "run_id": spec.run_id,
+        "analysis_time": metadata["analysis_time"],
+        "facts_version": metadata["facts_version"],
+        "prompt_version": metadata["prompt_version"],
+        "results": normalized_results,
+    }
+    return report, result_document, packet
+
+
+def _write_text_atomically(text, output_path):
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".tmp", dir=target.parent, delete=False) as staging:
+        staging_path = Path(staging.name)
+        staging.write(text)
+    try:
+        os.replace(staging_path, target)
+    except Exception:
+        staging_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_analysis_outputs(output_path, report, result_document, packet):
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    result_output = output.with_suffix(".analysis-result.json")
+    prompt_output = output.with_suffix(".prompt-packet.json")
+    staging = Path(tempfile.mkdtemp(prefix=".analysis-", dir=output.parent))
+    staged_outputs = (
+        (staging / output.name, output, "report"),
+        (staging / result_output.name, result_output, "result"),
+        (staging / prompt_output.name, prompt_output, "prompt"),
+    )
+    try:
+        _write_text_atomically(report, staged_outputs[0][0])
+        write_json_atomically(result_document, staged_outputs[1][0])
+        write_json_atomically(packet, staged_outputs[2][0])
+        # Publish the report last so a failed preparation never leaves a report
+        # without its structured result and prompt packet.
+        for staged, target, _ in (staged_outputs[1], staged_outputs[2], staged_outputs[0]):
+            os.replace(staged, target)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def main(argv=None):
@@ -612,6 +773,17 @@ def main(argv=None):
                 "coverage": manifest["coverage"],
             }, ensure_ascii=False, indent=2))
             return 0
+        if args.command == "analyze":
+            report, result_document, packet = _analysis_pipeline(
+                args.run_dir, args.spec, args.analysis_result
+            )
+            _write_analysis_outputs(args.output, report, result_document, packet)
+            print(json.dumps({
+                "report_path": str(Path(args.output)),
+                "analysis_result_path": str(Path(args.output).with_suffix(".analysis-result.json")),
+                "prompt_packet_path": str(Path(args.output).with_suffix(".prompt-packet.json")),
+            }, ensure_ascii=False, indent=2))
+            return 0
         query = resolve_query_spec(json.loads(Path(args.query_spec).read_text(encoding="utf-8")))
         highlights = resolve_highlight_spec(json.loads(Path(args.highlight_spec).read_text(encoding="utf-8")))
         write_resolved_specs(args.output_dir, query, highlights)
@@ -627,7 +799,7 @@ def main(argv=None):
         facts_manifest = _build_facts_after_run(args.output_dir)
         _print_batch_result(args.output_dir, facts_manifest)
         return status
-    except (RpaConnectorError, ConfigSpecError, FactPackageError, OSError, json.JSONDecodeError) as exc:
+    except (RpaConnectorError, ConfigSpecError, FactPackageError, ValueError, OSError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
 
