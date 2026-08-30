@@ -18,6 +18,7 @@ RUNTIME_FILES = (
     "scripts/analysis_prompt.py",
     "scripts/analysis_result.py",
     "scripts/analysis_report.py",
+    "scripts/model_analysis_request.py",
 )
 
 

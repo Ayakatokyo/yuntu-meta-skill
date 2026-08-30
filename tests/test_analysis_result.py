@@ -98,7 +98,8 @@ class AnalysisResultTests(unittest.TestCase):
         fact = self.result(findings=[self.finding(claim="标题识别品牌为燕之屋")])
         self.assertTrue(any("品牌" in error for error in validate_analysis_result(fact, FACT_INDEX)))
         allowed = self.result(findings=[self.finding(
-            claim="标题识别品牌为燕之屋（推断）", type="inference", confidence="low"
+            claim="标题识别品牌为燕之屋（推断）", type="inference", confidence="low",
+            brand_proxy_explanation="品牌名来自运行时标题规则命中，不是原始品牌字段。",
         )])
         self.assertEqual(validate_analysis_result(allowed, FACT_INDEX), [])
 
@@ -138,6 +139,101 @@ class AnalysisResultTests(unittest.TestCase):
             "source_empty" in error
             for error in validate_analysis_result(invalid, fact_index)
         ))
+
+    def test_runtime_title_brand_proxy_is_checked_from_audience_fact_ref(self):
+        fact_index = {
+            "facts/audience.json#/records/0": {
+                "material_id": "101",
+                "brand_classification": {
+                    "value": "燕之屋",
+                    "source": "runtime_title_rule",
+                    "matchedBrands": ["燕之屋"],
+                },
+                "observations": [{"tag": "新锐白领", "dimension": "crowd_group"}],
+            }
+        }
+        result = self.result(
+            section="audience",
+            findings=[self.finding(
+                "facts/audience.json#/records/0",
+                claim="燕之屋覆盖新锐白领人群",
+            )],
+        )
+
+        errors = validate_analysis_result(result, fact_index)
+
+        self.assertTrue(any(error["code"] == "brand_proxy_requires_inference" for error in errors))
+        self.assertTrue(any(error["code"] == "brand_proxy_explanation_required" for error in errors))
+
+    def test_runtime_title_brand_proxy_is_checked_from_highlight_fact_ref(self):
+        fact_index = {
+            "facts/highlight-frames.json#/records/0": {
+                "material_id": "101",
+                "brand_classification": {
+                    "value": "小仙炖",
+                    "source": "runtime_title_rule",
+                    "matchedBrands": ["小仙炖"],
+                },
+                "frames": [{"second": 1}],
+            }
+        }
+        result = self.result(
+            section="highlight_frames",
+            findings=[self.finding(
+                "facts/highlight-frames.json#/records/0",
+                claim="小仙炖的高光帧位于第1秒",
+                type="inference",
+                confidence="medium",
+                brand_proxy_explanation="品牌名来自运行时标题规则命中，不是 selection_group 原始品牌字段。",
+            )],
+        )
+
+        self.assertEqual(validate_analysis_result(result, fact_index), [])
+
+    def test_brand_proxy_explanation_is_required_even_when_type_and_confidence_are_safe(self):
+        fact_index = {
+            "facts/material-ranking.json#/records/0": {
+                "material_id": "101",
+                "selection_group": {"brand_name": ""},
+                "brand_classification": {
+                    "value": "燕之屋",
+                    "source": "runtime_title_rule",
+                    "matchedBrands": ["燕之屋"],
+                },
+            }
+        }
+        result = self.result(findings=[self.finding(
+            claim="燕之屋素材排名为1",
+            type="inference",
+            confidence="low",
+        )])
+
+        errors = validate_analysis_result(result, fact_index)
+
+        self.assertEqual(
+            [error["code"] for error in errors],
+            ["brand_proxy_explanation_required"],
+        )
+
+    def test_structured_errors_include_code_path_message_and_suggestion(self):
+        errors = validate_analysis_result(
+            self.result(findings=[self.finding(fact_refs=["facts/material-ranking.json#/records/99"])]),
+            FACT_INDEX,
+        )
+
+        self.assertTrue(errors)
+        self.assertTrue(all(
+            set(("code", "path", "message", "suggestion")).issubset(error)
+            for error in errors
+        ))
+        self.assertTrue(any(error["code"] == "fact_ref_out_of_bounds" for error in errors))
+
+    def test_finding_type_semantics_rejects_inference_language_as_fact(self):
+        result = self.result(findings=[self.finding(claim="该人群可能更喜欢燕窝")])
+
+        errors = validate_analysis_result(result, FACT_INDEX)
+
+        self.assertTrue(any(error["code"] == "finding_type_semantics" for error in errors))
 
 
 if __name__ == "__main__":

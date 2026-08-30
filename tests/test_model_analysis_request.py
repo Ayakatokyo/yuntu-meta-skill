@@ -49,16 +49,19 @@ class ModelAnalysisRequestTests(unittest.TestCase):
         request = build_model_analysis_request(self.spec, self.selected_facts, index)
 
         self.assertEqual(request["request_type"], "yuntu_commercial_analysis")
-        self.assertEqual(request["request_version"], 1)
-        self.assertEqual(request["analysis_id"], "analysis-1")
-        self.assertEqual(request["run_id"], "run-1")
-        self.assertEqual(request["analysis_spec"], self.spec.to_dict())
-        self.assertEqual(request["facts"], packet["facts"])
+        self.assertEqual(request["request_version"], 2)
+        self.assertEqual(request["host_context"]["analysis_id"], "analysis-1")
+        self.assertEqual(request["host_context"]["run_id"], "run-1")
+        self.assertEqual(request["host_context"]["analysis_spec"], self.spec.to_dict())
+        self.assertEqual(request["host_context"]["facts"], packet["facts"])
         self.assertEqual(
-            set(request["fact_index"]),
+            set(request["host_context"]["fact_refs"]),
             {"facts/material-ranking.json#/records/0", "facts/audience.json#/records/0"},
         )
-        self.assertEqual(request["response_schema"], "AnalysisResult")
+        self.assertEqual(request["host_context"]["response_schema"], "AnalysisResult")
+        self.assertNotIn("fact_index", request["host_context"])
+        self.assertIn("facts_version", request["local_audit"])
+        self.assertIn("fact_package_hashes", request["local_audit"])
         self.assertEqual(validate_model_analysis_request(request), [])
 
     def test_request_excludes_unselected_fact_packages(self):
@@ -72,8 +75,8 @@ class ModelAnalysisRequestTests(unittest.TestCase):
         index = build_fact_index(self.selected_facts)
         request = build_model_analysis_request(spec, self.selected_facts, index)
 
-        self.assertEqual(set(request["facts"]), {"facts/audience.json"})
-        self.assertTrue(all("script.json" not in ref for ref in request["fact_index"]))
+        self.assertEqual(set(request["host_context"]["facts"]), {"facts/audience.json"})
+        self.assertTrue(all("script.json" not in ref for ref in request["host_context"]["fact_refs"]))
 
     def test_request_includes_script_brand_and_non_causal_quality_rules(self):
         spec = parse_analysis_spec({
@@ -85,18 +88,18 @@ class ModelAnalysisRequestTests(unittest.TestCase):
         })
         index = build_fact_index(self.selected_facts)
         request = build_model_analysis_request(spec, self.selected_facts, index)
-        rules = " ".join(request["system_rules"])
+        rules = " ".join(request["host_context"]["system_rules"])
 
         self.assertIn("source_empty", rules)
         self.assertIn("品牌代理", rules)
         self.assertIn("相关不等于因果", rules)
-        self.assertEqual(request["analysis_spec"]["business_question"], "比较品牌并检查脚本")
+        self.assertEqual(request["host_context"]["analysis_spec"]["business_question"], "比较品牌并检查脚本")
 
     def test_invalid_request_reports_contract_errors(self):
         errors = validate_model_analysis_request({
             "request_type": "wrong",
-            "request_version": 2,
-            "response_schema": "Other",
+            "request_version": 1,
+            "host_context": {"response_schema": "Other"},
         })
 
         self.assertTrue(any("request_type" in error for error in errors))
@@ -110,11 +113,26 @@ class ModelAnalysisRequestTests(unittest.TestCase):
             self.selected_facts,
             build_fact_index(self.selected_facts),
         )
-        request["fact_index"]["facts/script.json#/records/0"] = {"material_id": "101"}
+        request["host_context"]["fact_refs"].append("facts/script.json#/records/0")
 
         errors = validate_model_analysis_request(request)
 
-        self.assertTrue(any("fact_index" in error and "facts" in error for error in errors))
+        self.assertTrue(any("fact_refs" in error and "facts" in error for error in errors))
+
+    def test_request_does_not_duplicate_fact_records_for_local_audit(self):
+        index = build_fact_index(self.selected_facts)
+        request = build_model_analysis_request(self.spec, self.selected_facts, index)
+
+        self.assertNotIn("fact_index", request)
+        self.assertNotIn("fact_index", request["host_context"])
+        self.assertNotIn("fact-summary.json", str(request))
+        self.assertEqual(
+            set(request["local_audit"]),
+            {
+                "analysis_id", "run_id", "facts_version", "prompt_version",
+                "fact_package_hashes", "source_artifact_hashes", "selected_fact_paths",
+            },
+        )
 
 
 if __name__ == "__main__":

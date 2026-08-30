@@ -27,18 +27,29 @@ Python 技能脚本不调用外部模型 API，也不启动独立模型。技能
 ```json
 {
   "request_type": "yuntu_commercial_analysis",
-  "request_version": 1,
-  "analysis_id": "uuid",
-  "run_id": "...",
-  "system_rules": ["只使用给定事实", "每条结论必须带 fact_refs"],
-  "analysis_spec": {},
-  "facts": {},
-  "fact_index": {},
-  "response_schema": "AnalysisResult"
+  "request_version": 2,
+  "host_context": {
+    "analysis_id": "uuid",
+    "run_id": "...",
+    "analysis_spec": {},
+    "facts": {},
+    "fact_refs": ["facts/material-ranking.json#/records/0"],
+    "system_rules": ["只使用给定事实", "每条结论必须带 fact_refs"],
+    "response_schema": "AnalysisResult"
+  },
+  "local_audit": {
+    "analysis_id": "uuid",
+    "run_id": "...",
+    "facts_version": 3,
+    "prompt_version": "yuntu-commercial-analysis-v1",
+    "fact_package_hashes": {},
+    "source_artifact_hashes": {},
+    "selected_fact_paths": ["facts/material-ranking.json"]
+  }
 }
 ```
 
-`facts` 只包含用户选择的模块和筛选后的记录；`fact_index` 提供可引用路径。请求必须明确脚本 `source_empty`、品牌代理识别和相关不等于因果等约束。
+`host_context` 是宿主交接所需的最小上下文：`facts` 只包含用户选择的模块和筛选后的记录，`fact_refs` 提供可引用路径；不再重复携带本地完整 `fact_index`。`local_audit` 仅供技能落盘和审计，保留分析 ID、运行 ID、事实包版本、提示词版本、事实包/源文件哈希和选中路径。请求不得依赖事后临时生成的 `fact-summary.json`，并必须明确脚本 `source_empty`、品牌代理识别和相关不等于因果等约束。
 
 ## 5. 模型交接与结果
 
@@ -57,4 +68,3 @@ Python 技能脚本不调用外部模型 API，也不启动独立模型。技能
 - 当前对话模型返回结果后，所有结论均通过 `fact_refs` 校验并落盘。
 - 模型失败或结果非法时不生成报告。
 - 同一运行可重复分析，且不重新采集或分类。
-

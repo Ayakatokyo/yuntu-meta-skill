@@ -168,10 +168,11 @@ class CollectorTests(unittest.TestCase):
             request_path = output.with_suffix(".model-analysis-request.json")
             self.assertTrue(request_path.is_file())
             request = json.loads(request_path.read_text(encoding="utf-8"))
-            self.assertEqual(request["response_schema"], "AnalysisResult")
-            self.assertEqual(request["analysis_spec"]["business_question"], "比较素材")
+            self.assertEqual(request["host_context"]["response_schema"], "AnalysisResult")
+            self.assertEqual(request["host_context"]["analysis_spec"]["business_question"], "比较素材")
             response = json.loads(printer.call_args.args[0])
             self.assertEqual(response["status"], "awaiting_model_analysis")
+            self.assertEqual(response["host_handoff"]["protocol"], "yuntu-current-conversation-model-v2")
             self.assertEqual(response["model_analysis_request_path"], str(request_path))
             self.assertEqual(json.loads((root / "run-summary.json").read_text(encoding="utf-8"))["status"], "ready_for_analysis")
 
@@ -227,6 +228,10 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(summary["status"], "ready_for_analysis")
             self.assertTrue((root / "analysis.analysis-error.json").is_file())
             self.assertFalse((root / "analysis.analysis-result.json").exists())
+            error_document = json.loads((root / "analysis.analysis-error.json").read_text(encoding="utf-8"))
+            self.assertEqual(error_document["code"], "analysis_result_invalid")
+            self.assertTrue(error_document["errors"])
+            self.assertTrue(all(set(("code", "path", "message", "suggestion")).issubset(error) for error in error_document["errors"]))
 
     def test_analyze_does_not_write_report_when_result_fails_validation(self):
         with tempfile.TemporaryDirectory() as directory:

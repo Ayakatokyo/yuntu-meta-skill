@@ -31,6 +31,8 @@ class RuntimeSyncTests(unittest.TestCase):
             result["files"]["scripts/analysis_spec.py"]["source_sha256"],
             result["files"]["scripts/analysis_spec.py"]["target_sha256"],
         )
+        self.assertIn("scripts/model_analysis_request.py", result["files"])
+        self.assertTrue(result["files"]["scripts/model_analysis_request.py"]["match"])
 
     def test_modified_runtime_file_is_reported_as_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:

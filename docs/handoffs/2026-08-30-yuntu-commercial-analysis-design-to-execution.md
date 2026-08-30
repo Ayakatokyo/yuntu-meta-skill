@@ -31,7 +31,7 @@
 
 ### 当前模型二次分析闭环
 
-已实现宿主交接协议 `yuntu-current-conversation-model-v1`：技能生成 `ModelAnalysisRequest`，由当前对话模型返回 `AnalysisResult` JSON；技能随后校验、落盘并渲染报告。技能不调用外部模型 API。无模型响应时只保存交接请求，不伪造商业洞察。
+已实现宿主交接协议 `yuntu-current-conversation-model-v2`：技能生成分层的 `ModelAnalysisRequest`，宿主读取 `host_context`，本地审计信息放在 `local_audit`；请求保留事实引用、事实包版本、哈希、分析 ID 和可追溯性，不重复携带完整 `fact_index`，也不依赖事后临时生成的 `fact-summary.json`。当前对话模型返回 `AnalysisResult` JSON 后，技能随后校验、落盘并渲染报告。技能不调用外部模型 API。无模型响应时只保存交接请求，不伪造商业洞察。
 
 ## 关键执行任务
 
@@ -67,4 +67,3 @@
 6. 本交接摘要
 
 Terra 设计阶段应将本摘要视为现状基线，先确认当前工作树和未提交改动，再提出新的设计方案；不要重复实现已完成的两阶段、事实包或模型交接能力。
-

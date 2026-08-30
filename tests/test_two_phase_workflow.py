@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import collector
+from scripts.analysis_facts import build_fact_index, load_selected_facts
+from scripts.analysis_input import parse_analysis_input
 from scripts.workflow_state import build_ready_receipt, get_workflow_status
 
 
@@ -14,6 +16,63 @@ REAL_RUN = ROOT / "runs/food-beverage-2026-0810-0820"
 
 
 class TwoPhaseWorkflowTests(unittest.TestCase):
+    def test_real_run_replay_rejects_brand_proxy_claims_from_audience_and_highlights(self):
+        analysis_input = json.loads(
+            (ROOT / "tests/fixtures/analysis-input-real.json").read_text(encoding="utf-8")
+        )
+        manifest = json.loads((REAL_RUN / "facts/manifest.json").read_text(encoding="utf-8"))
+        spec = parse_analysis_input(
+            analysis_input,
+            {"status": "ready_for_analysis", "run_id": manifest["run_id"]},
+            manifest,
+        )
+        selected = load_selected_facts(REAL_RUN, spec)
+        fact_index = build_fact_index(selected)
+        audience_ref = "facts/audience.json#/records/0"
+        highlight_ref = "facts/highlight-frames.json#/records/0"
+
+        for section, ref, brand in (
+            ("audience", audience_ref, "燕之屋"),
+            ("highlight_frames", highlight_ref, "小仙炖"),
+        ):
+            errors = collector.validate_analysis_result({
+                "section": section,
+                "findings": [{
+                    "claim": f"{brand} 结论可直接指导投放",
+                    "type": "fact",
+                    "confidence": "high",
+                    "fact_refs": [ref],
+                }],
+            }, fact_index)
+
+            codes = {error["code"] for error in errors}
+            self.assertIn("brand_proxy_requires_inference", codes)
+            self.assertIn("brand_proxy_high_confidence", codes)
+            self.assertIn("brand_proxy_explanation_required", codes)
+
+    def test_real_run_replay_allows_non_brand_fact_on_proxy_record(self):
+        analysis_input = json.loads(
+            (ROOT / "tests/fixtures/analysis-input-real.json").read_text(encoding="utf-8")
+        )
+        manifest = json.loads((REAL_RUN / "facts/manifest.json").read_text(encoding="utf-8"))
+        spec = parse_analysis_input(
+            analysis_input,
+            {"status": "ready_for_analysis", "run_id": manifest["run_id"]},
+            manifest,
+        )
+        fact_index = build_fact_index(load_selected_facts(REAL_RUN, spec))
+
+        errors = collector.validate_analysis_result({
+            "section": "audience",
+            "findings": [{
+                "claim": "该事实记录包含人群标签",
+                "type": "fact",
+                "confidence": "high",
+                "fact_refs": ["facts/audience.json#/records/0"],
+            }],
+        }, fact_index)
+
+        self.assertEqual(errors, [])
     def test_real_run_phase_one_stops_at_ready_without_analysis_artifacts(self):
         with tempfile.TemporaryDirectory() as directory:
             run_copy = Path(directory) / "run"
@@ -63,8 +122,8 @@ class TwoPhaseWorkflowTests(unittest.TestCase):
             self.assertFalse(build.called)
             request = json.loads(request_output.with_suffix(".model-analysis-request.json").read_text(encoding="utf-8"))
             self.assertEqual(request["request_type"], "yuntu_commercial_analysis")
-            self.assertEqual(request["analysis_spec"]["business_question"], "比较 TOP4 素材榜单表现、人群差异与高光帧节奏，识别可验证的商业机会")
-            self.assertEqual(set(request["facts"]), {
+            self.assertEqual(request["host_context"]["analysis_spec"]["business_question"], "比较 TOP4 素材榜单表现、人群差异与高光帧节奏，识别可验证的商业机会")
+            self.assertEqual(set(request["host_context"]["facts"]), {
                 "facts/material-ranking.json",
                 "facts/audience.json",
                 "facts/highlight-frames.json",

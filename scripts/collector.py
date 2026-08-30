@@ -83,22 +83,34 @@ except ImportError:
 try:
     from analysis_facts import build_fact_index, load_selected_facts
     from model_analysis_request import (
+        HANDOFF_PROTOCOL as MODEL_ANALYSIS_HANDOFF_PROTOCOL,
+        REQUEST_VERSION as MODEL_ANALYSIS_REQUEST_VERSION,
         build_model_analysis_request,
         validate_model_analysis_request,
     )
     from analysis_prompt import build_prompt_packet
     from analysis_report import render_analysis_report
-    from analysis_result import normalize_analysis_result, validate_analysis_result
+    from analysis_result import (
+        AnalysisResultValidationError,
+        normalize_analysis_result,
+        validate_analysis_result,
+    )
     from analysis_spec import parse_analysis_spec
 except ImportError:
     from .analysis_facts import build_fact_index, load_selected_facts
     from .model_analysis_request import (
+        HANDOFF_PROTOCOL as MODEL_ANALYSIS_HANDOFF_PROTOCOL,
+        REQUEST_VERSION as MODEL_ANALYSIS_REQUEST_VERSION,
         build_model_analysis_request,
         validate_model_analysis_request,
     )
     from .analysis_prompt import build_prompt_packet
     from .analysis_report import render_analysis_report
-    from .analysis_result import normalize_analysis_result, validate_analysis_result
+    from .analysis_result import (
+        AnalysisResultValidationError,
+        normalize_analysis_result,
+        validate_analysis_result,
+    )
     from .analysis_spec import parse_analysis_spec
 
 try:
@@ -696,7 +708,7 @@ def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=
         for error in validate_analysis_result(result, fact_index)
     ]
     if result_errors:
-        raise ValueError("AnalysisResult 校验失败: " + "; ".join(result_errors))
+        raise AnalysisResultValidationError(result_errors)
     manifest = selected["manifest"]
     ranking_selection = selected.get("sections", {}).get("material_ranking", {})
     metadata = {
@@ -704,7 +716,7 @@ def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=
         "analysis_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
         "facts_version": manifest.get("schema_version"),
         "prompt_version": packet["prompt_version"],
-        "request_version": 1,
+        "request_version": MODEL_ANALYSIS_REQUEST_VERSION,
         "fact_index": fact_index,
         "coverage": manifest.get("coverage", {}),
         "brand_classification": manifest.get("brand_classification", {}),
@@ -723,7 +735,7 @@ def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=
         "facts_version": metadata["facts_version"],
         "prompt_version": metadata["prompt_version"],
         "request_type": "yuntu_commercial_analysis",
-        "request_version": 1,
+        "request_version": MODEL_ANALYSIS_REQUEST_VERSION,
         "results": normalized_results,
     }
     return report, result_document, packet, context["request"]
@@ -750,12 +762,26 @@ def _write_analysis_handoff(output_path, request, packet):
 
 def _write_analysis_error(output_path, request, error):
     paths = _analysis_output_paths(output_path)
+    errors = getattr(error, "errors", None)
+    if not isinstance(errors, list):
+        errors = [{
+            "code": "analysis_failed",
+            "path": "$",
+            "message": str(error),
+            "suggestion": "检查分析输入、事实引用和模型返回的 JSON。",
+        }]
+    legacy_message = str(error)
     write_json_atomically({
         "request_type": request.get("request_type"),
         "request_version": request.get("request_version"),
-        "analysis_id": request.get("analysis_id"),
-        "run_id": request.get("run_id"),
-        "error": str(error),
+        "analysis_id": request.get("host_context", {}).get("analysis_id"),
+        "run_id": request.get("host_context", {}).get("run_id"),
+        "error": legacy_message,
+        "code": "analysis_result_invalid" if getattr(error, "errors", None) else "analysis_failed",
+        "path": errors[0].get("path", "$") if errors else "$",
+        "message": legacy_message,
+        "suggestion": errors[0].get("suggestion", "") if errors else "",
+        "errors": errors,
     }, paths["error"])
     return paths["error"]
 
@@ -861,18 +887,19 @@ def main(argv=None):
             input_payload = _read_analysis_input(args.input) if args.input else None
             if not args.analysis_result:
                 context = _analysis_context(args.run_dir, args.spec, input_payload)
+                host_context = context["request"]["host_context"]
                 paths = _write_analysis_handoff(
                     args.output, context["request"], context["packet"]
                 )
                 print(json.dumps({
                     "status": "awaiting_model_analysis",
-                    "analysis_id": context["request"]["analysis_id"],
-                    "run_id": context["request"]["run_id"],
+                    "analysis_id": host_context["analysis_id"],
+                    "run_id": host_context["run_id"],
                     "model_analysis_request_path": str(paths["request"]),
                     "prompt_packet_path": str(paths["prompt"]),
                     "model_analysis_request": context["request"],
                     "host_handoff": {
-                        "protocol": "yuntu-current-conversation-model-v1",
+                        "protocol": MODEL_ANALYSIS_HANDOFF_PROTOCOL,
                         "model": "current_conversation_model",
                         "request": context["request"],
                         "response_schema": "AnalysisResult",
@@ -884,8 +911,9 @@ def main(argv=None):
 
             context = _analysis_context(args.run_dir, args.spec, input_payload)
             request = context["request"]
+            request_id = request["host_context"]["analysis_id"]
             _write_analysis_handoff(args.output, request, context["packet"])
-            begin_model_analysis(args.run_dir, request["analysis_id"])
+            begin_model_analysis(args.run_dir, request_id)
             try:
                 report, result_document, packet, _ = _analysis_pipeline(
                     args.run_dir,
@@ -901,7 +929,7 @@ def main(argv=None):
                 )
             except Exception as exc:
                 try:
-                    fail_model_analysis(args.run_dir, request["analysis_id"], str(exc))
+                    fail_model_analysis(args.run_dir, request_id, str(exc))
                     _write_analysis_error(args.output, request, exc)
                 except WorkflowStateError:
                     pass

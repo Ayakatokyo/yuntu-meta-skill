@@ -33,7 +33,7 @@ def build_prompt_packet(spec: AnalysisSpec, selected_facts: dict, fact_index: di
     quality_gates = [
         "每条结论必须包含能定位到实际 JSON 记录的 fact_refs；无引用内容只能放入 gaps 或 next_questions。",
         "相关不等于因果；不得使用导致、原因、驱动等因果表述。",
-        "品牌归因优先使用原始 brand 字段；selection_group 为空时，标题/标签品牌识别必须标记为推断并降低置信度。",
+        "品牌归因优先使用原始 brand 字段；selection_group.brand_name 为空且 brand_classification.source=runtime_title_rule 时，相关 finding 必须标记为 inference、不能使用 high confidence，并填写 brand_proxy_explanation。",
         "品牌分类只能使用 manifest.brand_classification.candidate_brands；不得使用默认品牌表，也不得根据品类、功效、标签或画面补判品牌。",
         "brand_filter 只能取 manifest 候选品牌或 未知品牌；分析层只消费事实包中的 brand_classification 快照，不重新匹配标题。",
     ]

@@ -11,7 +11,8 @@ except ImportError:  # pragma: no cover - direct script imports
 
 
 REQUEST_TYPE = "yuntu_commercial_analysis"
-REQUEST_VERSION = 1
+REQUEST_VERSION = 2
+HANDOFF_PROTOCOL = "yuntu-current-conversation-model-v2"
 RESPONSE_SCHEMA = "AnalysisResult"
 
 BASE_SYSTEM_RULES = (
@@ -36,22 +37,53 @@ def build_model_analysis_request(
     for rule in packet.get("rules", {}).get("quality_gates", []):
         if rule not in rules:
             rules.append(rule)
-    selected_paths = set(packet.get("facts", {}))
-    selected_index = {
-        ref: record
-        for ref, record in fact_index.items()
+    selected_paths = sorted(packet.get("facts", {}))
+    selected_refs = sorted(
+        ref for ref in fact_index
         if any(ref.startswith(f"{path}#") for path in selected_paths)
+    )
+    manifest = selected_facts.get("manifest", {})
+    if not isinstance(manifest, dict):
+        manifest = {}
+    packages = manifest.get("packages", {})
+    if not isinstance(packages, dict):
+        packages = {}
+    package_hashes = {
+        package["path"]: package.get("sha256")
+        for package in packages.values()
+        if isinstance(package, dict)
+        and isinstance(package.get("path"), str)
+        and package["path"] in selected_paths
+        and isinstance(package.get("sha256"), str)
+    }
+    source_hashes = {
+        artifact.get("path"): artifact.get("sha256")
+        for artifact in manifest.get("source_artifacts", [])
+        if isinstance(artifact, dict)
+        and isinstance(artifact.get("path"), str)
+        and isinstance(artifact.get("sha256"), str)
     }
     return {
         "request_type": REQUEST_TYPE,
         "request_version": REQUEST_VERSION,
-        "analysis_id": spec.analysis_id,
-        "run_id": spec.run_id,
-        "system_rules": rules,
-        "analysis_spec": spec.to_dict(),
-        "facts": packet.get("facts", {}),
-        "fact_index": selected_index,
-        "response_schema": RESPONSE_SCHEMA,
+        "host_context": {
+            "analysis_id": spec.analysis_id,
+            "run_id": spec.run_id,
+            "analysis_spec": spec.to_dict(),
+            "facts": packet.get("facts", {}),
+            "fact_refs": selected_refs,
+            "system_rules": rules,
+            "response_schema": RESPONSE_SCHEMA,
+        },
+        "local_audit": {
+            "analysis_id": spec.analysis_id,
+            "run_id": spec.run_id,
+            "facts_version": manifest.get("schema_version"),
+            "prompt_version": packet.get("prompt_version"),
+            "fact_package_hashes": package_hashes,
+            "source_artifact_hashes": source_hashes,
+            "selected_fact_paths": selected_paths,
+        },
     }
 
 
@@ -65,42 +97,68 @@ def validate_model_analysis_request(request: dict) -> list[str]:
     version = request.get("request_version")
     if isinstance(version, bool) or version != REQUEST_VERSION:
         errors.append(f"request_version must be {REQUEST_VERSION}")
+    host_context = request.get("host_context")
+    if not isinstance(host_context, dict):
+        errors.append("host_context must be an object")
+        host_context = {}
+    audit = request.get("local_audit")
+    if not isinstance(audit, dict):
+        errors.append("local_audit must be an object")
+        audit = {}
     for field in ("analysis_id", "run_id"):
-        value = request.get(field)
+        value = host_context.get(field)
         if not isinstance(value, str) or not value.strip():
-            errors.append(f"{field} is required")
-    rules = request.get("system_rules")
+            errors.append(f"host_context.{field} is required")
+    rules = host_context.get("system_rules")
     if not isinstance(rules, list) or not rules or any(
         not isinstance(rule, str) or not rule.strip() for rule in rules
     ):
-        errors.append("system_rules must be a non-empty string array")
-    if not isinstance(request.get("analysis_spec"), dict):
-        errors.append("analysis_spec must be an object")
-    facts = request.get("facts")
+        errors.append("host_context.system_rules must be a non-empty string array")
+    if not isinstance(host_context.get("analysis_spec"), dict):
+        errors.append("host_context.analysis_spec must be an object")
+    facts = host_context.get("facts")
     if not isinstance(facts, dict):
-        errors.append("facts must be an object")
-    fact_index = request.get("fact_index")
-    if not isinstance(fact_index, dict):
-        errors.append("fact_index must be an object")
-    if isinstance(facts, dict) and isinstance(fact_index, dict):
+        errors.append("host_context.facts must be an object")
+    refs = host_context.get("fact_refs")
+    if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
+        errors.append("host_context.fact_refs must be a string array")
+        refs = []
+    if isinstance(facts, dict):
         fact_paths = set(facts)
         for path, records in facts.items():
             if not isinstance(path, str) or not isinstance(records, list):
-                errors.append("facts must map package paths to record arrays")
-        for ref in fact_index:
-            if not isinstance(ref, str) or "#" not in ref:
-                errors.append("fact_index keys must be fact references")
+                errors.append("host_context.facts must map package paths to record arrays")
+        for ref in refs:
+            if "#" not in ref:
+                errors.append("host_context.fact_refs must be fact references")
                 continue
             if ref.split("#", 1)[0] not in fact_paths:
-                errors.append(f"fact_index reference is outside selected facts: {ref}")
-    if request.get("response_schema") != RESPONSE_SCHEMA:
-        errors.append(f"response_schema must be {RESPONSE_SCHEMA}")
+                errors.append(f"host_context.fact_refs reference is outside selected facts: {ref}")
+    if host_context.get("response_schema") != RESPONSE_SCHEMA:
+        errors.append(f"host_context.response_schema must be {RESPONSE_SCHEMA}")
+    for field in ("analysis_id", "run_id", "facts_version", "prompt_version"):
+        value = audit.get(field)
+        if field in {"analysis_id", "run_id", "prompt_version"} and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"local_audit.{field} is required")
+        if field == "facts_version" and (isinstance(value, bool) or not isinstance(value, (int, str))):
+            errors.append("local_audit.facts_version is required")
+    if not isinstance(audit.get("fact_package_hashes"), dict):
+        errors.append("local_audit.fact_package_hashes must be an object")
+    if not isinstance(audit.get("source_artifact_hashes"), dict):
+        errors.append("local_audit.source_artifact_hashes must be an object")
+    if not isinstance(audit.get("selected_fact_paths"), list):
+        errors.append("local_audit.selected_fact_paths must be an array")
+    if host_context.get("analysis_id") != audit.get("analysis_id"):
+        errors.append("local_audit.analysis_id must match host_context.analysis_id")
+    if host_context.get("run_id") != audit.get("run_id"):
+        errors.append("local_audit.run_id must match host_context.run_id")
     return errors
 
 
 __all__ = [
     "REQUEST_TYPE",
     "REQUEST_VERSION",
+    "HANDOFF_PROTOCOL",
     "RESPONSE_SCHEMA",
     "build_model_analysis_request",
     "validate_model_analysis_request",

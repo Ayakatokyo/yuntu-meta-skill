@@ -7,10 +7,10 @@ import json
 from typing import Any
 
 try:
-    from .analysis_result import ALLOWED_SECTIONS, normalize_analysis_result, validate_analysis_result
+    from .analysis_result import ALLOWED_SECTIONS, format_validation_errors, normalize_analysis_result, validate_analysis_result
     from .analysis_spec import AnalysisSpec
 except ImportError:  # pragma: no cover - direct collector execution
-    from analysis_result import ALLOWED_SECTIONS, normalize_analysis_result, validate_analysis_result
+    from analysis_result import ALLOWED_SECTIONS, format_validation_errors, normalize_analysis_result, validate_analysis_result
     from analysis_spec import AnalysisSpec
 
 
@@ -39,6 +39,12 @@ def _render_findings(results: list[dict]) -> list[str]:
                 f"- [{finding['type']}/{finding['confidence']}] {finding['claim']} "
                 f"（fact_refs: `{refs}`）"
             )
+            explanation = finding.get("brand_proxy_explanation")
+            if not isinstance(explanation, str) or not explanation.strip():
+                proxy = finding.get("brand_proxy")
+                explanation = proxy.get("explanation") if isinstance(proxy, dict) else None
+            if isinstance(explanation, str) and explanation.strip():
+                lines.append(f"  - 品牌代理说明：{explanation.strip()}")
         for gap in result.get("gaps", []):
             lines.append(f"- 数据缺口：{_text(gap)}")
         for question in result.get("next_questions", []):
@@ -110,7 +116,7 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
         errors.extend(validate_analysis_result(normalized, fact_index, result_modules))
         normalized_results.append(normalized)
     if errors:
-        raise ValueError("校验失败，禁止渲染报告: " + "; ".join(errors))
+        raise ValueError("校验失败，禁止渲染报告: " + format_validation_errors(errors))
 
     unknown = sorted({result["section"] for result in normalized_results if result.get("section") not in allowed})
     if unknown:
@@ -148,7 +154,7 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
         f"- analysis_id：`{spec.analysis_id}`",
         f"- run_id：`{metadata['run_id']}`",
         f"- 分析时间：`{generated_at}`",
-        f"- 事实包版本：`{metadata['facts_version']}`；提示词版本：`{metadata['prompt_version']}`；模型请求版本：`{metadata.get('request_version', 1)}`",
+        f"- 事实包版本：`{metadata['facts_version']}`；提示词版本：`{metadata['prompt_version']}`；模型请求版本：`{metadata.get('request_version', 2)}`",
         f"- 选择模块：{', '.join(spec.sections)}；商业问题：{spec.business_question}",
         f"- 样本覆盖：`{coverage}`",
         f"- 品牌筛选：{', '.join(spec.filters.get('brand_filter', ())) or '未指定'}",
