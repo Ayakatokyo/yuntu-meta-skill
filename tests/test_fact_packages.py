@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.fact_packages import FactPackageError, build_fact_packages
+from scripts.fact_packages import FactPackageError, build_fact_packages, extract_runtime_brands
 
 
 class FactPackageTests(unittest.TestCase):
@@ -18,9 +18,9 @@ class FactPackageTests(unittest.TestCase):
         self.list_path.write_text(json.dumps([
             {
                 "material_id": "202", "item_id": "202", "rank": 99,
-                "title": "second", "video_duration": 8, "publish_time": "20260820",
+                "title": "Brand B second", "video_duration": 8, "publish_time": "20260820",
                 "account_id": "acct", "material_uri": "uri-202", "business_date": "20260828",
-                "list_context": {"industry": "食品饮料"}, "selection_group": {"id": "default"},
+                "list_context": {"industry": "食品饮料", "brands": ["Brand A", "Brand B/品牌B"]}, "selection_group": {"id": "default"},
                 "metrics": {"show_cnt": 20}, "people_tags": ["女", "未知人群"],
                 "material_tags": ["单人口播"], "data_availability": {
                     "metrics": {"available": True, "missing_reason": ""},
@@ -30,9 +30,9 @@ class FactPackageTests(unittest.TestCase):
             },
             {
                 "material_id": "101", "item_id": "101", "rank": 1,
-                "title": "first", "video_duration": 10, "publish_time": "20260819",
+                "title": "Brand A first", "video_duration": 10, "publish_time": "20260819",
                 "account_id": "acct", "material_uri": "uri-101", "business_date": "20260828",
-                "list_context": {"industry": "食品饮料"}, "selection_group": {"id": "default"},
+                "list_context": {"industry": "食品饮料", "brands": ["Brand A", "Brand B/品牌B"]}, "selection_group": {"id": "default"},
                 "metrics": {"ctr": 0.2}, "people_tags": ["精致妈妈", "36-40", "女"],
                 "material_tags": ["多人情景剧"], "data_availability": {
                     "metrics": {"available": True, "missing_reason": ""},
@@ -87,6 +87,11 @@ class FactPackageTests(unittest.TestCase):
         )
         ranking = json.loads((self.run_dir / "facts/material-ranking.json").read_text())
         self.assertEqual([row["rank"] for row in ranking["records"]], [1, 99])
+        self.assertEqual(result["brand_classification"]["candidate_brands"], ["Brand A", "Brand B/品牌B"])
+        self.assertEqual(result["brand_classification"]["rule_version"], "runtime-title-rule-v1")
+        self.assertEqual(ranking["records"][0]["brand_classification"]["matchedBrands"], ["Brand A"])
+        self.assertEqual(ranking["records"][1]["brand_classification"]["matchedBrands"], ["Brand B/品牌B"])
+        self.assertEqual(ranking["records"][0]["brand_rule_version"], "runtime-title-rule-v1")
         audience = json.loads((self.run_dir / "facts/audience.json").read_text())
         self.assertEqual(
             [(x["tag"], x["dimension"]) for x in audience["records"][0]["observations"]],
@@ -94,10 +99,45 @@ class FactPackageTests(unittest.TestCase):
         )
         unknown = audience["records"][1]["observations"][1]
         self.assertEqual((unknown["tag"], unknown["dimension"]), ("未知人群", "unclassified"))
+        self.assertEqual(
+            audience["records"][0]["brand_classification"],
+            ranking["records"][0]["brand_classification"],
+        )
         script = json.loads((self.run_dir / "facts/script.json").read_text())
         self.assertFalse(script["records"][0]["data_availability"]["script_text"]["available"])
+        self.assertEqual(
+            script["records"][0]["brand_classification"],
+            ranking["records"][0]["brand_classification"],
+        )
         highlights = json.loads((self.run_dir / "facts/highlight-frames.json").read_text())
         self.assertEqual(highlights["records"][0]["frames"][0]["relative_path"], "highlights/101/01-000s.jpg")
+        self.assertEqual(
+            highlights["records"][0]["brand_classification"],
+            ranking["records"][0]["brand_classification"],
+        )
+
+    def test_extract_runtime_brands_deduplicates_in_first_seen_order(self):
+        records = [
+            {"list_context": {"brands": [" 品牌A ", "品牌B/Brand B"]}},
+            {"list_context": {"brands": ["品牌B/Brand B", "品牌C"]}},
+            {"list_context": {"industry": "食品饮料"}},
+        ]
+
+        self.assertEqual(extract_runtime_brands(records), ["品牌A", "品牌B/Brand B", "品牌C"])
+
+    def test_missing_runtime_brand_scope_writes_unknown_without_default_fallback(self):
+        records = json.loads(self.list_path.read_text(encoding="utf-8"))
+        for record in records:
+            record["list_context"].pop("brands", None)
+        self.list_path.write_text(json.dumps(records, ensure_ascii=False), encoding="utf-8")
+
+        result = build_fact_packages(self.run_dir)
+        self.assertEqual(result["brand_classification"]["candidate_brands"], [])
+        ranking = json.loads((self.run_dir / "facts/material-ranking.json").read_text())
+        self.assertTrue(all(
+            row["brand_classification"]["value"] == "未知品牌"
+            for row in ranking["records"]
+        ))
 
     def test_builder_rejects_missing_or_invalid_inputs_without_partial_output(self):
         self.list_path.unlink()

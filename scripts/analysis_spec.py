@@ -33,6 +33,8 @@ class AnalysisSpec:
             filters["rank_range"] = list(filters["rank_range"])
         if "material_ids" in filters:
             filters["material_ids"] = list(filters["material_ids"])
+        if "brand_filter" in filters:
+            filters["brand_filter"] = list(filters["brand_filter"])
         return {
             "analysis_id": self.analysis_id,
             "run_id": self.run_id,
@@ -71,7 +73,7 @@ def _filters(raw: Any) -> dict[str, Any]:
         raw = {}
     if not isinstance(raw, dict):
         raise ValueError("filters must be an object")
-    unexpected = set(raw) - {"rank_range", "material_ids"}
+    unexpected = set(raw) - {"rank_range", "material_ids", "brand_filter"}
     if unexpected:
         raise ValueError("unsupported filters: " + ", ".join(sorted(unexpected)))
 
@@ -85,7 +87,12 @@ def _filters(raw: Any) -> dict[str, Any]:
         raise ValueError(f"rank_range must be within 1..{MAX_RANK} and ordered")
 
     material_ids = _string_tuple(raw.get("material_ids", []), "material_ids")
-    return {"rank_range": (start, end), "material_ids": material_ids}
+    brand_filter = _string_tuple(raw.get("brand_filter", []), "brand_filter")
+    return {
+        "rank_range": (start, end),
+        "material_ids": material_ids,
+        "brand_filter": brand_filter,
+    }
 
 
 def parse_analysis_spec(payload: dict) -> AnalysisSpec:
@@ -137,6 +144,20 @@ def validate_analysis_spec(spec: AnalysisSpec, manifest: dict) -> list[str]:
         errors.append("run_id is required")
     if not isinstance(manifest, dict):
         return errors + ["manifest must be an object"]
+    brand_filter = spec.filters.get("brand_filter", ())
+    if brand_filter:
+        brand_metadata = manifest.get("brand_classification")
+        candidates = brand_metadata.get("candidate_brands") if isinstance(brand_metadata, dict) else None
+        if not isinstance(candidates, list):
+            errors.append("brand_filter requires manifest brand_classification metadata")
+        else:
+            allowed_brands = {str(item) for item in candidates} | {"未知品牌"}
+            unsupported_brands = sorted(set(brand_filter) - allowed_brands)
+            if unsupported_brands:
+                errors.append(
+                    "brand_filter contains brands outside manifest scope: "
+                    + ", ".join(unsupported_brands)
+                )
     manifest_run_id = manifest.get("run_id") or manifest.get("runId")
     if spec.run_id and manifest_run_id and spec.run_id != manifest_run_id:
         errors.append(f"run_id does not match manifest: {spec.run_id} != {manifest_run_id}")

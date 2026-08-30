@@ -68,6 +68,29 @@ class AnalysisPromptTests(unittest.TestCase):
         self.assertIn("高光时间", requirements)
         self.assertIn("selection_group", " ".join(packet["rules"]["quality_gates"]))
 
+    def test_packet_exposes_runtime_brand_scope_and_filter_boundary(self):
+        spec = parse_analysis_spec({
+            "analysis_id": "analysis-brand", "run_id": "run-1",
+            "sections": ["material_ranking"], "business_question": "按品牌比较",
+            "filters": {"rank_range": [1, 1], "brand_filter": ["品牌A"]},
+        })
+        facts = dict(self.facts)
+        facts["manifest"] = {
+            "schema_version": 3, "run_id": "run-1",
+            "brand_classification": {
+                "rule_version": "runtime-title-rule-v1",
+                "candidate_brands": ["品牌A", "品牌B"],
+                "counts": {"品牌A": 1, "品牌B": 0}, "unknown_count": 0,
+            },
+        }
+
+        packet = build_prompt_packet(spec, facts, build_fact_index(facts))
+
+        self.assertEqual(packet["brand_classification"]["candidate_brands"], ["品牌A", "品牌B"])
+        rules = " ".join(packet["rules"]["quality_gates"])
+        self.assertIn("manifest", rules)
+        self.assertIn("brand_filter", rules)
+
 
 if __name__ == "__main__":
     unittest.main()

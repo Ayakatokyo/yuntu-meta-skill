@@ -12,12 +12,17 @@ import shutil
 import tempfile
 
 try:
+    from .brand_classifier import BRAND_RULE_VERSION, UNKNOWN_BRAND, classify_brand
+except ImportError:  # pragma: no cover - direct script imports
+    from brand_classifier import BRAND_RULE_VERSION, UNKNOWN_BRAND, classify_brand
+
+try:
     from .rpa_io import write_json_atomically
 except ImportError:  # pragma: no cover - direct script imports
     from rpa_io import write_json_atomically
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 PACKAGE_NAMES = ("material_ranking", "audience", "script", "highlight_frames")
 AGE_PATTERN = re.compile(r"^(?:\d{2}-\d{2}|\d+\+)$")
 CROWD_GROUPS = {
@@ -34,6 +39,48 @@ CROWD_GROUPS = {
 
 class FactPackageError(ValueError):
     """Raised when a run cannot be converted into consistent fact packages."""
+
+
+def extract_runtime_brands(records: list[dict]) -> list[str]:
+    """Extract the current run's explicit brand scope without widening it."""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for record in records:
+        context = record.get("list_context") if isinstance(record, dict) else None
+        candidates = None
+        if isinstance(context, dict) and "brands" in context:
+            candidates = context.get("brands")
+        elif isinstance(context, dict) and isinstance(context.get("pre_input"), dict):
+            candidates = context["pre_input"].get("brands")
+        elif isinstance(record, dict) and isinstance(record.get("pre_input"), dict):
+            candidates = record["pre_input"].get("brands")
+        if not isinstance(candidates, list):
+            continue
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value and value not in seen:
+                seen.add(value)
+                result.append(value)
+    return result
+
+
+def _classification_status(classification: dict, brands: list[str]) -> tuple[str, str]:
+    if classification.get("value") != UNKNOWN_BRAND:
+        return "classified", "runtime_title_match"
+    if not brands:
+        return "unclassified", "runtime_brand_scope_missing"
+    return "unclassified", "no_runtime_brand_match"
+
+
+def _add_brand_fields(record: dict, classification: dict, brands: list[str]) -> dict:
+    item = dict(record)
+    item["brand_classification"] = classification
+    item["brand_rule_version"] = BRAND_RULE_VERSION
+    status, reason = _classification_status(classification, brands)
+    item["classification_status"] = status
+    item["classification_reason"] = reason
+    return item
 
 
 def _read_json(path: Path, label: str):
@@ -124,11 +171,14 @@ def _load_highlights(root: Path) -> dict[str, dict]:
     return result
 
 
-def _ranking_payload(root: Path, records: list[dict]) -> dict:
+def _ranking_payload(root: Path, records: list[dict], brands: list[str] | None = None) -> dict:
+    runtime_brands = extract_runtime_brands(records) if brands is None else list(brands)
     ordered = []
     for record in sorted(records, key=lambda item: item.get("rank", 0)):
         item = dict(record)
         item.pop("people_tags", None)
+        classification = classify_brand(item.get("title", ""), brands=runtime_brands)
+        item = _add_brand_fields(item, classification, runtime_brands)
         item["source_paths"] = _source_paths(
             root,
             normalized="normalized/list-records.json",
@@ -138,7 +188,7 @@ def _ranking_payload(root: Path, records: list[dict]) -> dict:
     return {"schema_version": SCHEMA_VERSION, "records": ordered}
 
 
-def _audience_payload(root: Path, records: list[dict]) -> dict:
+def _audience_payload(root: Path, records: list[dict], classifications: dict[str, dict], brands: list[str]) -> dict:
     ordered = []
     for record in sorted(records, key=lambda item: item.get("rank", 0)):
         raw_tags = record.get("people_tags")
@@ -148,7 +198,11 @@ def _audience_payload(root: Path, records: list[dict]) -> dict:
         observations = [
             {"tag": tag, "dimension": _audience_dimension(tag)} for tag in tags
         ]
-        ordered.append({
+        classification = classifications.get(
+            str(record.get("material_id")),
+            classify_brand("", brands=brands),
+        )
+        ordered.append(_add_brand_fields({
             "material_id": record.get("material_id"),
             "rank": record.get("rank"),
             "observations": observations,
@@ -159,16 +213,17 @@ def _audience_payload(root: Path, records: list[dict]) -> dict:
                 normalized="normalized/list-records.json",
                 raw="raw-csv/list.csv",
             ),
-        })
+        }, classification, brands))
     return {"schema_version": SCHEMA_VERSION, "records": ordered}
 
 
-def _script_payload(root: Path, details: dict[str, dict]) -> dict:
+def _script_payload(root: Path, details: dict[str, dict], classifications: dict[str, dict], brands: list[str]) -> dict:
     records = []
     for material_id in sorted(details):
         detail = details[material_id]
         availability = detail.get("data_availability", {})
-        records.append({
+        classification = classifications.get(material_id, classify_brand("", brands=brands))
+        records.append(_add_brand_fields({
             "material_id": material_id,
             "date_range": detail.get("date_range"),
             "script_text": detail.get("script_text", ""),
@@ -183,11 +238,11 @@ def _script_payload(root: Path, details: dict[str, dict]) -> dict:
                 normalized=f"normalized/detail-records/{material_id}.json",
                 raw=f"raw-csv/details/{material_id}.csv",
             ),
-        })
+        }, classification, brands))
     return {"schema_version": SCHEMA_VERSION, "records": records}
 
 
-def _highlight_payload(root: Path, details: dict[str, dict], highlights: dict[str, dict]) -> dict:
+def _highlight_payload(root: Path, details: dict[str, dict], highlights: dict[str, dict], classifications: dict[str, dict], brands: list[str]) -> dict:
     records = []
     for material_id in sorted(set(details) | set(highlights)):
         detail = details.get(material_id, {})
@@ -195,7 +250,8 @@ def _highlight_payload(root: Path, details: dict[str, dict], highlights: dict[st
         frames = manifest_item.get("frames", [])
         if not isinstance(frames, list):
             raise FactPackageError(f"highlight frames must be an array: {material_id}")
-        records.append({
+        classification = classifications.get(material_id, classify_brand("", brands=brands))
+        records.append(_add_brand_fields({
             "material_id": material_id,
             "date_range": detail.get("date_range"),
             "trend_series": detail.get("trend_series", []),
@@ -208,7 +264,7 @@ def _highlight_payload(root: Path, details: dict[str, dict], highlights: dict[st
                 "detail_raw": f"raw-csv/details/{material_id}.csv",
                 "manifest": "highlights-manifest.json",
             },
-        })
+        }, classification, brands))
     return {"schema_version": SCHEMA_VERSION, "records": records}
 
 
@@ -229,7 +285,13 @@ def _source_artifacts(root: Path, details: dict[str, dict]) -> list[dict]:
     return artifacts
 
 
-def _manifest(root: Path, details: dict[str, dict], highlights: dict[str, dict], payloads: dict[str, dict]) -> dict:
+def _manifest(
+    root: Path,
+    details: dict[str, dict],
+    highlights: dict[str, dict],
+    payloads: dict[str, dict],
+    brands: list[str],
+) -> dict:
     available_frames = sum(
         1
         for item in highlights.values()
@@ -248,12 +310,28 @@ def _manifest(root: Path, details: dict[str, dict], highlights: dict[str, dict],
         "script": "script.json",
         "highlight_frames": "highlight-frames.json",
     }
+    classifications = payloads["material_ranking"]["records"]
+    brand_counts = {brand: 0 for brand in brands}
+    unknown_count = 0
+    for record in classifications:
+        matched = record.get("brand_classification", {}).get("matchedBrands", [])
+        if not matched:
+            unknown_count += 1
+        for brand in matched:
+            brand_counts[brand] = brand_counts.get(brand, 0) + 1
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "run_root": ".",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "classification": {"packages": list(PACKAGE_NAMES), "principle": "source_facts_only"},
+        "brand_classification": {
+            "rule_version": BRAND_RULE_VERSION,
+            "candidate_brands": list(brands),
+            "counts": brand_counts,
+            "unknown_count": unknown_count,
+            "total_records": len(classifications),
+        },
         "coverage": {
             "ranking_records": len(payloads["material_ranking"]["records"]),
             "detail_records": len(details),
@@ -293,13 +371,20 @@ def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = 
         raise FactPackageError("normalized list records must contain objects")
     details = _load_details(root)
     highlights = _load_highlights(root)
-    payloads = {
-        "material_ranking": _ranking_payload(root, records),
-        "audience": _audience_payload(root, records),
-        "script": _script_payload(root, details),
-        "highlight_frames": _highlight_payload(root, details, highlights),
+    runtime_brands = extract_runtime_brands(records)
+    ranking_payload = _ranking_payload(root, records, runtime_brands)
+    classifications = {
+        str(record.get("material_id")): record["brand_classification"]
+        for record in ranking_payload["records"]
+        if record.get("material_id") is not None
     }
-    manifest = _manifest(root, details, highlights, payloads)
+    payloads = {
+        "material_ranking": ranking_payload,
+        "audience": _audience_payload(root, records, classifications, runtime_brands),
+        "script": _script_payload(root, details, classifications, runtime_brands),
+        "highlight_frames": _highlight_payload(root, details, highlights, classifications, runtime_brands),
+    }
+    manifest = _manifest(root, details, highlights, payloads, runtime_brands)
     destination = Path(output_dir) if output_dir is not None else root / "facts"
     destination.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}-", dir=destination.parent))

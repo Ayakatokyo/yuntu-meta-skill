@@ -655,6 +655,7 @@ def _analysis_pipeline(run_dir, spec_path, result_path=None):
     if result_errors:
         raise ValueError("AnalysisResult 校验失败: " + "; ".join(result_errors))
     manifest = selected["manifest"]
+    ranking_selection = selected.get("sections", {}).get("material_ranking", {})
     metadata = {
         "run_id": spec.run_id,
         "analysis_time": datetime.now(ZoneInfo("Asia/Shanghai")).isoformat(),
@@ -662,6 +663,8 @@ def _analysis_pipeline(run_dir, spec_path, result_path=None):
         "prompt_version": packet["prompt_version"],
         "fact_index": fact_index,
         "coverage": manifest.get("coverage", {}),
+        "brand_classification": manifest.get("brand_classification", {}),
+        "brand_audit_records": ranking_selection.get("records", []),
         "package_paths": [
             package["path"]
             for package in manifest.get("packages", {}).values()

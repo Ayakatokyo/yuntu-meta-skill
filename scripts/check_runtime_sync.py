@@ -11,6 +11,7 @@ import sys
 
 RUNTIME_FILES = (
     "scripts/collector.py",
+    "scripts/brand_classifier.py",
     "scripts/fact_packages.py",
     "scripts/analysis_spec.py",
     "scripts/analysis_facts.py",

@@ -13,7 +13,13 @@ class AnalysisReportTests(unittest.TestCase):
             "business_question": "比较素材表现", "filters": {"rank_range": [1, 1]},
         })
         self.fact_index = {
-            "facts/material-ranking.json#/records/0": {"material_id": "101", "rank": 1},
+            "facts/material-ranking.json#/records/0": {
+                "material_id": "101", "rank": 1,
+                "brand_classification": {
+                    "value": "品牌A", "matchedBrands": ["品牌A"],
+                    "source": "runtime_title_rule", "match_tokens": {"品牌A": ["品牌A"]},
+                },
+            },
             "facts/audience.json#/records/0": {"material_id": "101", "raw_people_tags": ["女"]},
         }
         self.results = [
@@ -35,6 +41,12 @@ class AnalysisReportTests(unittest.TestCase):
                 "facts/material-ranking.json", "facts/audience.json",
                 "facts/script.json", "facts/highlight-frames.json",
             ],
+            "brand_classification": {
+                "rule_version": "runtime-title-rule-v1",
+                "candidate_brands": ["品牌A", "品牌B"],
+                "counts": {"品牌A": 1, "品牌B": 0}, "unknown_count": 0,
+            },
+            "brand_audit_records": [self.fact_index["facts/material-ranking.json#/records/0"]],
         }
 
     def test_single_or_multi_module_report_has_fixed_skeleton_and_metadata(self):
@@ -52,6 +64,15 @@ class AnalysisReportTests(unittest.TestCase):
         self.assertIn("facts/script.json", report)
         self.assertIn("相关不等于因果", report)
         self.assertIn("品牌代理识别", report)
+
+    def test_report_displays_brand_scope_and_match_token_audit(self):
+        report = render_analysis_report(self.spec, self.results, self.metadata)
+
+        self.assertIn("品牌候选范围：品牌A、品牌B", report)
+        self.assertIn("runtime-title-rule-v1", report)
+        self.assertIn("未知品牌数量：0", report)
+        self.assertIn("matchedBrands", report)
+        self.assertIn("match_tokens", report)
 
     def test_custom_sections_keep_declared_order(self):
         spec = parse_analysis_spec({

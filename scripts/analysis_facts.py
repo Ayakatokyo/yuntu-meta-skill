@@ -54,6 +54,7 @@ def _verify_source_artifacts(root: Path, manifest: dict) -> None:
 def _selected_records(records: list[dict], spec: AnalysisSpec, section: str, ranking_ids: set[str]) -> list[dict]:
     start, end = spec.filters["rank_range"]
     material_ids = set(spec.filters["material_ids"])
+    brand_filter = set(spec.filters.get("brand_filter", ()))
     result = []
     for original_index, record in enumerate(records):
         if not isinstance(record, dict):
@@ -67,8 +68,31 @@ def _selected_records(records: list[dict], spec: AnalysisSpec, section: str, ran
         if not isinstance(rank, int) and ranking_ids and section in {"script", "highlight_frames"}:
             if record_material_id not in ranking_ids:
                 continue
+        if brand_filter and not _record_matches_brand(record, brand_filter):
+            continue
         result.append((original_index, record))
     return result
+
+
+def _record_matches_brand(record: dict, brand_filter: set[str]) -> bool:
+    """Match only persisted classification snapshots; never reclassify facts."""
+
+    classification = record.get("brand_classification")
+    if not isinstance(classification, dict):
+        return False
+    matched = classification.get("matchedBrands")
+    if isinstance(matched, list):
+        matched_brands = {str(item) for item in matched}
+    else:
+        matched_brands = set()
+    value = classification.get("value")
+    if value == "未知品牌":
+        matched_brands.add("未知品牌")
+    elif isinstance(value, str) and value:
+        matched_brands.add(value)
+    elif isinstance(value, list):
+        matched_brands.update(str(item) for item in value)
+    return bool(matched_brands & brand_filter)
 
 
 def load_selected_facts(run_root: Path, spec: AnalysisSpec) -> dict:

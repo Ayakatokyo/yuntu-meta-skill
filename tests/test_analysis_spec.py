@@ -14,6 +14,12 @@ def manifest():
             "highlight_frames": {"path": "facts/highlight-frames.json", "record_count": 2},
         },
         "coverage": {"ranking_records": 10},
+        "brand_classification": {
+            "rule_version": "runtime-title-rule-v1",
+            "candidate_brands": ["品牌A", "品牌B"],
+            "counts": {"品牌A": 5, "品牌B": 3},
+            "unknown_count": 2,
+        },
     }
 
 
@@ -35,6 +41,23 @@ class AnalysisSpecTests(unittest.TestCase):
         self.assertIsInstance(spec, AnalysisSpec)
         self.assertEqual(spec.sections, ("material_ranking", "audience"))
         self.assertEqual(spec.filters["rank_range"], (1, 10))
+
+    def test_parse_preserves_brand_filter_as_a_typed_tuple(self):
+        payload = self.valid_payload()
+        payload["filters"]["brand_filter"] = ["品牌A", "未知品牌"]
+
+        spec = parse_analysis_spec(payload)
+
+        self.assertEqual(spec.filters["brand_filter"], ("品牌A", "未知品牌"))
+        self.assertEqual(spec.to_dict()["filters"]["brand_filter"], ["品牌A", "未知品牌"])
+
+    def test_validation_rejects_brand_outside_manifest_scope(self):
+        payload = self.valid_payload()
+        payload["filters"]["brand_filter"] = ["未指定品牌"]
+
+        errors = validate_analysis_spec(parse_analysis_spec(payload), manifest())
+
+        self.assertTrue(any("brand_filter" in error for error in errors))
 
     def test_rejects_unknown_module(self):
         payload = self.valid_payload()

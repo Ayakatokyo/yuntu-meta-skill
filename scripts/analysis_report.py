@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from typing import Any
 
 try:
@@ -43,6 +44,46 @@ def _render_findings(results: list[dict]) -> list[str]:
         for question in result.get("next_questions", []):
             lines.append(f"- 待验证问题：{_text(question)}")
     return lines or ["- 本次没有已校验结论或数据缺口。"]
+
+
+def _render_brand_audit(metadata: dict) -> list[str]:
+    brand_metadata = metadata.get("brand_classification")
+    if not isinstance(brand_metadata, dict):
+        return ["- 当前事实包没有品牌分类 manifest 元数据；未使用默认品牌表。"]
+    candidates = brand_metadata.get("candidate_brands", [])
+    if not isinstance(candidates, list):
+        candidates = []
+    counts = brand_metadata.get("counts", {})
+    if not isinstance(counts, dict):
+        counts = {}
+    lines = [
+        "- 品牌候选范围：" + ("、".join(str(item) for item in candidates) or "未指定"),
+        f"- 品牌规则版本：`{brand_metadata.get('rule_version', 'unknown')}`",
+        "- 品牌分类计数：" + ("；".join(f"{key}={value}" for key, value in counts.items()) or "无"),
+        f"- 未知品牌数量：{brand_metadata.get('unknown_count', 'unknown')}",
+    ]
+    records = metadata.get("brand_audit_records", [])
+    if not isinstance(records, list):
+        records = []
+    lines.append("- 分类审计（matchedBrands / match_tokens）：")
+    if not records:
+        lines.append("  - 当前选择没有可展示的榜单分类记录。")
+        return lines
+    for record in records[:20]:
+        if not isinstance(record, dict):
+            continue
+        classification = record.get("brand_classification", {})
+        if not isinstance(classification, dict):
+            classification = {}
+        evidence = {
+            "material_id": record.get("material_id"),
+            "matchedBrands": classification.get("matchedBrands", []),
+            "match_tokens": classification.get("match_tokens", {}),
+        }
+        lines.append("  - " + json.dumps(evidence, ensure_ascii=False, sort_keys=True))
+    if len(records) > 20:
+        lines.append(f"  - 其余 {len(records) - 20} 条分类记录保留在事实包中。")
+    return lines
 
 
 def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: dict) -> str:
@@ -109,6 +150,7 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
         f"- 事实包版本：`{metadata['facts_version']}`；提示词版本：`{metadata['prompt_version']}`",
         f"- 选择模块：{', '.join(spec.sections)}；商业问题：{spec.business_question}",
         f"- 样本覆盖：`{coverage}`",
+        f"- 品牌筛选：{', '.join(spec.filters.get('brand_filter', ())) or '未指定'}",
         "- 事实包路径：" + ", ".join(f"`{path}`" for path in package_paths),
         "- 方法：仅向当前对话模型提供已选择、已校验的事实包，并要求每条结论回填 `fact_refs`。",
         "",
@@ -120,6 +162,9 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
         else:
             lines.append("- 本次未选择该模块。")
         lines.append("")
+    lines.extend(["## 品牌分类审计", ""])
+    lines.extend(_render_brand_audit(metadata))
+    lines.append("")
     for custom_name in custom_names:
         lines.extend([f"## {custom_name}", ""])
         lines.extend(_render_findings(grouped.get(custom_name, [])))

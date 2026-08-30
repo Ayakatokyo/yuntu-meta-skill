@@ -41,11 +41,13 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 
 `collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径与 coverage；事实包构建失败时命令返回非零。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 
+事实包生成时会从本轮 `list_context.brands`（或其 `pre_input.brands`）建立严格的运行时品牌候选范围，不会扩展默认品牌表。标题分类仅对候选品牌执行 Unicode NFKC、`casefold()` 和连续字符串匹配；规范名中的 `/` 表示别名，支持多品牌同时命中，并在 `brand_classification` 中保留 `matchedBrands` 与 `match_tokens` 审计证据。未命中或候选范围缺失时归为 `未知品牌`；`九阳豆浆` 仅支持显式受控的“九阳…豆浆”变体，单独“九阳”不命中。分类不依据品类、功效、标签或画面推断，四类事实包按 `material_id` 传播同一快照。
+
 通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较采集器、事实包和分析编排模块的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
 
 ## 商业分析编排
 
-采集完成后必须显式选择一个或多个分析模块，并提供 `AnalysisSpec` JSON。`sections` 可选 `material_ranking`、`audience`、`script`、`highlight_frames`；`business_question` 必填，`filters.rank_range` 必须位于 1..1000。编排器只加载所选事实包，先校验 manifest、包路径、记录数和源文件 SHA-256，再生成带 `fact_refs` 的 PromptPacket。
+采集完成后必须显式选择一个或多个分析模块，并提供 `AnalysisSpec` JSON。`sections` 可选 `material_ranking`、`audience`、`script`、`highlight_frames`；`business_question` 必填，`filters.rank_range` 必须位于 1..1000；可选 `filters.brand_filter` 只能取当前 facts manifest 的候选品牌或 `未知品牌`，不允许模型或调用方扩展范围。编排器只加载所选事实包，先校验 manifest、包路径、记录数和源文件 SHA-256，再生成带 `fact_refs` 的 PromptPacket。
 
 模型结果可通过 `--analysis-result` 传入；未传入时命令只生成保守的事实摘要和数据缺口，不能替代模型洞察。每条 `findings` 结论必须包含可解析的 `fact_refs`、合法的 `type` 和 `confidence`。`source_empty` 只能进入 `gaps`；当前脚本字段为空时不得用标题或标签代替脚本。`selection_group` 品牌字段为空时，标题/标签品牌识别只能标记为推断并降低置信度；标签关联和高光解释不得表述为因果。
 
