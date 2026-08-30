@@ -563,6 +563,128 @@ class YuntuHighlightTests(unittest.TestCase):
             self.assertEqual(targets, [root / "cover.jpg", root / "peak.jpg"])
             self.assertTrue(all(path.is_file() for path in targets))
 
+    def test_extract_frame_allows_deep_seconds_for_1080p_vertical_fixture(self):
+        highlights = load_module()
+        observed_timeouts = []
+        source_detail = json.loads(
+            (
+                ROOT
+                / "runs/food-beverage-2026-0810-0820/normalized/detail-records/"
+                "7668663443726172214.json"
+            ).read_text(encoding="utf-8")
+        )
+        deep_seconds = {
+            point["second"]
+            for trend in source_detail["trend_series"]
+            if trend["trend_name"] == "点击指数"
+            for point in trend["series"]
+            if point["second"] in {31, 47}
+        }
+        self.assertEqual(deep_seconds, {31, 47})
+
+        def run(command, *, timeout, **_kwargs):
+            observed_timeouts.append(timeout)
+            if timeout == highlights.VIDEO_DOWNLOAD_TIMEOUT_SECONDS:
+                raise subprocess.TimeoutExpired(command, timeout)
+            Path(command[-1]).write_bytes(b"\xff\xd8fixture\xff\xd9")
+            return mock.Mock(returncode=0, stderr="")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "fixture-1080x1920-48s.mp4"
+            video.write_bytes(b"fixture video")
+            with mock.patch.object(highlights, "_resolve_ffmpeg", return_value="ffmpeg"), \
+                 mock.patch.object(highlights.subprocess, "run", side_effect=run):
+                for second in (31, 47):
+                    target = root / f"frame-{second}.jpg"
+                    highlights.extract_frame(video, second, target)
+                    self.assertTrue(target.is_file())
+
+        self.assertEqual(highlights.VIDEO_DOWNLOAD_TIMEOUT_SECONDS, 30)
+        self.assertEqual(observed_timeouts, [120, 120])
+
+    def test_extract_frames_batch_allows_31s_and_47s_for_deep_vertical_fixture(self):
+        highlights = load_module()
+        observed_timeouts = []
+
+        def run(command, *, timeout, **_kwargs):
+            observed_timeouts.append(timeout)
+            if timeout == highlights.VIDEO_DOWNLOAD_TIMEOUT_SECONDS:
+                raise subprocess.TimeoutExpired(command, timeout)
+            for index, token in enumerate(command):
+                if token == "image2":
+                    Path(command[index + 1]).write_bytes(b"\xff\xd8fixture\xff\xd9")
+            return mock.Mock(returncode=0, stderr="")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "fixture-1080x1920-48s.mp4"
+            video.write_bytes(b"fixture video")
+            requests = [
+                {"second": 31, "destination": root / "frame-31.jpg"},
+                {"second": 47, "destination": root / "frame-47.jpg"},
+            ]
+            with mock.patch.object(highlights, "_resolve_ffmpeg", return_value="ffmpeg"), \
+                 mock.patch.object(highlights.subprocess, "run", side_effect=run):
+                targets = highlights.extract_frames_batch(video, requests)
+                self.assertTrue(all(path.is_file() for path in targets))
+
+        self.assertEqual(observed_timeouts, [120])
+        self.assertEqual(targets, [root / "frame-31.jpg", root / "frame-47.jpg"])
+
+    def test_failed_deep_frame_is_not_published_and_keeps_ffmpeg_diagnostic(self):
+        highlights = load_module()
+
+        def downloader(_url, destination):
+            Path(destination).write_bytes(b"fixture video")
+
+        def failed_batch(*_args, **_kwargs):
+            raise highlights.HighlightFrameError(
+                "ffmpeg batch frame extraction timed out after 120 seconds"
+            )
+
+        def frame_extractor(_video, second, destination, *, ffmpeg_bin=None):
+            if second == 47:
+                raise highlights.HighlightFrameError(
+                    "ffmpeg frame extraction timed out after 120 seconds"
+                )
+            Path(destination).write_bytes(b"\xff\xd8fixture\xff\xd9")
+
+        detail = {
+            "material_id": "7668663443726172214",
+            "video_url": "https://video.example/fixture.mp4",
+            "trend_series": [{
+                "trend_name": "点击指数",
+                "series": [
+                    {"second": 31, "value": 10},
+                    {"second": 47, "value": 9},
+                ],
+            }],
+        }
+        spec = {
+            "include_cover": False,
+            "metrics": {"点击指数": {"strategy": "top_values", "limit": 2}},
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            frames = highlights.generate_highlights_for_detail(
+                detail,
+                root,
+                spec,
+                downloader=downloader,
+                frame_extractor=frame_extractor,
+                batch_extractor=failed_batch,
+            )
+            failed_target = root / "highlights" / detail["material_id"] / "02-047s.jpg"
+
+            self.assertTrue(frames[0]["available"])
+            self.assertFalse(frames[1]["available"])
+            self.assertEqual(frames[1]["failure_reason"], "extract_failed")
+            self.assertIn("timed out after 120 seconds", frames[1]["failure_detail"])
+            self.assertFalse(failed_target.exists())
+            self.assertFalse(any(root.rglob("*.part")))
+
     def test_validate_jpeg_rejects_empty_and_truncated_files(self):
         highlights = load_module()
 
@@ -670,6 +792,29 @@ class YuntuHighlightTests(unittest.TestCase):
                     session=Session(),
                     max_bytes=4,
                 )
+
+    def test_download_error_diagnostic_redacts_signed_url_query(self):
+        highlights = load_module()
+
+        class Session:
+            def get(self, url, *, stream, timeout):
+                raise RuntimeError(
+                    f"request failed for {url}?token=secret-token&sig=secret-signature"
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(highlights.HighlightFrameError) as raised:
+                highlights.download_video(
+                    "https://video.example/a.mp4?token=source-token",
+                    Path(directory) / "a.mp4",
+                    session=Session(),
+                )
+
+        message = str(raised.exception)
+        self.assertIn("video download failed", message)
+        self.assertNotIn("source-token", message)
+        self.assertNotIn("secret-token", message)
+        self.assertNotIn("secret-signature", message)
 
     def test_resolve_ffmpeg_uses_imageio_before_system_path(self):
         highlights = load_module()

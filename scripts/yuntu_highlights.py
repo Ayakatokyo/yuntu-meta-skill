@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,11 +23,46 @@ STANDARD_HIGHLIGHT_TREND = "点击指数"
 STANDARD_HIGHLIGHT_PEAK_LIMIT = 5
 
 VIDEO_DOWNLOAD_TIMEOUT_SECONDS = 30
+FRAME_EXTRACT_TIMEOUT_SECONDS = 120
 VIDEO_DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
 
 
 class HighlightFrameError(Exception):
     """Raised when an individual video or frame cannot be processed."""
+
+
+def _redact_error_text(value):
+    """Keep useful diagnostics while removing URL credentials and query secrets."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    text = str(value or "").strip()
+    text = re.sub(
+        r"(?i)(https?://)([^/\s:@]+):([^@\s/]+)@",
+        r"\1[REDACTED]@",
+        text,
+    )
+    text = re.sub(
+        r"(?i)(https?://[^\s?]+)\?[^\s]*",
+        r"\1?[REDACTED_QUERY]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(authorization|bearer|token|password|secret|api[_-]?key)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        text,
+    )
+    return text[:240]
+
+
+def _diagnostic_error_detail(error):
+    """Return a bounded, credential-safe error detail for persisted diagnostics."""
+    detail = _redact_error_text(error)
+    return detail or error.__class__.__name__
+
+
+def _ffmpeg_stderr_suffix(stderr):
+    lines = _redact_error_text(stderr).splitlines()
+    return f": {lines[-1]}" if lines and lines[-1] else ""
 
 
 def normalize_highlight_trends(trend_names):
@@ -278,7 +314,9 @@ def download_video(
     except HighlightFrameError:
         raise
     except Exception as error:
-        raise HighlightFrameError(f"video download failed: {error}") from error
+        raise HighlightFrameError(
+            f"video download failed: {_diagnostic_error_detail(error)}"
+        ) from error
     finally:
         partial.unlink(missing_ok=True)
         if response is not None:
@@ -356,19 +394,26 @@ def extract_frame(video_path, second, destination, *, ffmpeg_bin=None):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
+            timeout=FRAME_EXTRACT_TIMEOUT_SECONDS,
             check=False,
         )
         if completed.returncode != 0 or not partial.is_file() or partial.stat().st_size == 0:
-            detail = (completed.stderr or "").strip().splitlines()
-            suffix = f": {detail[-1][:240]}" if detail else ""
-            raise HighlightFrameError(f"ffmpeg frame extraction failed{suffix}")
+            raise HighlightFrameError(
+                f"ffmpeg frame extraction failed{_ffmpeg_stderr_suffix(completed.stderr)}"
+            )
         partial.replace(target)
         return target
     except HighlightFrameError:
         raise
+    except subprocess.TimeoutExpired as error:
+        suffix = _ffmpeg_stderr_suffix(error.stderr)
+        raise HighlightFrameError(
+            f"ffmpeg frame extraction timed out after {FRAME_EXTRACT_TIMEOUT_SECONDS} seconds{suffix}"
+        ) from error
     except (OSError, subprocess.SubprocessError) as error:
-        raise HighlightFrameError(f"ffmpeg frame extraction failed: {error}") from error
+        raise HighlightFrameError(
+            f"ffmpeg frame extraction failed: {_diagnostic_error_detail(error)}"
+        ) from error
     finally:
         partial.unlink(missing_ok=True)
 
@@ -454,13 +499,14 @@ def extract_frames_batch(video_path, requests, *, ffmpeg_bin=None):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=VIDEO_DOWNLOAD_TIMEOUT_SECONDS,
+            timeout=FRAME_EXTRACT_TIMEOUT_SECONDS,
             check=False,
         )
         if completed.returncode != 0:
-            detail = (completed.stderr or "").strip().splitlines()
-            suffix = f": {detail[-1][:240]}" if detail else ""
-            raise HighlightFrameError(f"ffmpeg batch frame extraction failed{suffix}")
+            raise HighlightFrameError(
+                "ffmpeg batch frame extraction failed"
+                f"{_ffmpeg_stderr_suffix(completed.stderr)}"
+            )
         for _, _, staging in staged:
             _validate_jpeg(staging, ffmpeg_bin=ffmpeg_bin)
         for _, target, staging in staged:
@@ -468,8 +514,17 @@ def extract_frames_batch(video_path, requests, *, ffmpeg_bin=None):
         return [target for _, target, _ in staged]
     except HighlightFrameError:
         raise
+    except subprocess.TimeoutExpired as error:
+        suffix = _ffmpeg_stderr_suffix(error.stderr)
+        raise HighlightFrameError(
+            "ffmpeg batch frame extraction timed out after "
+            f"{FRAME_EXTRACT_TIMEOUT_SECONDS} seconds{suffix}"
+        ) from error
     except (OSError, subprocess.SubprocessError) as error:
-        raise HighlightFrameError(f"ffmpeg batch frame extraction failed: {error}") from error
+        raise HighlightFrameError(
+            "ffmpeg batch frame extraction failed: "
+            f"{_diagnostic_error_detail(error)}"
+        ) from error
     finally:
         for _, _, staging in staged:
             staging.unlink(missing_ok=True)
@@ -495,6 +550,7 @@ def _frame_record(
     available,
     relative_path=None,
     failure_reason=None,
+    failure_detail=None,
     frame_source=None,
 ):
     frame = {**candidate, "available": available}
@@ -507,6 +563,8 @@ def _frame_record(
         frame["relative_path"] = relative_path
     if failure_reason is not None:
         frame["failure_reason"] = failure_reason
+    if failure_detail is not None:
+        frame["failure_detail"] = _redact_error_text(failure_detail)
     if frame_source is not None:
         frame["frame_source"] = frame_source
     return frame
@@ -530,7 +588,13 @@ def _reused_frame_record(candidate, *, material_id, root, index):
 
 
 def _failed_frames_with_local_reuse(
-    candidates, *, material_id, root, failure_reason, candidate_indexes=None
+    candidates,
+    *,
+    material_id,
+    root,
+    failure_reason,
+    failure_detail=None,
+    candidate_indexes=None,
 ):
     frames = []
     indexes = candidate_indexes or range(1, len(candidates) + 1)
@@ -547,6 +611,7 @@ def _failed_frames_with_local_reuse(
                 material_id=material_id,
                 available=False,
                 failure_reason=failure_reason,
+                failure_detail=failure_detail,
             )
         )
     return frames
@@ -578,7 +643,7 @@ def _extract_frames_individually(
                     relative_path=relative_path,
                 )
             )
-        except Exception:
+        except Exception as error:
             frames.append(
                 _reused_frame_record(
                     candidate,
@@ -591,6 +656,7 @@ def _extract_frames_individually(
                     material_id=material_id,
                     available=False,
                     failure_reason="extract_failed",
+                    failure_detail=_diagnostic_error_detail(error),
                 )
             )
     return frames
@@ -657,12 +723,13 @@ def _material_frames(
                 )
                 for candidate, request in zip(candidates, requests)
             ]
-    except Exception:
+    except Exception as error:
         return _failed_frames_with_local_reuse(
             candidates,
             material_id=material_id,
             root=root,
             failure_reason="download_failed",
+            failure_detail=_diagnostic_error_detail(error),
             candidate_indexes=indexes,
         )
 

@@ -461,6 +461,7 @@ class YuntuBatchTests(unittest.TestCase):
                 batch.run_state.new_collection_summary(contract),
                 root / "run-summary.json",
             )
+            batch.set_stage(root, "collecting")
             detail_path = root / "normalized" / "detail-records" / "101.json"
             detail_path.parent.mkdir(parents=True)
             detail_path.write_text(json.dumps({
@@ -497,10 +498,19 @@ class YuntuBatchTests(unittest.TestCase):
             )
             manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
 
+            from scripts.fact_packages import build_fact_packages
+
+            facts = build_fact_packages(root)
+            summary = json.loads(
+                (root / "run-summary.json").read_text(encoding="utf-8")
+            )
+
         self.assertEqual(status, 0)
         self.assertEqual(generated_material_ids, ["101"])
         self.assertEqual(manifest["status"], "success")
         self.assertEqual(manifest["selectedMaterials"][0]["postprocessStatus"], "succeeded")
+        self.assertEqual(facts["coverage"]["available_highlight_frames"], 1)
+        self.assertEqual(summary["workflow"]["stage"], "ready_for_analysis")
 
     def test_scripts_package_imports_from_repository_root(self):
         result = subprocess.run(
