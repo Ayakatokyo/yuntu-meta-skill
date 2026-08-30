@@ -543,6 +543,19 @@ def _load_saved_specs(output_dir):
     return query, highlights
 
 
+def _build_facts_after_run(output_dir: str | Path) -> dict:
+    """Build facts for a changed run and return its manifest."""
+    return build_fact_packages(output_dir)
+
+
+def _print_batch_result(output_dir, facts_manifest):
+    print(json.dumps({
+        "batch_manifest_path": str(Path(output_dir) / "batch-manifest.json"),
+        "facts_manifest_path": str(Path(output_dir) / "facts/manifest.json"),
+        "facts_coverage": facts_manifest["coverage"],
+    }, ensure_ascii=False, indent=2))
+
+
 def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
@@ -568,20 +581,29 @@ def main(argv=None):
             return 0
         if args.command == "retry-failed":
             specs = _load_saved_specs(args.output_dir)
-            status = retry_failed_batch(args.shop_id, output_dir=args.output_dir, invoker=_batch_invoker(), highlight_spec=specs[1])
-            print(Path(args.output_dir) / "batch-manifest.json")
+            status = retry_failed_batch(
+                shop_id=args.shop_id, output_dir=args.output_dir,
+                invoker=_batch_invoker(), highlight_spec=specs[1]
+            )
+            facts_manifest = _build_facts_after_run(args.output_dir)
+            _print_batch_result(args.output_dir, facts_manifest)
             return status
         if args.command == "retry-unresolved":
             specs = _load_saved_specs(args.output_dir)
-            status = retry_unresolved_batch(args.shop_id, output_dir=args.output_dir, invoker=_batch_invoker(), highlight_spec=specs[1])
-            print(Path(args.output_dir) / "batch-manifest.json")
+            status = retry_unresolved_batch(
+                shop_id=args.shop_id, output_dir=args.output_dir,
+                invoker=_batch_invoker(), highlight_spec=specs[1]
+            )
+            facts_manifest = _build_facts_after_run(args.output_dir)
+            _print_batch_result(args.output_dir, facts_manifest)
             return status
         if args.command == "retry-highlights":
             specs = _load_saved_specs(args.output_dir)
             status = retry_highlights_batch(
                 output_dir=args.output_dir, highlight_spec=specs[1]
             )
-            print(Path(args.output_dir) / "batch-manifest.json")
+            facts_manifest = _build_facts_after_run(args.output_dir)
+            _print_batch_result(args.output_dir, facts_manifest)
             return status
         if args.command == "build-facts":
             manifest = build_fact_packages(args.run_dir)
@@ -602,7 +624,8 @@ def main(argv=None):
             output_dir=args.output_dir, invoker=_batch_invoker(),
             highlight_spec=highlights, configuration_fingerprint=fingerprint,
         )
-        print(Path(args.output_dir) / "batch-manifest.json")
+        facts_manifest = _build_facts_after_run(args.output_dir)
+        _print_batch_result(args.output_dir, facts_manifest)
         return status
     except (RpaConnectorError, ConfigSpecError, FactPackageError, OSError, json.JSONDecodeError) as exc:
         parser.error(str(exc))

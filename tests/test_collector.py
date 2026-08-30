@@ -13,6 +13,17 @@ ROOT = Path(__file__).resolve().parent
 
 
 class CollectorTests(unittest.TestCase):
+    def _fact_manifest(self):
+        return {
+            "coverage": {
+                "ranking_records": 2,
+                "detail_records": 1,
+                "script_records": 1,
+                "highlight_materials": 1,
+                "available_highlight_frames": 1,
+            }
+        }
+
     def test_validate_prints_resolved_configuration_without_rpa(self):
         with tempfile.TemporaryDirectory() as directory:
             output = []
@@ -71,7 +82,10 @@ class CollectorTests(unittest.TestCase):
             captured.update(kwargs)
             return 0
 
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(collector, "fetch_batch", fake_fetch_batch):
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(collector, "fetch_batch", fake_fetch_batch), \
+                mock.patch.object(collector, "build_fact_packages", return_value=self._fact_manifest()) as build, \
+                mock.patch("builtins.print") as printer:
             status = collector.main([
                 "collect", "--shop-id", "shop-1",
                 "--query-spec", str(ROOT / "fixtures/query-spec.json"),
@@ -91,6 +105,34 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(captured["highlight_spec"]["metrics"]["点赞指数"]["strategy"], "top_values")
         self.assertTrue(query_file_exists)
         self.assertTrue(highlight_file_exists)
+        build.assert_called_once_with(directory)
+        output = json.loads(printer.call_args.args[0])
+        self.assertEqual(output["facts_manifest_path"], str(Path(directory) / "facts/manifest.json"))
+        self.assertEqual(output["facts_coverage"]["ranking_records"], 2)
+
+    def test_each_retry_command_builds_facts_and_reports_manifest(self):
+        commands = (
+            ("retry-failed", "retry_failed_batch", {"shop_id": "shop-1"}),
+            ("retry-unresolved", "retry_unresolved_batch", {"shop_id": "shop-1"}),
+            ("retry-highlights", "retry_highlights_batch", {}),
+        )
+        for command, retry_name, expected in commands:
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                retry = mock.patch.object(collector, retry_name, return_value=0)
+                build = mock.patch.object(collector, "build_fact_packages", return_value=self._fact_manifest())
+                saved_specs = mock.patch.object(
+                    collector, "_load_saved_specs", return_value=({}, {"metrics": {}})
+                )
+                with retry as retry_mock, build as build_mock, saved_specs, mock.patch("builtins.print") as printer:
+                    argv = [command, "--output-dir", directory]
+                    if "shop_id" in expected:
+                        argv[1:1] = ["--shop-id", expected["shop_id"]]
+                    status = collector.main(argv)
+
+                self.assertEqual(status, 0)
+                build_mock.assert_called_once_with(directory)
+                output = json.loads(printer.call_args.args[0])
+                self.assertEqual(output["facts_manifest_path"], str(Path(directory) / "facts/manifest.json"))
 
     def test_retry_highlights_uses_the_saved_spec_without_a_shop_id(self):
         captured = {}
@@ -101,9 +143,8 @@ class CollectorTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory, \
                 mock.patch.object(collector, "_load_saved_specs", return_value=({}, {"metrics": {}})), \
-                mock.patch.object(
-                    collector, "retry_highlights_batch", fake_retry_highlights_batch
-                ):
+                mock.patch.object(collector, "retry_highlights_batch", fake_retry_highlights_batch), \
+                mock.patch.object(collector, "build_fact_packages", return_value=self._fact_manifest()):
             status = collector.main([
                 "retry-highlights", "--output-dir", directory,
             ])
@@ -113,6 +154,27 @@ class CollectorTests(unittest.TestCase):
             "output_dir": directory,
             "highlight_spec": {"metrics": {}},
         })
+
+    def test_facts_failure_returns_nonzero_with_facts_error(self):
+        def fake_fetch_batch(**_kwargs):
+            return 0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(collector, "fetch_batch", fake_fetch_batch), \
+                mock.patch.object(
+                    collector, "build_fact_packages", side_effect=collector.FactPackageError("facts exploded")
+                ), \
+                redirect_stderr(io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit) as raised:
+                collector.main([
+                    "collect", "--shop-id", "shop-1",
+                    "--query-spec", str(ROOT / "fixtures/query-spec.json"),
+                    "--highlight-spec", str(ROOT / "fixtures/highlight-spec.json"),
+                    "--output-dir", directory,
+                ])
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("facts exploded", stderr.getvalue())
 
     def test_retry_highlights_rejects_a_saved_spec_with_the_wrong_fingerprint(self):
         with tempfile.TemporaryDirectory() as directory:
