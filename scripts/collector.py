@@ -60,6 +60,11 @@ except ImportError:
     from .rpa_io import write_json_atomically
 
 try:
+    from workflow_state import build_ready_receipt, get_workflow_status, set_stage
+except ImportError:
+    from .workflow_state import build_ready_receipt, get_workflow_status, set_stage
+
+try:
     from analysis_facts import build_fact_index, load_selected_facts
     from analysis_prompt import build_prompt_packet
     from analysis_report import render_analysis_report
@@ -71,6 +76,11 @@ except ImportError:
     from .analysis_report import render_analysis_report
     from .analysis_result import normalize_analysis_result, validate_analysis_result
     from .analysis_spec import parse_analysis_spec
+
+try:
+    from analysis_input import parse_analysis_input, validate_analysis_input
+except ImportError:
+    from .analysis_input import parse_analysis_input, validate_analysis_input
 
 
 LIST_FUNCTION_CODE = "rpa.conn.juliang.yt.industry.content.rankings.list"
@@ -529,7 +539,8 @@ def _parser():
         "analyze", help="Analyze selected fact packages and render an auditable report"
     )
     analyze_parser.add_argument("--run-dir", required=True)
-    analyze_parser.add_argument("--spec", required=True, help="AnalysisSpec JSON path")
+    analyze_parser.add_argument("--input", help="AnalysisInput JSON path, JSON object, or natural language")
+    analyze_parser.add_argument("--spec", help="Legacy AnalysisSpec JSON path")
     analyze_parser.add_argument("--output", required=True, help="Markdown report output path")
     analyze_parser.add_argument(
         "--analysis-result", help="Optional model-produced AnalysisResult JSON path"
@@ -578,10 +589,12 @@ def _build_facts_after_run(output_dir: str | Path) -> dict:
 
 
 def _print_batch_result(output_dir, facts_manifest):
+    receipt = build_ready_receipt(output_dir)
     print(json.dumps({
         "batch_manifest_path": str(Path(output_dir) / "batch-manifest.json"),
         "facts_manifest_path": str(Path(output_dir) / "facts/manifest.json"),
         "facts_coverage": facts_manifest["coverage"],
+        "ready_receipt": receipt,
     }, ensure_ascii=False, indent=2))
 
 
@@ -596,7 +609,9 @@ def _draft_analysis_results(spec, selected_facts):
             result["gaps"].append("筛选后没有可用事实记录。")
             results.append(result)
             continue
-        ref = f"{package['path']}#/records/0"
+        record_indices = package.get("record_indices", list(range(len(records))))
+        first_index = record_indices[0] if record_indices else 0
+        ref = f"{package['path']}#/records/{first_index}"
         if section == "material_ranking":
             result["findings"].append({
                 "claim": f"事实包包含 {len(records)} 条榜单记录，首条记录排名为 {records[0].get('rank')}。",
@@ -639,9 +654,32 @@ def _load_analysis_results(path):
     raise ValueError("analysis result must be an object, result array, or {results: [...]}")
 
 
-def _analysis_pipeline(run_dir, spec_path, result_path=None):
+def _read_analysis_input(value):
+    path = Path(value)
+    if path.is_file():
+        return json.loads(path.read_text(encoding="utf-8"))
+    return value
+
+
+def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=None):
     root = Path(run_dir)
-    spec = parse_analysis_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
+    manifest_path = root / "facts" / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"facts manifest is missing or unreadable: {manifest_path}") from exc
+    workflow_status = get_workflow_status(root)
+    if input_payload is not None:
+        spec = parse_analysis_input(input_payload, workflow_status, manifest)
+        input_errors = validate_analysis_input(spec, workflow_status, manifest)
+        if input_errors:
+            raise ValueError("invalid analysis input: " + "; ".join(input_errors))
+    else:
+        if not spec_path:
+            raise ValueError("analyze requires --input or legacy --spec")
+        if workflow_status["status"] in {"partial", "failed"}:
+            raise ValueError("run must be ready_for_analysis before analysis can start")
+        spec = parse_analysis_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
     selected = load_selected_facts(root, spec)
     fact_index = build_fact_index(selected)
     packet = build_prompt_packet(spec, selected, fact_index)
@@ -741,7 +779,9 @@ def main(argv=None):
         if args.command == "status":
             if collection_status is None:
                 raise RpaConnectorError("batch status support is unavailable")
-            print(json.dumps(collection_status(output_dir=args.output_dir), ensure_ascii=False, indent=2))
+            output = collection_status(output_dir=args.output_dir)
+            output["ready_receipt"] = build_ready_receipt(args.output_dir)
+            print(json.dumps(output, ensure_ascii=False, indent=2))
             return 0
         if args.command == "retry-failed":
             specs = _load_saved_specs(args.output_dir)
@@ -777,10 +817,17 @@ def main(argv=None):
             }, ensure_ascii=False, indent=2))
             return 0
         if args.command == "analyze":
+            if not args.input and not args.spec:
+                parser.error("analyze requires --input or legacy --spec")
             report, result_document, packet = _analysis_pipeline(
-                args.run_dir, args.spec, args.analysis_result
+                args.run_dir,
+                args.spec,
+                args.analysis_result,
+                _read_analysis_input(args.input) if args.input else None,
             )
             _write_analysis_outputs(args.output, report, result_document, packet)
+            set_stage(args.run_dir, "analysis_running", analysis_id=result_document["analysis_id"])
+            set_stage(args.run_dir, "analysis_completed", analysis_id=result_document["analysis_id"])
             print(json.dumps({
                 "report_path": str(Path(args.output)),
                 "analysis_result_path": str(Path(args.output).with_suffix(".analysis-result.json")),
