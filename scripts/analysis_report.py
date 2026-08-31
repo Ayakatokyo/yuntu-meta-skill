@@ -4,21 +4,31 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import json
-from typing import Any
+from typing import Any, Iterator
 
 try:
-    from .analysis_result import ALLOWED_SECTIONS, format_validation_errors, normalize_analysis_result, validate_analysis_result
+    from .analysis_result import (
+        ALLOWED_SECTIONS,
+        format_validation_errors,
+        normalize_analysis_result,
+        validate_analysis_result,
+    )
     from .analysis_spec import AnalysisSpec
 except ImportError:  # pragma: no cover - direct collector execution
-    from analysis_result import ALLOWED_SECTIONS, format_validation_errors, normalize_analysis_result, validate_analysis_result
+    from analysis_result import (
+        ALLOWED_SECTIONS,
+        format_validation_errors,
+        normalize_analysis_result,
+        validate_analysis_result,
+    )
     from analysis_spec import AnalysisSpec
 
 
 FIXED_SECTIONS = (
-    ("material_ranking", "素材榜单表现"),
-    ("audience", "人群结构"),
-    ("script", "脚本可用性与数据缺口"),
-    ("highlight_frames", "高光帧与内容节奏"),
+    ("material_ranking", "三、素材榜单分析"),
+    ("audience", "四、人群分析"),
+    ("script", "五、脚本分析"),
+    ("highlight_frames", "六、高光帧分析"),
 )
 
 
@@ -30,26 +40,142 @@ def _text(value: Any) -> str:
     return str(value)
 
 
-def _render_findings(results: list[dict]) -> list[str]:
-    lines: list[str] = []
-    for result in results:
-        for finding in result.get("findings", []):
-            refs = ", ".join(finding["fact_refs"])
-            lines.append(
-                f"- [{finding['type']}/{finding['confidence']}] {finding['claim']} "
-                f"（fact_refs: `{refs}`）"
-            )
-            explanation = finding.get("brand_proxy_explanation")
-            if not isinstance(explanation, str) or not explanation.strip():
-                proxy = finding.get("brand_proxy")
-                explanation = proxy.get("explanation") if isinstance(proxy, dict) else None
-            if isinstance(explanation, str) and explanation.strip():
-                lines.append(f"  - 品牌代理说明：{explanation.strip()}")
-        for gap in result.get("gaps", []):
-            lines.append(f"- 数据缺口：{_text(gap)}")
-        for question in result.get("next_questions", []):
-            lines.append(f"- 待验证问题：{_text(question)}")
-    return lines or ["- 本次没有已校验结论或数据缺口。"]
+def _finding_explanation(finding: dict) -> str | None:
+    explanation = finding.get("brand_proxy_explanation")
+    if not isinstance(explanation, str) or not explanation.strip():
+        proxy = finding.get("brand_proxy")
+        explanation = proxy.get("explanation") if isinstance(proxy, dict) else None
+    if isinstance(explanation, str) and explanation.strip():
+        return explanation.strip()
+    return None
+
+
+def _finding_ref_ids(finding: dict, evidence_ids: dict[str, str]) -> list[str]:
+    return [evidence_ids[ref] for ref in finding.get("fact_refs", []) if ref in evidence_ids]
+
+
+def _format_evidence_ids(finding: dict, evidence_ids: dict[str, str]) -> str:
+    return " ".join(f"[{identifier}]" for identifier in _finding_ref_ids(finding, evidence_ids))
+
+
+def _findings_for_section(grouped: dict[str, list[dict]], section: str) -> list[dict]:
+    return [
+        finding
+        for result in grouped.get(section, [])
+        for finding in result.get("findings", [])
+    ]
+
+
+def _iter_findings_in_report_order(
+    grouped: dict[str, list[dict]], custom_names: list[str]
+) -> Iterator[tuple[str, dict]]:
+    for section, _heading in FIXED_SECTIONS:
+        for finding in _findings_for_section(grouped, section):
+            yield section, finding
+    for custom_name in custom_names:
+        for finding in _findings_for_section(grouped, custom_name):
+            yield custom_name, finding
+
+
+def _build_evidence_audit(
+    grouped: dict[str, list[dict]], custom_names: list[str]
+) -> tuple[dict[str, str], list[dict]]:
+    """Assign stable evidence and conclusion IDs in rendered section order."""
+    evidence_ids: dict[str, str] = {}
+    audits: list[dict] = []
+    for section, finding in _iter_findings_in_report_order(grouped, custom_names):
+        ref_ids: list[str] = []
+        for ref in finding.get("fact_refs", []):
+            if ref not in evidence_ids:
+                evidence_ids[ref] = f"E{len(evidence_ids) + 1}"
+            ref_ids.append(evidence_ids[ref])
+        audits.append({
+            "id": f"C{len(audits) + 1}",
+            "section": section,
+            "finding": finding,
+            "evidence_ids": ref_ids,
+        })
+    return evidence_ids, audits
+
+
+def _render_finding_line(finding: dict, evidence_ids: dict[str, str]) -> str:
+    refs = _format_evidence_ids(finding, evidence_ids)
+    return f"- {finding['claim']}" + (f" {refs}" if refs else "")
+
+
+def _render_brand_explanations(findings: list[dict]) -> list[str]:
+    explanations: list[str] = []
+    for finding in findings:
+        explanation = _finding_explanation(finding)
+        if explanation and explanation not in explanations:
+            explanations.append(explanation)
+    if not explanations:
+        return []
+    lines = ["### 品牌代理说明", ""]
+    lines.extend(f"> {explanation}" for explanation in explanations)
+    lines.append("")
+    return lines
+
+
+def _render_section_body(
+    section: str,
+    grouped: dict[str, list[dict]],
+    evidence_ids: dict[str, str],
+    excluded: set[int],
+) -> list[str]:
+    findings = _findings_for_section(grouped, section)
+    lines = _render_brand_explanations(findings)
+    visible = [
+        finding for finding in findings
+        if id(finding) not in excluded and finding.get("type") != "recommendation"
+    ]
+
+    lines.extend(["### 核心结论", ""])
+    core_refs = sorted(
+        {
+            identifier
+            for finding in findings
+            if id(finding) in excluded and finding.get("type") in {"fact", "inference"}
+            for identifier in _finding_ref_ids(finding, evidence_ids)
+        },
+        key=lambda value: int(value[1:]),
+    )
+    if core_refs:
+        lines.append(f"- 本章节核心结论已在上文汇总（{' '.join(f'[{ref}]' for ref in core_refs)}）。")
+    else:
+        lines.append("- 本次没有独立核心结论。")
+    lines.append("")
+
+    facts = [finding for finding in visible if finding.get("type") == "fact"]
+    lines.extend(["### 数据表现", ""])
+    lines.extend(
+        [_render_finding_line(finding, evidence_ids) for finding in facts]
+        or ["- 本次没有新增数据表现。"]
+    )
+    lines.append("")
+
+    inferences = [finding for finding in visible if finding.get("type") == "inference"]
+    lines.extend(["### 商业解读", ""])
+    lines.extend(
+        [_render_finding_line(finding, evidence_ids) for finding in inferences]
+        or ["- 本次没有新增商业解读。"]
+    )
+    lines.append("")
+
+    gaps = [gap for result in grouped.get(section, []) for gap in result.get("gaps", [])]
+    questions = [
+        question
+        for result in grouped.get(section, [])
+        for question in result.get("next_questions", [])
+    ]
+    lines.extend(["### 数据缺口与待验证问题", ""])
+    if gaps or questions:
+        lines.extend(f"- 数据缺口：{_text(gap)}" for gap in gaps)
+        lines.extend(f"- 待验证问题：{_text(question)}" for question in questions)
+    else:
+        lines.append("- 当前模块没有数据缺口或待验证问题。")
+    lines.append("")
+    return lines
 
 
 def _render_brand_audit(metadata: dict) -> list[str]:
@@ -92,17 +218,86 @@ def _render_brand_audit(metadata: dict) -> list[str]:
     return lines
 
 
+def _summary_findings(spec: AnalysisSpec, grouped: dict[str, list[dict]]) -> list[dict]:
+    """Promote at most one factual/inferential conclusion per selected package."""
+    selected = set(spec.sections)
+    promoted: list[dict] = []
+    for section, _heading in FIXED_SECTIONS:
+        if section not in selected:
+            continue
+        candidates = [
+            finding for finding in _findings_for_section(grouped, section)
+            if finding.get("type") in {"fact", "inference"}
+        ]
+        if candidates:
+            promoted.append(candidates[0])
+    return promoted
+
+
+def _is_cross_module_finding(finding: dict) -> bool:
+    if finding.get("type") == "recommendation":
+        return False
+    if finding.get("cross_module") is True:
+        return True
+    packages = {ref.split("#/", 1)[0] for ref in finding.get("fact_refs", [])}
+    return len(packages) > 1
+
+
+def _recommendation_findings(
+    spec: AnalysisSpec, grouped: dict[str, list[dict]], custom_names: list[str]
+) -> list[dict]:
+    sections = list(spec.sections) + custom_names
+    return [
+        finding
+        for section in sections
+        for finding in _findings_for_section(grouped, section)
+        if finding.get("type") == "recommendation"
+        and not _is_cross_module_finding(finding)
+    ]
+
+
+def _render_audit_appendices(
+    evidence_ids: dict[str, str], audits: list[dict], metadata: dict
+) -> list[str]:
+    lines = ["## 附录 A：证据索引", "", "完整 fact_refs 索引："]
+    if evidence_ids:
+        for ref, identifier in evidence_ids.items():
+            lines.append(f"- [{identifier}] `{ref}`")
+    else:
+        lines.append("- 本次没有事实结论引用。")
+
+    lines.extend(["", "## 附录 B：结论审计", ""])
+    if audits:
+        for audit in audits:
+            finding = audit["finding"]
+            refs = " ".join(f"[{identifier}]" for identifier in audit["evidence_ids"])
+            explanation = _finding_explanation(finding) or "无"
+            lines.append(
+                f"- [{audit['id']}] 章节：{audit['section']}；类型：{finding['type']}；"
+                f"置信度：{finding['confidence']}；证据：{refs or '无'}；"
+                f"品牌代理说明：{explanation}"
+            )
+            lines.append(f"  - 结论：{finding['claim']}")
+    else:
+        lines.append("- 本次没有可审计结论。")
+
+    lines.extend(["", "### 品牌分类审计", ""])
+    lines.extend(_render_brand_audit(metadata))
+    return lines
+
+
 def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: dict) -> str:
     if not isinstance(spec, AnalysisSpec):
         raise ValueError("spec must be an AnalysisSpec")
     if not isinstance(results, list):
         raise ValueError("results must be an array")
     if not isinstance(metadata, dict):
-        raise ValueError("metadata must be an object")
+        raise ValueError("metadata must be a dict")
     required_metadata = ("run_id", "analysis_time", "facts_version", "prompt_version", "fact_index")
     missing = [name for name in required_metadata if name not in metadata]
     if missing:
         raise ValueError("报告元数据缺失: " + ", ".join(missing))
+
     fact_index = metadata["fact_index"]
     selected = set(spec.sections)
     custom_names = [item if isinstance(item, str) else item["name"] for item in spec.custom_sections]
@@ -135,80 +330,64 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
     package_paths = metadata.get("package_paths", [])
     if not package_paths:
         package_paths = sorted({ref.split("#/", 1)[0] for ref in fact_index})
-    lines = [
-        "# 云图商业分析报告",
-        "",
-        "## 执行摘要",
-        "",
+    evidence_ids, audits = _build_evidence_audit(grouped, custom_names)
+    summary = _summary_findings(spec, grouped)
+    promoted = {id(finding) for finding in summary}
+    recommendations = _recommendation_findings(spec, grouped, custom_names)
+    cross_findings = [
+        audit["finding"] for audit in audits if _is_cross_module_finding(audit["finding"])
     ]
-    summary_results = [grouped[name] for name in spec.sections if name in grouped]
-    summary = [finding for group in summary_results for result in group for finding in result.get("findings", [])]
+    cross_ids = {id(finding) for finding in cross_findings}
+
+    lines = ["# 云图商业分析报告", "", "## 一、核心结论", ""]
     if summary:
-        lines.extend(_render_findings([{"findings": summary, "gaps": [], "next_questions": []}]))
+        lines.extend(_render_finding_line(finding, evidence_ids) for finding in summary)
     else:
-        lines.append("- 本次没有可进入执行摘要的已校验结论。")
+        lines.append("- 本次没有可进入核心结论的事实或推断；行动建议见下一节。")
+
+    lines.extend(["", "## 二、行动建议", ""])
+    if recommendations:
+        lines.extend(_render_finding_line(finding, evidence_ids) for finding in recommendations)
+    else:
+        lines.append("- 未生成行动建议。")
+
+    for section, heading in FIXED_SECTIONS:
+        lines.extend(["", f"## {heading}", ""])
+        if section not in selected:
+            lines.append("- 本次未选择该模块。")
+        else:
+            lines.extend(_render_section_body(section, grouped, evidence_ids, promoted | cross_ids))
+
+    for custom_name in custom_names:
+        lines.extend(["", f"## {custom_name}", ""])
+        lines.extend(_render_section_body(custom_name, grouped, evidence_ids, promoted | cross_ids))
+
+    if len(selected) >= 2 and cross_findings:
+        lines.extend(["", "## 七、跨模块观察", ""])
+        lines.append("- 标签共现和指标关联仅表示观察，相关不等于因果。")
+        lines.extend(_render_finding_line(finding, evidence_ids) for finding in cross_findings)
+
     lines.extend([
         "",
-        "## 分析范围、样本和方法",
+        "## 八、数据限制与下一步",
+        "",
+        "### 本次分析范围与方法",
         "",
         f"- analysis_id：`{spec.analysis_id}`",
         f"- run_id：`{metadata['run_id']}`",
         f"- 分析时间：`{generated_at}`",
         f"- 事实包版本：`{metadata['facts_version']}`；提示词版本：`{metadata['prompt_version']}`；模型请求版本：`{metadata.get('request_version', 2)}`",
         f"- 选择模块：{', '.join(spec.sections)}；商业问题：{spec.business_question}",
-        f"- 样本覆盖：`{coverage}`",
+        f"- 样本覆盖：`{json.dumps(coverage, ensure_ascii=False, sort_keys=True)}`",
         f"- 品牌筛选：{', '.join(spec.filters.get('brand_filter', ())) or '未指定'}",
         "- 事实包路径：" + ", ".join(f"`{path}`" for path in package_paths),
-        "- 方法：仅向当前对话模型提供已选择、已校验的事实包，并要求每条结论回填 `fact_refs`。",
+        "- 方法：仅向当前对话模型提供已选择、已校验的事实包，并要求每条结论保留可追溯证据编号。",
         "",
-    ])
-    for section, heading in FIXED_SECTIONS:
-        lines.extend([f"## {heading}", ""])
-        if section in selected:
-            lines.extend(_render_findings(grouped.get(section, [])))
-        else:
-            lines.append("- 本次未选择该模块。")
-        lines.append("")
-    lines.extend(["## 品牌分类审计", ""])
-    lines.extend(_render_brand_audit(metadata))
-    lines.append("")
-    for custom_name in custom_names:
-        lines.extend([f"## {custom_name}", ""])
-        lines.extend(_render_findings(grouped.get(custom_name, [])))
-        lines.append("")
-    lines.extend([
-        "## 跨模块观察",
-        "",
-        "- 只有在同时选择多个模块时才解释跨模块线索；标签共现和指标关联仅表示观察，相关不等于因果。",
-        "",
-        "## 商业机会与待验证假设",
-        "",
-        "- 任何机会均需由带 `fact_refs` 的推断或建议支撑，并在下一轮实验中验证。",
-        "",
-        "## 执行动作建议",
-        "",
-        "- 优先补充可回溯的脚本字段，并针对高光时间段与指标线索设计对照实验。",
-        "",
-        "## 数据限制与下一轮采集建议",
+        "### 数据限制",
         "",
         "- `source_empty` 字段只能作为数据缺口；当前脚本不可分析，不得用标题或标签替代脚本。",
         "- 当前 `selection_group` 品牌字段为空；标题/标签品牌识别只能作为品牌代理识别推断，并降低置信度。",
         "- 相关线索不等于因果关系；高光画面不得直接推导用户心理或转化原因。",
-        "",
-        "## 事实引用附录",
-        "",
     ])
-    appendix_seen = set()
-    for result in normalized_results:
-        if result["section"] not in allowed:
-            continue
-        for finding in result.get("findings", []):
-            for ref in finding["fact_refs"]:
-                key = (ref, finding["claim"])
-                if key in appendix_seen:
-                    continue
-                appendix_seen.add(key)
-                lines.append(f"- `{ref}`：{finding['claim']}")
-    if not appendix_seen:
-        lines.append("- 本次没有事实结论引用。")
+    lines.extend(["", *_render_audit_appendices(evidence_ids, audits, metadata)])
     return "\n".join(lines).rstrip() + "\n"

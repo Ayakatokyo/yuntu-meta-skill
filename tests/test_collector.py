@@ -81,7 +81,7 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(status, 0)
             self.assertTrue(output.is_file())
             self.assertTrue((root / "analysis.analysis-result.json").is_file())
-            self.assertIn("执行摘要", output.read_text(encoding="utf-8"))
+            self.assertIn("一、核心结论", output.read_text(encoding="utf-8"))
 
     def _write_phase_two_run(self, root, status="ready_for_analysis"):
         (root / "facts").mkdir()
