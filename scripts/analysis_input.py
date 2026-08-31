@@ -7,9 +7,21 @@ import uuid
 from typing import Any
 
 try:
-    from .analysis_spec import AVAILABLE_SECTIONS, AnalysisSpec, parse_analysis_spec, validate_analysis_spec
+    from .analysis_spec import (
+        AVAILABLE_SECTIONS,
+        AnalysisInputRequired,
+        AnalysisSpec,
+        parse_analysis_spec,
+        validate_analysis_spec,
+    )
 except ImportError:  # pragma: no cover - direct script imports
-    from analysis_spec import AVAILABLE_SECTIONS, AnalysisSpec, parse_analysis_spec, validate_analysis_spec
+    from analysis_spec import (
+        AVAILABLE_SECTIONS,
+        AnalysisInputRequired,
+        AnalysisSpec,
+        parse_analysis_spec,
+        validate_analysis_spec,
+    )
 
 
 ALLOWED_METRICS = {
@@ -44,6 +56,8 @@ _INPUT_FIELDS = {
     "material_filter",
     "metric_focus",
     "business_question",
+    "business_question_source",
+    "user_confirmed",
     "report_mode",
     "custom_sections",
     "filters",
@@ -64,7 +78,9 @@ def _payload_object(payload: dict | str) -> dict:
     if isinstance(payload, dict):
         return dict(payload)
     if not isinstance(payload, str) or not payload.strip():
-        raise ValueError("analysis input must be a nonblank string or object")
+        raise AnalysisInputRequired(
+            "business_question is required; please provide an analysis question"
+        )
     text = payload.strip()
     if text.startswith("{"):
         try:
@@ -102,6 +118,8 @@ def parse_analysis_input(payload: dict | str, run_status: dict, manifest: dict) 
         filters["brand_filter"] = top_level_brands
 
     question = raw.get("business_question")
+    question_source = raw.get("business_question_source", "user")
+    user_confirmed = raw.get("user_confirmed", question_source == "user")
     sections = raw.get("sections", list(AVAILABLE_SECTIONS))
     resolved_run_id = raw.get("run_id") or _run_id(run_status, manifest)
     analysis_id = raw.get("analysis_id") or f"analysis-{uuid.uuid4().hex}"
@@ -110,6 +128,8 @@ def parse_analysis_input(payload: dict | str, run_status: dict, manifest: dict) 
         "run_id": resolved_run_id,
         "sections": sections,
         "business_question": question,
+        "business_question_source": question_source,
+        "user_confirmed": user_confirmed,
         "metric_focus": raw.get("metric_focus", []),
         "filters": filters,
         "report_mode": raw.get("report_mode", "standard"),

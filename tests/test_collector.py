@@ -146,6 +146,31 @@ class CollectorTests(unittest.TestCase):
             summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary["workflow"]["stage"], "analysis_completed")
 
+    def test_analyze_accepts_only_explicitly_confirmed_default_question(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_phase_two_run(root)
+            result_path = root / "model-result.json"
+            result_path.write_text(json.dumps({"section": "audience", "findings": [], "gaps": ["数据不足"]}), encoding="utf-8")
+            output = root / "analysis.md"
+
+            status = collector.main([
+                "analyze", "--run-dir", str(root),
+                "--input", json.dumps({
+                    "sections": ["audience"],
+                    "business_question": "系统默认商业问题",
+                    "business_question_source": "user_confirmed_default",
+                    "user_confirmed": True,
+                }, ensure_ascii=False),
+                "--analysis-result", str(result_path), "--output", str(output),
+            ])
+
+            self.assertEqual(status, 0)
+            self.assertTrue(output.is_file())
+            request = json.loads(output.with_suffix(".model-analysis-request.json").read_text(encoding="utf-8"))
+            self.assertEqual(request["host_context"]["analysis_spec"]["business_question_source"], "user_confirmed_default")
+            self.assertTrue(request["host_context"]["analysis_spec"]["user_confirmed"])
+
     def test_analyze_without_model_result_persists_handoff_without_report(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -176,6 +201,51 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(response["model_analysis_request_path"], str(request_path))
             self.assertEqual(json.loads((root / "run-summary.json").read_text(encoding="utf-8"))["status"], "ready_for_analysis")
 
+    def test_analyze_selection_only_returns_input_required_without_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_phase_two_run(root)
+            output = root / "analysis.md"
+            with mock.patch("builtins.print") as printer:
+                status = collector.main([
+                    "analyze", "--run-dir", str(root),
+                    "--input", json.dumps({"sections": ["material_ranking"]}),
+                    "--output", str(output),
+                ])
+
+            self.assertEqual(status, 0)
+            response = json.loads(printer.call_args.args[0])
+            self.assertEqual(response["status"], "analysis_input_required")
+            self.assertEqual(response["stage"], "ready_for_analysis")
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".prompt-packet.json").exists())
+            self.assertFalse(output.with_suffix(".model-analysis-request.json").exists())
+            self.assertFalse(output.with_suffix(".analysis-result.json").exists())
+            self.assertFalse(output.with_suffix(".analysis-error.json").exists())
+            self.assertEqual(json.loads((root / "run-summary.json").read_text(encoding="utf-8"))["status"], "ready_for_analysis")
+
+    def test_analyze_filter_only_returns_input_required_without_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_phase_two_run(root)
+            output = root / "analysis.md"
+            with mock.patch("builtins.print") as printer:
+                status = collector.main([
+                    "analyze", "--run-dir", str(root),
+                    "--input", json.dumps({"material_filter": {"rank_range": [1, 1]}}),
+                    "--output", str(output),
+                ])
+
+            self.assertEqual(status, 0)
+            response = json.loads(printer.call_args.args[0])
+            self.assertEqual(response["status"], "analysis_input_required")
+            self.assertEqual(response["stage"], "ready_for_analysis")
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".prompt-packet.json").exists())
+            self.assertFalse(output.with_suffix(".model-analysis-request.json").exists())
+            self.assertFalse(output.with_suffix(".analysis-result.json").exists())
+            self.assertFalse(output.with_suffix(".analysis-error.json").exists())
+
     def test_analyze_rejects_phase_two_input_before_ready(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -195,6 +265,31 @@ class CollectorTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.code, 2)
             self.assertFalse(output.exists())
+
+    def test_analyze_rejects_legacy_spec_before_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._write_phase_two_run(root, status="collecting")
+            spec_path = root / "analysis-spec.json"
+            spec_path.write_text(json.dumps({
+                "analysis_id": "analysis-legacy",
+                "run_id": "run-1",
+                "sections": ["material_ranking"],
+                "business_question": "比较素材",
+                "filters": {"rank_range": [1, 1]},
+            }), encoding="utf-8")
+            output = root / "analysis.md"
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as raised:
+                    collector.main([
+                        "analyze", "--run-dir", str(root),
+                        "--spec", str(spec_path), "--output", str(output),
+                    ])
+
+            self.assertEqual(raised.exception.code, 2)
+            self.assertFalse(output.exists())
+            self.assertFalse(output.with_suffix(".prompt-packet.json").exists())
+            self.assertFalse(output.with_suffix(".model-analysis-request.json").exists())
 
     def test_invalid_analysis_result_does_not_leave_run_in_analysis_running(self):
         with tempfile.TemporaryDirectory() as directory:

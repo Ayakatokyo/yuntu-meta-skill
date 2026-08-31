@@ -50,7 +50,22 @@ class AnalysisInputTests(unittest.TestCase):
             ("material_ranking", "audience", "script", "highlight_frames"),
         )
         self.assertEqual(spec.business_question, "比较素材表现和人群差异")
+        self.assertEqual(spec.business_question_source, "user")
+        self.assertTrue(spec.user_confirmed)
         self.assertTrue(spec.analysis_id)
+
+    def test_confirmed_default_question_is_preserved_as_confirmed_default(self):
+        spec = parse_analysis_input({
+            "run_id": "run-1",
+            "sections": ["audience"],
+            "business_question": "系统默认商业问题",
+            "business_question_source": "user_confirmed_default",
+            "user_confirmed": True,
+        }, {"status": "ready_for_analysis", "run_id": "run-1"}, manifest())
+
+        self.assertEqual(spec.business_question_source, "user_confirmed_default")
+        self.assertTrue(spec.user_confirmed)
+        self.assertEqual(spec.to_dict()["business_question"], "系统默认商业问题")
 
     def test_structured_input_maps_brand_and_material_filters_to_analysis_spec(self):
         spec = parse_analysis_input({
@@ -73,6 +88,22 @@ class AnalysisInputTests(unittest.TestCase):
                 {"status": "ready_for_analysis", "run_id": "run-1"},
                 manifest(),
             )
+
+        with self.assertRaisesRegex(ValueError, "business_question"):
+            parse_analysis_input(
+                " ",
+                {"status": "ready_for_analysis", "run_id": "run-1"},
+                manifest(),
+            )
+
+    def test_default_question_without_explicit_confirmation_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "user_confirmed_default"):
+            parse_analysis_input({
+                "run_id": "run-1",
+                "sections": ["audience"],
+                "business_question": "系统默认商业问题",
+                "business_question_source": "user_confirmed_default",
+            }, {"status": "ready_for_analysis", "run_id": "run-1"}, manifest())
 
     def test_validation_rejects_run_status_and_scope_errors_together(self):
         spec = parse_analysis_input({

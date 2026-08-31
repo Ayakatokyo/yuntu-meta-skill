@@ -338,7 +338,7 @@ def build_ready_receipt(run_root: Path) -> dict:
         "brand_classification": manifest.get("brand_classification", {}) if isinstance(manifest, dict) else {},
         "script_availability": _script_availability(root, manifest) if manifest else {"record_count": 0, "source_empty_fields": []},
         "data_gaps": [],
-        "next_step": "数据已准备完成，请选择分析内容、品牌/素材范围、指标和商业问题。"
+        "next_step": "数据已准备完成，请直接输入分析思路或商业问题；收到前不会启动商业分析。"
         if status["status"] == "ready_for_analysis" and _manifest_is_complete(root)
         else "采集或事实准备尚未完成，请先补齐可用数据。",
     }

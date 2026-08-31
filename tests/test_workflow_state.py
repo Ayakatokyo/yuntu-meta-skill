@@ -132,7 +132,8 @@ class WorkflowStateTests(unittest.TestCase):
             self.assertEqual(receipt["coverage"]["ranking_records"], 10)
             self.assertEqual(receipt["fact_packages"]["script"], "facts/script.json")
             self.assertEqual(receipt["brand_classification"]["unknown_count"], 2)
-            self.assertIn("选择分析内容", receipt["next_step"])
+            self.assertIn("输入分析思路或商业问题", receipt["next_step"])
+            self.assertIn("不会启动商业分析", receipt["next_step"])
 
 
 if __name__ == "__main__":

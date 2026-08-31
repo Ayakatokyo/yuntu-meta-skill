@@ -95,7 +95,7 @@ try:
         normalize_analysis_result,
         validate_analysis_result,
     )
-    from analysis_spec import parse_analysis_spec
+    from analysis_spec import AnalysisInputRequired, parse_analysis_spec
 except ImportError:
     from .analysis_facts import build_fact_index, load_selected_facts
     from .model_analysis_request import (
@@ -111,7 +111,7 @@ except ImportError:
         normalize_analysis_result,
         validate_analysis_result,
     )
-    from .analysis_spec import parse_analysis_spec
+    from .analysis_spec import AnalysisInputRequired, parse_analysis_spec
 
 try:
     from analysis_input import parse_analysis_input, validate_analysis_input
@@ -668,7 +668,7 @@ def _analysis_context(run_dir, spec_path=None, input_payload=None):
     else:
         if not spec_path:
             raise ValueError("analyze requires --input or legacy --spec")
-        if workflow_status["status"] in {"partial", "failed"}:
+        if workflow_status["status"] not in {"ready_for_analysis", "analysis_completed"}:
             raise ValueError("run must be ready_for_analysis before analysis can start")
         spec = parse_analysis_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
     selected = load_selected_facts(root, spec)
@@ -957,6 +957,17 @@ def main(argv=None):
         facts_manifest = _build_facts_after_run(args.output_dir)
         _print_batch_result(args.output_dir, facts_manifest)
         return status
+    except AnalysisInputRequired as exc:
+        workflow_status = get_workflow_status(args.run_dir) if args.command == "analyze" else None
+        if not isinstance(workflow_status, dict) or workflow_status["status"] not in {"ready_for_analysis", "analysis_completed"}:
+            parser.error(str(exc))
+        print(json.dumps({
+            "status": "analysis_input_required",
+            "stage": workflow_status["status"],
+            "ready_for_analysis": workflow_status["ready_for_analysis"],
+            "message": "请直接输入分析思路或商业问题；收到前不会启动商业分析。",
+        }, ensure_ascii=False, indent=2))
+        return 0
     except (RpaConnectorError, ConfigSpecError, FactPackageError, WorkflowStateError, ValueError, OSError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 

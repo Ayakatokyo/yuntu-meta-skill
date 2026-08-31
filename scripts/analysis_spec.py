@@ -13,7 +13,12 @@ AVAILABLE_SECTIONS = (
     "highlight_frames",
 )
 REPORT_MODES = {"standard", "standard_with_custom_sections"}
+BUSINESS_QUESTION_SOURCES = {"user", "user_confirmed_default"}
 MAX_RANK = 1000
+
+
+class AnalysisInputRequired(ValueError):
+    """Raised when phase two has no user-provided business question."""
 
 
 @dataclass(frozen=True)
@@ -22,6 +27,8 @@ class AnalysisSpec:
     run_id: str | None
     sections: tuple[str, ...]
     business_question: str
+    business_question_source: str = "user"
+    user_confirmed: bool = True
     metric_focus: tuple[str, ...] = ()
     filters: dict[str, Any] = field(default_factory=dict)
     report_mode: str = "standard"
@@ -45,6 +52,8 @@ class AnalysisSpec:
             "run_id": self.run_id,
             "sections": list(self.sections),
             "business_question": self.business_question,
+            "business_question_source": self.business_question_source,
+            "user_confirmed": self.user_confirmed,
             "metric_focus": list(self.metric_focus),
             "filters": filters,
             "report_mode": self.report_mode,
@@ -124,7 +133,26 @@ def parse_analysis_spec(payload: dict) -> AnalysisSpec:
     unsupported = set(sections) - set(AVAILABLE_SECTIONS)
     if unsupported:
         raise ValueError("unsupported section: " + ", ".join(sorted(unsupported)))
-    business_question = _nonblank(payload.get("business_question"), "business_question")
+    raw_question = payload.get("business_question")
+    if not isinstance(raw_question, str) or not raw_question.strip():
+        raise AnalysisInputRequired(
+            "business_question is required; please provide an analysis question"
+        )
+    business_question = raw_question.strip()
+    business_question_source = payload.get("business_question_source", "user")
+    if business_question_source not in BUSINESS_QUESTION_SOURCES:
+        raise ValueError(
+            "business_question_source must be user or user_confirmed_default"
+        )
+    user_confirmed = payload.get(
+        "user_confirmed", business_question_source == "user"
+    )
+    if not isinstance(user_confirmed, bool):
+        raise ValueError("user_confirmed must be a boolean")
+    if business_question_source == "user_confirmed_default" and not user_confirmed:
+        raise ValueError(
+            "user_confirmed_default business_question requires explicit confirmation"
+        )
     report_mode = payload.get("report_mode", "standard")
     if report_mode not in REPORT_MODES:
         raise ValueError("report_mode must be standard or standard_with_custom_sections")
@@ -147,6 +175,8 @@ def parse_analysis_spec(payload: dict) -> AnalysisSpec:
         run_id=(payload.get("run_id") or None),
         sections=sections,
         business_question=business_question,
+        business_question_source=business_question_source,
+        user_confirmed=user_confirmed,
         metric_focus=_string_tuple(payload.get("metric_focus", []), "metric_focus"),
         filters=_filters(filters),
         report_mode=report_mode,

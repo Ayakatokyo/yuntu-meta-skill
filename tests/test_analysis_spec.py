@@ -52,6 +52,26 @@ class AnalysisSpecTests(unittest.TestCase):
         self.assertEqual(spec.to_dict()["filters"]["brand_filter"], ["品牌A", "未知品牌"])
         self.assertEqual(spec.brand_filter, ("品牌A", "未知品牌"))
 
+    def test_parse_preserves_user_question_source_and_confirmation(self):
+        payload = self.valid_payload()
+        payload["business_question_source"] = "user"
+        payload["user_confirmed"] = True
+
+        spec = parse_analysis_spec(payload)
+
+        self.assertEqual(spec.business_question_source, "user")
+        self.assertTrue(spec.user_confirmed)
+        self.assertEqual(spec.to_dict()["business_question_source"], "user")
+        self.assertTrue(spec.to_dict()["user_confirmed"])
+
+    def test_default_question_requires_explicit_user_confirmation(self):
+        payload = self.valid_payload()
+        payload["business_question_source"] = "user_confirmed_default"
+        payload["user_confirmed"] = False
+
+        with self.assertRaisesRegex(ValueError, "user_confirmed_default"):
+            parse_analysis_spec(payload)
+
     def test_parse_accepts_phase_two_top_level_filter_aliases(self):
         payload = self.valid_payload()
         payload.pop("filters")
