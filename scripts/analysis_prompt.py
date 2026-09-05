@@ -6,8 +6,10 @@ from typing import Any
 
 try:
     from .analysis_spec import AnalysisSpec
+    from .fact_catalog import FactCatalog
 except ImportError:  # pragma: no cover - direct collector execution
     from analysis_spec import AnalysisSpec
+    from fact_catalog import FactCatalog
 
 
 MODULE_REQUIREMENTS = {
@@ -16,6 +18,29 @@ MODULE_REQUIREMENTS = {
     "script": "检查 script_text、content_formula、script_segments 的可用性；source_empty 时只能报告不可分析和数据缺口，不得用标题或标签代替脚本。",
     "highlight_frames": "按开头、中段、结尾分析高光时间段，联合指标高点/流失点与画面观察；画面只能产生内容观察或待验证线索，不得推导心理或转化原因。",
 }
+
+
+def build_fact_selection_prompt(spec: AnalysisSpec, catalog: FactCatalog) -> dict[str, Any]:
+    """Build the compact prompt used to select persisted facts for phase two."""
+    if not isinstance(spec, AnalysisSpec):
+        raise ValueError("spec must be an AnalysisSpec")
+    if not isinstance(catalog, FactCatalog):
+        raise ValueError("catalog must be a FactCatalog")
+    return {
+        "prompt_version": "yuntu-fact-selection-v1",
+        "analysis_id": spec.analysis_id,
+        "run_id": spec.run_id,
+        "business_question": spec.business_question,
+        "analysis_spec": spec.to_dict(),
+        "fact_catalog": catalog.to_dict(),
+        "rules": [
+            "只从 fact_catalog 中选择已经落盘的事实包和字段。",
+            "不得生成 QuerySpec、HighlightSpec、shop_id 或采集参数。",
+            "不得调用 RPA，不得读取事实目录之外的文件。",
+            "无法支持的指标或问题必须放入 data_gaps，不得虚构数据。",
+        ],
+        "response_schema": "FactSelectionSpec",
+    }
 
 
 def build_prompt_packet(spec: AnalysisSpec, selected_facts: dict, fact_index: dict[str, object]) -> dict:

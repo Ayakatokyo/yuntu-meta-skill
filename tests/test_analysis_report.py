@@ -238,6 +238,36 @@ class AnalysisReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "缺少"):
             render_analysis_report(self.spec, invalid, self.metadata)
 
+    def test_report_renders_phase_two_selection_chain_and_gaps(self):
+        metadata = dict(self.metadata)
+        metadata["phase_two"] = {
+            "business_question": "找出曝光高但转化差的素材",
+            "intent": {
+                "objectives": ["find_high_exposure_low_conversion"],
+                "metrics": ["show_cnt", "cvr"],
+                "dimensions": ["brand"],
+            },
+            "selection_spec": {
+                "schema": "FactSelectionSpec",
+                "packages": ["material_ranking", "script"],
+                "filters": [
+                    {"package": "material_ranking", "field": "metrics.show_cnt", "operator": "top_percentile", "value": 75},
+                ],
+            },
+            "selection_summary": {
+                "source_record_counts": {"material_ranking": 1000, "script": 4},
+                "selected_record_counts": {"material_ranking": 4, "script": 4},
+            },
+            "data_gaps": [{"package": "script", "field": "script_text", "reason": "source_empty"}],
+        }
+
+        report = render_analysis_report(self.spec, self.results, metadata)
+
+        self.assertIn("用户商业问题：找出曝光高但转化差的素材", report)
+        self.assertIn("选择计划：`FactSelectionSpec`", report)
+        self.assertIn("material_ranking=1000", report)
+        self.assertIn("script_text", report)
+
 
 if __name__ == "__main__":
     unittest.main()

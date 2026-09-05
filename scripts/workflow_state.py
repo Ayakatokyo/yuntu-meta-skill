@@ -32,7 +32,12 @@ COLLECTION_STAGES = (
     "brand_classifying",
     "ready_for_analysis",
 )
-ANALYSIS_STAGES = ("analysis_running", "analysis_completed")
+ANALYSIS_STAGES = (
+    "awaiting_fact_selection",
+    "facts_selected",
+    "analysis_running",
+    "analysis_completed",
+)
 FAILURE_STAGES = ("partial", "failed")
 WORKFLOW_STAGES = set(COLLECTION_STAGES) | set(ANALYSIS_STAGES) | set(FAILURE_STAGES)
 _STAGE_INDEX = {
@@ -190,7 +195,9 @@ def set_stage(run_root: Path, stage: str, **metadata) -> dict:
     if current in FAILURE_STAGES and stage not in FAILURE_STAGES + ("collecting",):
         raise WorkflowStateError(f"cannot transition from {current} to {stage}")
     if stage in _STAGE_INDEX and current in _STAGE_INDEX:
-        repeat_analysis = current == "analysis_completed" and stage == "analysis_running"
+        repeat_analysis = current == "analysis_completed" and stage in {
+            "awaiting_fact_selection", "analysis_running",
+        }
         retry_analysis = current == "analysis_running" and stage == "ready_for_analysis"
         if _STAGE_INDEX[stage] < _STAGE_INDEX[current] and not (repeat_analysis or retry_analysis):
             raise WorkflowStateError(f"workflow stage cannot move backward: {current} -> {stage}")
@@ -233,11 +240,34 @@ def begin_model_analysis(run_root: Path, request_id: str) -> dict:
     if not isinstance(request_id, str) or not request_id.strip():
         raise WorkflowStateError("request_id is required")
     status = get_workflow_status(run_root)
-    if status["stage"] not in {"ready_for_analysis", "analysis_completed"}:
+    if status["stage"] not in {"ready_for_analysis", "facts_selected", "analysis_completed"}:
         raise WorkflowStateError(
-            "model analysis requires ready_for_analysis or analysis_completed"
+            "model analysis requires ready_for_analysis, facts_selected, or analysis_completed"
         )
     return set_stage(Path(run_root), "analysis_running", request_id=request_id.strip())
+
+
+def begin_fact_selection(run_root: Path, analysis_id: str) -> dict:
+    """Begin the local fact-selection handoff for a phase-two analysis."""
+    if not isinstance(analysis_id, str) or not analysis_id.strip():
+        raise WorkflowStateError("analysis_id is required")
+    status = get_workflow_status(run_root)
+    if status["stage"] not in {"ready_for_analysis", "analysis_completed"}:
+        raise WorkflowStateError(
+            "fact selection requires ready_for_analysis or analysis_completed"
+        )
+    return set_stage(Path(run_root), "awaiting_fact_selection", analysis_id=analysis_id.strip())
+
+
+def complete_fact_selection(run_root: Path, selection_path: Path) -> dict:
+    """Persist a validated local selection and make the run ready for analysis."""
+    path = Path(selection_path)
+    if not path.is_file():
+        raise WorkflowStateError(f"fact selection is missing: {path}")
+    status = get_workflow_status(run_root)
+    if status["stage"] != "awaiting_fact_selection":
+        raise WorkflowStateError("fact selection is not awaiting a result")
+    return set_stage(Path(run_root), "facts_selected", selection_path=str(path))
 
 
 def complete_model_analysis(run_root: Path, result_path: Path) -> dict:

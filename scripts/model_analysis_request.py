@@ -5,15 +5,20 @@ from __future__ import annotations
 try:
     from .analysis_prompt import build_prompt_packet
     from .analysis_spec import AnalysisSpec
+    from .fact_catalog import FactCatalog
 except ImportError:  # pragma: no cover - direct script imports
     from analysis_prompt import build_prompt_packet
     from analysis_spec import AnalysisSpec
+    from fact_catalog import FactCatalog
 
 
 REQUEST_TYPE = "yuntu_commercial_analysis"
 REQUEST_VERSION = 2
 HANDOFF_PROTOCOL = "yuntu-current-conversation-model-v2"
 RESPONSE_SCHEMA = "AnalysisResult"
+FACT_SELECTION_REQUEST_TYPE = "yuntu_fact_selection"
+FACT_SELECTION_REQUEST_VERSION = 1
+FACT_SELECTION_RESPONSE_SCHEMA = "FactSelectionSpec"
 
 BASE_SYSTEM_RULES = (
     "只使用给定事实，不补充外部资料或未提供的记录。",
@@ -22,6 +27,78 @@ BASE_SYSTEM_RULES = (
     "品牌代理识别必须标记为推断并降低置信度，且只能使用运行时品牌候选范围。",
     "脚本字段为 source_empty 时只能进入 gaps，不得用标题或标签替代脚本。",
 )
+
+
+def build_fact_selection_request(spec: AnalysisSpec, catalog: FactCatalog) -> dict:
+    """Create a handoff asking the current model to select persisted facts."""
+    if not isinstance(spec, AnalysisSpec):
+        raise ValueError("spec must be an AnalysisSpec")
+    if not isinstance(catalog, FactCatalog):
+        raise ValueError("catalog must be a FactCatalog")
+    return {
+        "request_type": FACT_SELECTION_REQUEST_TYPE,
+        "request_version": FACT_SELECTION_REQUEST_VERSION,
+        "host_context": {
+            "analysis_id": spec.analysis_id,
+            "run_id": spec.run_id,
+            "business_question": spec.business_question,
+            "analysis_spec": spec.to_dict(),
+            "fact_catalog": catalog.to_dict(),
+            "response_schema": FACT_SELECTION_RESPONSE_SCHEMA,
+            "system_rules": [
+                "只允许选择事实目录中已落盘的事实包和字段。",
+                "不得生成 QuerySpec、HighlightSpec、shop_id 或任何采集参数。",
+                "不得调用 RPA，不得读取运行目录之外的文件。",
+                "无法支持的问题必须通过 data_gaps 表达，不得虚构字段或事实。",
+            ],
+        },
+        "local_audit": {
+            "analysis_id": spec.analysis_id,
+            "run_id": spec.run_id,
+            "facts_version": catalog.schema_version,
+        },
+    }
+
+
+def validate_fact_selection_request(request: dict) -> list[str]:
+    """Validate the first handoff before it reaches the current model."""
+    errors: list[str] = []
+    if not isinstance(request, dict):
+        return ["request must be an object"]
+    if request.get("request_type") != FACT_SELECTION_REQUEST_TYPE:
+        errors.append(f"request_type must be {FACT_SELECTION_REQUEST_TYPE}")
+    if request.get("request_version") != FACT_SELECTION_REQUEST_VERSION:
+        errors.append(f"request_version must be {FACT_SELECTION_REQUEST_VERSION}")
+    if "collector_params" in request:
+        errors.append("collector parameters are forbidden in fact selection request")
+    host_context = request.get("host_context")
+    if not isinstance(host_context, dict):
+        errors.append("host_context must be an object")
+        host_context = {}
+    for field in ("analysis_id", "run_id", "business_question"):
+        if not isinstance(host_context.get(field), str) or not host_context[field].strip():
+            errors.append(f"host_context.{field} is required")
+    if not isinstance(host_context.get("analysis_spec"), dict):
+        errors.append("host_context.analysis_spec must be an object")
+    if not isinstance(host_context.get("fact_catalog"), dict):
+        errors.append("host_context.fact_catalog must be an object")
+    if host_context.get("response_schema") != FACT_SELECTION_RESPONSE_SCHEMA:
+        errors.append(f"host_context.response_schema must be {FACT_SELECTION_RESPONSE_SCHEMA}")
+    rules = host_context.get("system_rules")
+    if not isinstance(rules, list) or any(not isinstance(rule, str) or not rule.strip() for rule in rules):
+        errors.append("host_context.system_rules must be a non-empty string array")
+    audit = request.get("local_audit")
+    if not isinstance(audit, dict):
+        errors.append("local_audit must be an object")
+        audit = {}
+    for field in ("analysis_id", "run_id"):
+        if not isinstance(audit.get(field), str) or not audit[field].strip():
+            errors.append(f"local_audit.{field} is required")
+    if host_context.get("analysis_id") != audit.get("analysis_id"):
+        errors.append("local_audit.analysis_id must match host_context.analysis_id")
+    if host_context.get("run_id") != audit.get("run_id"):
+        errors.append("local_audit.run_id must match host_context.run_id")
+    return errors
 
 
 def build_model_analysis_request(
@@ -156,10 +233,15 @@ def validate_model_analysis_request(request: dict) -> list[str]:
 
 
 __all__ = [
+    "FACT_SELECTION_REQUEST_TYPE",
+    "FACT_SELECTION_REQUEST_VERSION",
+    "FACT_SELECTION_RESPONSE_SCHEMA",
     "REQUEST_TYPE",
     "REQUEST_VERSION",
     "HANDOFF_PROTOCOL",
     "RESPONSE_SCHEMA",
     "build_model_analysis_request",
+    "build_fact_selection_request",
+    "validate_fact_selection_request",
     "validate_model_analysis_request",
 ]

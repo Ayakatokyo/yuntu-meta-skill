@@ -7,6 +7,8 @@ from scripts.workflow_state import (
     WorkflowStateError,
     build_ready_receipt,
     begin_model_analysis,
+    begin_fact_selection,
+    complete_fact_selection,
     complete_model_analysis,
     get_workflow_status,
     fail_model_analysis,
@@ -82,6 +84,22 @@ class WorkflowStateTests(unittest.TestCase):
             completed = complete_model_analysis(root, result_path)
             self.assertEqual(completed["workflow"]["stage"], "analysis_completed")
             self.assertEqual(completed["workflow"]["metadata"]["result_path"], str(result_path))
+
+    def test_fact_selection_and_analysis_states_are_resumable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            set_stage(root, "ready_for_analysis")
+
+            waiting = begin_fact_selection(root, "analysis-1")
+            self.assertEqual(waiting["workflow"]["stage"], "awaiting_fact_selection")
+
+            selection_path = root / "selection.json"
+            selection_path.write_text("{}", encoding="utf-8")
+            selected = complete_fact_selection(root, selection_path)
+            self.assertEqual(selected["workflow"]["stage"], "facts_selected")
+
+            running = begin_model_analysis(root, "analysis-1")
+            self.assertEqual(running["workflow"]["stage"], "analysis_running")
 
     def test_failed_model_analysis_returns_to_ready_for_retry(self):
         with tempfile.TemporaryDirectory() as directory:

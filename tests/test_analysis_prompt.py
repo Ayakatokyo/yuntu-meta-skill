@@ -1,7 +1,9 @@
 import unittest
 
 from scripts.analysis_facts import build_fact_index
-from scripts.analysis_prompt import build_prompt_packet
+from scripts.analysis_prompt import build_fact_selection_prompt, build_prompt_packet
+from scripts.fact_catalog import FactCatalog
+from scripts.fact_selection import FactPackage
 from scripts.analysis_spec import parse_analysis_spec
 
 
@@ -90,6 +92,22 @@ class AnalysisPromptTests(unittest.TestCase):
         rules = " ".join(packet["rules"]["quality_gates"])
         self.assertIn("manifest", rules)
         self.assertIn("brand_filter", rules)
+
+    def test_fact_selection_prompt_contains_intent_rules_and_catalog_only(self):
+        catalog = FactCatalog(
+            run_id="run-1",
+            schema_version=3,
+            record_counts={FactPackage.MATERIAL_RANKING: 1},
+            fields={FactPackage.MATERIAL_RANKING: ("metrics.ctr",)},
+            available_fields={FactPackage.MATERIAL_RANKING: {"metrics.ctr": 1}},
+            package_paths={FactPackage.MATERIAL_RANKING: "facts/material-ranking.json"},
+        )
+        prompt = build_fact_selection_prompt(self.spec, catalog)
+
+        self.assertEqual(prompt["business_question"], self.spec.business_question)
+        self.assertIn("fact_catalog", prompt)
+        self.assertNotIn("records", prompt["fact_catalog"])
+        self.assertIn("不得生成 QuerySpec", " ".join(prompt["rules"]))
 
 
 if __name__ == "__main__":

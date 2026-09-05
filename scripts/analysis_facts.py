@@ -172,3 +172,179 @@ def build_fact_index(selected_facts: dict) -> dict[str, object]:
                 raise ValueError("selected fact record index must be a nonnegative integer")
             index[f"{path}#/records/{original_index}"] = record
     return index
+
+
+def _nested_value(record: dict[str, Any], field: str) -> Any:
+    value: Any = record
+    for part in field.split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _quantile(values: list[float], fraction: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * fraction
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _filter_matches(record: dict[str, Any], item, records: list[dict[str, Any]]) -> bool:
+    try:
+        from .fact_selection import SelectionOperator
+    except ImportError:  # pragma: no cover - direct script imports
+        from fact_selection import SelectionOperator
+
+    actual = _nested_value(record, item.field)
+    operator = item.operator
+    expected = item.value
+    if actual is None:
+        return False
+    if operator == SelectionOperator.EQUALS:
+        return actual == expected
+    if operator == SelectionOperator.IN:
+        return actual in expected if isinstance(expected, list) else False
+    if operator == SelectionOperator.CONTAINS:
+        return expected in actual if isinstance(actual, (str, list)) else False
+    if operator in {SelectionOperator.GT, SelectionOperator.GTE, SelectionOperator.LT, SelectionOperator.LTE}:
+        if not isinstance(actual, (int, float)) or isinstance(actual, bool):
+            return False
+        return {
+            SelectionOperator.GT: actual > expected,
+            SelectionOperator.GTE: actual >= expected,
+            SelectionOperator.LT: actual < expected,
+            SelectionOperator.LTE: actual <= expected,
+        }[operator]
+    if operator in {SelectionOperator.TOP_PERCENTILE, SelectionOperator.BOTTOM_PERCENTILE}:
+        values = []
+        for candidate in records:
+            candidate_value = _nested_value(candidate, item.field)
+            if isinstance(candidate_value, (int, float)) and not isinstance(candidate_value, bool):
+                values.append(float(candidate_value))
+        if not values:
+            return False
+        threshold = _quantile(values, float(expected) / 100)
+        return actual >= threshold if operator == SelectionOperator.TOP_PERCENTILE else actual <= threshold
+    return True
+
+
+def _apply_fact_filters(records: list[dict[str, Any]], filters: tuple) -> list[dict[str, Any]]:
+    return [record for record in records if all(_filter_matches(record, item, records) for item in filters)]
+
+
+def _sort_fact_records(records: list[dict[str, Any]], order_by: tuple) -> list[dict[str, Any]]:
+    result = list(records)
+    for rule in reversed(order_by):
+        result.sort(
+            key=lambda record: (_nested_value(record, rule.field) is None, _nested_value(record, rule.field)),
+            reverse=rule.direction == "desc",
+        )
+    return result
+
+
+def _fact_gaps(package, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    gaps = []
+    seen = set()
+    for record in records:
+        availability = record.get("data_availability")
+        if not isinstance(availability, dict):
+            continue
+        for field, status in availability.items():
+            if isinstance(status, dict) and status.get("available") is False:
+                reason = status.get("missing_reason") or "unavailable"
+                key = (package.value, field, reason)
+                if key not in seen:
+                    gaps.append({"package": package.value, "field": field, "reason": reason})
+                    seen.add(key)
+    return gaps
+
+
+def execute_fact_selection(run_root: Path, selection):
+    """Select only manifest-verified records from persisted fact packages."""
+    try:
+        from .fact_catalog import build_fact_catalog
+        from .fact_selection import FactSelectionResult, SelectionOperator
+    except ImportError:  # pragma: no cover - direct script imports
+        from fact_catalog import build_fact_catalog
+        from fact_selection import FactSelectionResult, SelectionOperator
+
+    catalog = build_fact_catalog(run_root)
+    for item in selection.filters:
+        if item.package not in catalog.fields or item.field not in catalog.fields[item.package]:
+            raise ValueError(f"unknown fact field: {item.package.value}.{item.field}")
+    for package, fields in selection.fields.items():
+        for field in fields:
+            if field not in catalog.fields.get(package, ()):
+                raise ValueError(f"unknown fact field: {package.value}.{field}")
+    for rule in selection.order_by:
+        if not any(rule.field in catalog.fields.get(package, ()) for package in selection.packages):
+            raise ValueError(f"unknown fact field: {rule.field}")
+
+    root = Path(run_root)
+    manifest = _read_json(root / "facts" / "manifest.json")
+    _verify_source_artifacts(root, manifest)
+    package_records = {}
+    package_metadata = manifest["packages"]
+    for package in selection.packages:
+        metadata = package_metadata[package.value]
+        package_path = _safe_path(root, metadata["path"])
+        package_doc = _read_json(package_path)
+        records = package_doc.get("records") if isinstance(package_doc, dict) else None
+        if not isinstance(records, list) or len(records) != metadata.get("record_count"):
+            raise ValueError(f"fact package record_count mismatch: {metadata['path']}")
+        expected_hash = metadata.get("sha256")
+        if expected_hash and _sha256(package_path) != expected_hash:
+            raise ValueError(f"fact package SHA-256 mismatch: {metadata['path']}")
+        package_records[package] = records
+
+    primary = selection.packages[0]
+    primary_records = _apply_fact_filters(package_records[primary], tuple(item for item in selection.filters if item.package == primary))
+    primary_records = _sort_fact_records(primary_records, selection.order_by)
+    for item in selection.filters:
+        if item.package == primary and item.operator in {SelectionOperator.TOP_N, SelectionOperator.BOTTOM_N}:
+            primary_records = sorted(
+                primary_records,
+                key=lambda record: _nested_value(record, item.field) if _nested_value(record, item.field) is not None else float("-inf"),
+                reverse=item.operator == SelectionOperator.TOP_N,
+            )[: int(item.value)]
+    if selection.limit is not None:
+        primary_records = primary_records[: selection.limit]
+    selected_ids = {str(record.get("material_id")) for record in primary_records}
+
+    sections = {}
+    data_gaps = []
+    fact_refs = []
+    for package in selection.packages:
+        records = package_records[package]
+        if package == primary:
+            selected = primary_records
+        elif any(join.package == package for join in selection.joins):
+            selected = [record for record in records if str(record.get("material_id")) in selected_ids]
+            selected = _apply_fact_filters(selected, tuple(item for item in selection.filters if item.package == package))
+        else:
+            selected = _apply_fact_filters(records, tuple(item for item in selection.filters if item.package == package))
+        indices = [index for index, record in enumerate(records) if record in selected]
+        path = package_metadata[package.value]["path"]
+        sections[package.value] = {
+            "path": path,
+            "schema_version": manifest.get("schema_version"),
+            "record_count": len(selected),
+            "source_record_count": len(records),
+            "record_indices": indices,
+            "records": selected,
+        }
+        fact_refs.extend(f"{path}#/records/{index}" for index in indices)
+        data_gaps.extend(_fact_gaps(package, selected))
+
+    return FactSelectionResult(
+        sections=sections,
+        selection_summary={
+            "primary_package": primary.value,
+            "source_record_counts": {package.value: len(records) for package, records in package_records.items()},
+            "selected_record_counts": {name: section["record_count"] for name, section in sections.items()},
+        },
+        fact_refs=tuple(sorted(fact_refs)),
+        data_gaps=tuple(data_gaps),
+    )

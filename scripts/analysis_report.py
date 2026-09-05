@@ -286,6 +286,47 @@ def _render_audit_appendices(
     return lines
 
 
+def _render_phase_two_chain(metadata: dict) -> list[str]:
+    phase_two = metadata.get("phase_two")
+    if not isinstance(phase_two, dict):
+        return []
+    intent = phase_two.get("intent", {})
+    if not isinstance(intent, dict):
+        intent = {}
+    selection = phase_two.get("selection_spec", {})
+    if not isinstance(selection, dict):
+        selection = {}
+    summary = phase_two.get("selection_summary", {})
+    if not isinstance(summary, dict):
+        summary = {}
+    source_counts = summary.get("source_record_counts", {})
+    selected_counts = summary.get("selected_record_counts", {})
+    gaps = phase_two.get("data_gaps", [])
+    if not isinstance(gaps, list):
+        gaps = []
+    lines = ["## 分析链路", "", f"- 用户商业问题：{phase_two.get('business_question', '未记录')}"]
+    lines.append(
+        "- AnalysisIntent：" + json.dumps({
+            "objectives": intent.get("objectives", []),
+            "metrics": intent.get("metrics", []),
+            "dimensions": intent.get("dimensions", []),
+        }, ensure_ascii=False, sort_keys=True)
+    )
+    lines.append(
+        "- 选择计划：`FactSelectionSpec`；事实包：" +
+        ("、".join(str(item) for item in selection.get("packages", [])) or "未记录")
+    )
+    lines.append("- 源记录数：" + ("；".join(f"{key}={value}" for key, value in source_counts.items()) or "未记录"))
+    lines.append("- 实际选中数：" + ("；".join(f"{key}={value}" for key, value in selected_counts.items()) or "未记录"))
+    lines.append("- 事实选择缺口：")
+    if gaps:
+        lines.extend(f"  - {_text(gap)}" for gap in gaps)
+    else:
+        lines.append("  - 无")
+    lines.append("")
+    return lines
+
+
 def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: dict) -> str:
     if not isinstance(spec, AnalysisSpec):
         raise ValueError("spec must be an AnalysisSpec")
@@ -368,6 +409,8 @@ def render_analysis_report(spec: AnalysisSpec, results: list[dict], metadata: di
         lines.extend(_render_finding_line(finding, evidence_ids) for finding in cross_findings)
 
     lines.extend([
+        "",
+        *_render_phase_two_chain(metadata),
         "",
         "## 八、数据限制与下一步",
         "",

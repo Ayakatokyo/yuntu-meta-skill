@@ -6,7 +6,7 @@ metadata:
   pre_input: 请采集云图行业内容榜单和素材高光帧，行业是 ____（必填）；时间周期是 ____（自定义起止日期，默认近7天）；截取方式是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）；品牌范围是 ____（全行业，或指定3至10个品牌）；需要执行详情拆解的素材数为 ____（正整数，默认10）；年龄是 ____（可选，留空不过滤）；性别是 ____（可选，留空不过滤）；八大人群是 ____（可选，留空不过滤）。高光帧筛选：是否保留封面帧（是/否）；高光指标至少选择一项，可从点赞、流失、点击、互动、评论五项中选择；每个已选指标可按波峰或指标大小截取，并指定帧数。（如：保留封面帧，点赞指数取指标值最高的前 2 帧，流失指数取局部峰值/波峰 2 帧。）
 ---
 
-# 可配置云图采集
+# 可配置云图采集与商业分析工作流
 
 该技能负责榜单、详情和高光帧资产，并通过同一入口分两阶段运行：首次调用只采集并准备事实资产，停在 `ready_for_analysis`；阶段一明确停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二次调用才进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。
 
@@ -29,7 +29,20 @@ python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs
 python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
 python scripts/collector.py retry-highlights --output-dir runs/example
 python scripts/collector.py build-facts --run-dir runs/example
-# 阶段一返回 ready_for_analysis 后，再提供阶段二 AnalysisInput
+# 阶段一返回 ready_for_analysis 后，使用同一个 yuntu-meta-skill 进入两轮阶段二工作流
+python scripts/collector.py workflow --run-dir runs/example \
+  --business-question "找出曝光高但转化差的素材" --output runs/example/analysis/workflow.md
+# 当前对话模型返回 FactSelectionSpec JSON 后回放本地事实选择
+python scripts/collector.py workflow --run-dir runs/example \
+  --business-question "找出曝光高但转化差的素材" \
+  --fact-selection-result runs/example/selection-result.json \
+  --output runs/example/analysis/workflow.md
+# 当前对话模型返回 AnalysisResult JSON 后生成最终报告
+python scripts/collector.py workflow --run-dir runs/example \
+  --business-question "找出曝光高但转化差的素材" \
+  --analysis-result runs/example/analysis-result.json \
+  --output runs/example/analysis/workflow.md
+# 历史运行仍可使用旧 AnalysisInput 入口
 python scripts/collector.py analyze --run-dir runs/example --input analysis-input.json --output runs/example/analysis.md
 # 历史运行仍可使用旧 AnalysisSpec 入口
 python scripts/collector.py analyze --run-dir runs/example --spec analysis-spec.json --output runs/example/analysis.md
@@ -58,3 +71,5 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 模型结果可通过 `--analysis-result` 传入，作为当前对话模型响应的离线回放/测试入口；未传入时命令只落盘 `*.model-analysis-request.json` 和 `*.prompt-packet.json`，返回 `awaiting_model_analysis` 宿主交接回执，不生成保守分析、结果或报告。宿主协议为 `yuntu-current-conversation-model-v2`：当前对话模型读取 `host_context`，只返回 `AnalysisResult` JSON（对象或 `{\"results\": [...]}`），再用同一运行目录和 `--analysis-result` 恢复。技能脚本不调用外部模型 API，也不启动独立模型。每条 `findings` 结论必须包含可解析的 `fact_refs`、合法的模块、`type` 和 `confidence`。`source_empty` 只能进入 `gaps`；当前脚本字段为空时不得用标题或标签代替脚本。`selection_group.brand_name` 为空且 `brand_classification.source=runtime_title_rule` 时，相关品牌结论必须标记为推断、降低置信度并填写品牌代理说明；标签关联和高光解释不得表述为因果。分析不依赖事后生成的 `fact-summary.json`。
 
 `analyze` 在等待模型时旁写 `<stem>.model-analysis-request.json` 和 `<stem>.prompt-packet.json`；模型结果校验通过后才在 `--output` 写入 Markdown 报告，并旁写 `<stem>.analysis-result.json`。报告正文以核心结论和行动建议开头，随后按 `material_ranking`、`audience`、`script`、`highlight_frames` 固定顺序展示四类事实包；未选择模块明确标注。正文使用 `[E1]` 等短证据编号，不展示 finding 类型、置信度或完整 `fact_refs`；附录 A 保留完整引用索引，附录 B 保留结论类型、置信度、品牌代理说明和逐条审计映射。历史 `AnalysisResult` 缺少展示专用字段时仍按现有 `findings`、`gaps`、`next_questions` 渲染。结果校验失败时只保存包含 `code`、`path`、`message`、`suggestion` 的 `<stem>.analysis-error.json`，保持运行可重试且不生成报告。
+
+新流程优先使用 `workflow`：第一次模型交接只生成 `AnalysisIntent + FactSelectionSpec`，技能在本地从已落盘 `facts/` 选择记录；第二次模型交接只分析 `selected-fact-context.json`。两轮都使用当前会话内模型，阶段二不生成或修改任何 RPA 入参，也不重新采集、规范化或品牌分类。报告额外展示“用户问题 → AnalysisIntent → FactSelectionSpec → 实际选中记录 → 数据缺口 → AI 结论 → fact_refs”链路。不存在的 ROI/GMV 等字段和脚本 `source_empty` 必须显式作为缺口；真实运行中的 1000 条榜单及 306 条未知品牌限制会进入审计。

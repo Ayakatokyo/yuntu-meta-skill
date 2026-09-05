@@ -15,10 +15,15 @@ RUNTIME_FILES = (
     "scripts/fact_packages.py",
     "scripts/analysis_spec.py",
     "scripts/analysis_facts.py",
+    "scripts/analysis_intent.py",
+    "scripts/analysis_workflow.py",
     "scripts/analysis_prompt.py",
     "scripts/analysis_result.py",
     "scripts/analysis_report.py",
+    "scripts/fact_catalog.py",
+    "scripts/fact_selection.py",
     "scripts/model_analysis_request.py",
+    "scripts/workflow_state.py",
 )
 
 
