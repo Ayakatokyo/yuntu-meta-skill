@@ -1,8 +1,10 @@
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 import json
 import subprocess
 import sys
 import tempfile
+from unittest.mock import patch
 import unittest
 from pathlib import Path
 
@@ -89,6 +91,67 @@ def highlight_spec():
 
 
 class YuntuBatchTests(unittest.TestCase):
+    def test_detail_wave_is_limited_to_three_items(self):
+        batch = load_batch()
+        candidates = [{"material_id": str(index)} for index in range(4)]
+
+        wave, next_index = batch._next_detail_wave(
+            candidates,
+            0,
+            selected_ids=set(),
+            rejected_ids=set(),
+            unresolved_ids=set(),
+        )
+
+        self.assertEqual(batch.DETAIL_WAVE_CONCURRENCY, 3)
+        self.assertEqual([item["material_id"] for item in wave], ["0", "1", "2"])
+        self.assertEqual(next_index, 3)
+
+    def test_detail_executor_uses_detail_wave_concurrency_setting(self):
+        batch = load_batch()
+        configured_limit = 4
+        batch.DETAIL_WAVE_CONCURRENCY = configured_limit
+        recorded_workers = []
+
+        class RecordingExecutor:
+            def __init__(self, max_workers):
+                recorded_workers.append(max_workers)
+                self._executor = RealThreadPoolExecutor(max_workers=max_workers)
+
+            def __enter__(self):
+                self._executor.__enter__()
+                return self
+
+            def __exit__(self, *args):
+                return self._executor.__exit__(*args)
+
+            def submit(self, *args, **kwargs):
+                return self._executor.submit(*args, **kwargs)
+
+        batch.generate_highlights_for_detail = lambda *_args: []
+        invoker = BatchInvoker([
+            list_record("101", "A"),
+            list_record("202", "B"),
+            list_record("303", "A"),
+            list_record("404", "B"),
+        ])
+
+        with patch.object(batch, "ThreadPoolExecutor", RecordingExecutor):
+            with tempfile.TemporaryDirectory() as directory:
+                status = batch.fetch_batch(
+                    shop_id="shop-42",
+                    list_params={},
+                    detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                    target_top_n=4,
+                    candidate_top_n=1000,
+                    output_dir=Path(directory),
+                    invoker=invoker,
+                    highlight_spec=highlight_spec(),
+                )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(recorded_workers, [configured_limit, batch.HIGHLIGHT_CONCURRENCY])
+
     def _write_collection_state(self, root, status="success"):
         batch = load_batch()
         contract = batch.run_state.collection_contract(

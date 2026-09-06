@@ -49,7 +49,7 @@ class YuntuBatchError(RuntimeError):
     """Raised when a Yuntu batch cannot be started."""
 
 
-DETAIL_WAVE_CONCURRENCY = 2
+DETAIL_WAVE_CONCURRENCY = 3
 HIGHLIGHT_CONCURRENCY = 3
 FACT_PACKAGE_NAMES = (
     "material_ranking",
