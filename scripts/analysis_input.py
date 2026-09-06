@@ -47,7 +47,7 @@ ALLOWED_METRICS = {
     "互动指数",
     "评论指数",
 }
-READY_STATUSES = {"ready_for_analysis", "analysis_completed"}
+READY_STATUSES = {"ready_for_analysis", "analysis_failed", "analysis_completed"}
 _INPUT_FIELDS = {
     "analysis_id",
     "run_id",

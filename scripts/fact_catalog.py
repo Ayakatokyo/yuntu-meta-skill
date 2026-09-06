@@ -23,6 +23,7 @@ class FactCatalog:
     fields: dict[FactPackage, tuple[str, ...]]
     available_fields: dict[FactPackage, dict[str, int]]
     package_paths: dict[FactPackage, str]
+    capabilities: dict[FactPackage, dict[str, dict[str, Any]]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -34,6 +35,7 @@ class FactCatalog:
                     "fields": list(self.fields[package]),
                     "available_fields": self.available_fields[package],
                     "path": self.package_paths[package],
+                    "capabilities": (self.capabilities or {}).get(package, {}),
                 }
                 for package in self.record_counts
             },
@@ -71,6 +73,7 @@ def build_fact_catalog(run_root: Path) -> FactCatalog:
     fields: dict[FactPackage, tuple[str, ...]] = {}
     availability: dict[FactPackage, dict[str, int]] = {}
     paths: dict[FactPackage, str] = {}
+    capabilities: dict[FactPackage, dict[str, dict[str, Any]]] = {}
     for raw_name, metadata in packages.items():
         try:
             package = FactPackage(raw_name)
@@ -91,6 +94,7 @@ def build_fact_catalog(run_root: Path) -> FactCatalog:
         if len(records) != metadata.get("record_count"):
             raise ValueError(f"fact package record_count mismatch: {metadata['path']}")
         field_counts: dict[str, int] = {}
+        field_values: dict[str, list[Any]] = {}
         for record in records:
             if not isinstance(record, dict):
                 continue
@@ -98,15 +102,31 @@ def build_fact_catalog(run_root: Path) -> FactCatalog:
                 field_counts.setdefault(field, 0)
                 if value not in (None, "", [], {}):
                     field_counts[field] += 1
+                    field_values.setdefault(field, []).append(value)
         counts[package] = len(records)
         fields[package] = tuple(sorted(field_counts))
         availability[package] = field_counts
         paths[package] = metadata["path"]
+        package_capabilities: dict[str, dict[str, Any]] = {}
+        for field in field_counts:
+            values = field_values.get(field, [])
+            numeric = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+            operations = ["count", "distribution"]
+            if numeric:
+                operations.extend(["sum", "mean", "median", "percentile"])
+            package_capabilities[field] = {
+                "available_count": field_counts.get(field, 0),
+                "value_type": "number" if numeric and len(numeric) == len(values) else "mixed",
+                "aggregations": operations,
+                "filterable": True,
+                "projectable": True,
+            }
+        capabilities[package] = package_capabilities
 
     run_id = manifest.get("run_id") or manifest.get("runId")
     if not isinstance(run_id, str) or not run_id:
         raise ValueError("facts manifest run_id is required")
-    return FactCatalog(run_id, manifest.get("schema_version"), counts, fields, availability, paths)
+    return FactCatalog(run_id, manifest.get("schema_version"), counts, fields, availability, paths, capabilities)
 
 
 __all__ = ["FactCatalog", "build_fact_catalog"]

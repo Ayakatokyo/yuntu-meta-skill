@@ -101,7 +101,7 @@ class WorkflowStateTests(unittest.TestCase):
             running = begin_model_analysis(root, "analysis-1")
             self.assertEqual(running["workflow"]["stage"], "analysis_running")
 
-    def test_failed_model_analysis_returns_to_ready_for_retry(self):
+    def test_failed_model_analysis_is_explicitly_failed_and_retryable(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             set_stage(root, "ready_for_analysis")
@@ -109,9 +109,10 @@ class WorkflowStateTests(unittest.TestCase):
 
             failed = fail_model_analysis(root, "request-1", "invalid response")
 
-            self.assertEqual(failed["workflow"]["stage"], "ready_for_analysis")
-            self.assertEqual(get_workflow_status(root)["status"], "ready_for_analysis")
+            self.assertEqual(failed["workflow"]["stage"], "analysis_failed")
+            self.assertEqual(get_workflow_status(root)["status"], "analysis_failed")
             self.assertEqual(failed["workflow"]["metadata"]["error"], "invalid response")
+            self.assertTrue(get_workflow_status(root)["summary"]["workflow"]["history"][-1]["stage"] == "analysis_failed")
 
     def test_ready_receipt_contains_coverage_packages_and_next_step(self):
         with tempfile.TemporaryDirectory() as directory:

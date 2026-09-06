@@ -164,6 +164,11 @@ def build_fact_index(selected_facts: dict) -> dict[str, object]:
         records = section.get("records")
         if not isinstance(path, str) or not isinstance(records, list):
             raise ValueError("selected fact section requires path and records")
+        try:
+            from .fact_reference import parse_fact_ref
+        except ImportError:  # pragma: no cover
+            from fact_reference import parse_fact_ref
+        parse_fact_ref(f"{path}#/records/0")
         record_indices = section.get("record_indices", list(range(len(records))))
         if not isinstance(record_indices, list) or len(record_indices) != len(records):
             raise ValueError("selected fact section record_indices must match records")
@@ -261,6 +266,62 @@ def _fact_gaps(package, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return gaps
 
 
+def _set_nested(target: dict[str, Any], field: str, value: Any) -> None:
+    parts = field.split(".")
+    current = target
+    for part in parts[:-1]:
+        current = current.setdefault(part, {})
+    current[parts[-1]] = value
+
+
+def _project_record(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    if not fields:
+        return record
+    projected: dict[str, Any] = {}
+    for field in fields:
+        value = _nested_value(record, field)
+        if value is not None:
+            _set_nested(projected, field, value)
+    # These persisted audit fields remain visible so source_empty and brand
+    # proxy validation cannot be bypassed by a narrow model projection.
+    for audit_field in ("material_id", "data_availability", "brand_classification"):
+        if audit_field in record and audit_field not in projected:
+            projected[audit_field] = record[audit_field]
+    return projected
+
+
+def _aggregate(records: list[dict[str, Any]], aggregation) -> Any:
+    try:
+        from .fact_selection import AggregationOperation
+    except ImportError:  # pragma: no cover
+        from fact_selection import AggregationOperation
+    values = [_nested_value(record, aggregation.field) for record in records]
+    numeric = [float(value) for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    operation = aggregation.operation
+    if operation == AggregationOperation.COUNT:
+        return sum(value is not None for value in values)
+    if operation == AggregationOperation.DISTRIBUTION:
+        distribution: dict[str, int] = {}
+        for value in values:
+            key = str(value) if value is not None else "<missing>"
+            distribution[key] = distribution.get(key, 0) + 1
+        return distribution
+    if not numeric:
+        return None
+    if operation == AggregationOperation.SUM:
+        return sum(numeric)
+    if operation == AggregationOperation.MEAN:
+        return sum(numeric) / len(numeric)
+    ordered = sorted(numeric)
+    if operation == AggregationOperation.MEDIAN:
+        middle = len(ordered) // 2
+        return ordered[middle] if len(ordered) % 2 else (ordered[middle - 1] + ordered[middle]) / 2
+    position = (len(ordered) - 1) * (float(aggregation.percentile) / 100)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
 def execute_fact_selection(run_root: Path, selection):
     """Select only manifest-verified records from persisted fact packages."""
     try:
@@ -278,6 +339,10 @@ def execute_fact_selection(run_root: Path, selection):
         for field in fields:
             if field not in catalog.fields.get(package, ()):
                 raise ValueError(f"unknown fact field: {package.value}.{field}")
+    for aggregation in selection.aggregations:
+        capability = catalog.capabilities.get(aggregation.package, {}).get(aggregation.field, {}) if catalog.capabilities else {}
+        if aggregation.operation.value not in capability.get("aggregations", ()):
+            raise ValueError(f"unsupported local aggregation: {aggregation.package.value}.{aggregation.field}.{aggregation.operation.value}")
     for rule in selection.order_by:
         if not any(rule.field in catalog.fields.get(package, ()) for package in selection.packages):
             raise ValueError(f"unknown fact field: {rule.field}")
@@ -309,9 +374,24 @@ def execute_fact_selection(run_root: Path, selection):
                 key=lambda record: _nested_value(record, item.field) if _nested_value(record, item.field) is not None else float("-inf"),
                 reverse=item.operator == SelectionOperator.TOP_N,
             )[: int(item.value)]
-    if selection.limit is not None:
-        primary_records = primary_records[: selection.limit]
+    pre_limit_primary_records = list(primary_records)
+    package_limit = selection.limit if selection.limit is not None else 100
+    primary_records = primary_records[: package_limit]
     selected_ids = {str(record.get("material_id")) for record in primary_records}
+
+    aggregates: dict[str, dict[str, Any]] = {}
+    for aggregation in selection.aggregations:
+        source_records = package_records[aggregation.package]
+        filtered_records = _apply_fact_filters(
+            source_records,
+            tuple(item for item in selection.filters if item.package == aggregation.package),
+        )
+        package_values = aggregates.setdefault(aggregation.package.value, {})
+        field_values = package_values.setdefault(aggregation.field, {})
+        key = aggregation.operation.value
+        if aggregation.operation.value == "percentile":
+            key = f"percentile_{aggregation.percentile:g}"
+        field_values[key] = _aggregate(filtered_records, aggregation)
 
     sections = {}
     data_gaps = []
@@ -319,13 +399,31 @@ def execute_fact_selection(run_root: Path, selection):
     for package in selection.packages:
         records = package_records[package]
         if package == primary:
-            selected = primary_records
+            selected_identity = {id(record) for record in pre_limit_primary_records[:package_limit]}
+            selected_with_indices = [
+                (index, record) for index, record in enumerate(records)
+                if id(record) in selected_identity
+            ]
         elif any(join.package == package for join in selection.joins):
-            selected = [record for record in records if str(record.get("material_id")) in selected_ids]
-            selected = _apply_fact_filters(selected, tuple(item for item in selection.filters if item.package == package))
+            selected_with_indices = [
+                (index, record) for index, record in enumerate(records)
+                if str(record.get("material_id")) in selected_ids
+            ]
+            selected_with_indices = [
+                item for item in selected_with_indices
+                if all(_filter_matches(item[1], rule, records) for rule in selection.filters if rule.package == package)
+            ][: package_limit]
         else:
-            selected = _apply_fact_filters(records, tuple(item for item in selection.filters if item.package == package))
-        indices = [index for index, record in enumerate(records) if record in selected]
+            selected_with_indices = [
+                (index, record) for index, record in enumerate(records)
+                if all(_filter_matches(record, rule, records) for rule in selection.filters if rule.package == package)
+            ][: package_limit]
+        indices = [index for index, _ in selected_with_indices]
+        raw_selected = [record for _, record in selected_with_indices]
+        selected = [
+            _project_record(record, selection.fields.get(package, ()))
+            for record in raw_selected
+        ]
         path = package_metadata[package.value]["path"]
         sections[package.value] = {
             "path": path,
@@ -333,10 +431,15 @@ def execute_fact_selection(run_root: Path, selection):
             "record_count": len(selected),
             "source_record_count": len(records),
             "record_indices": indices,
+            "source_indices": indices,
             "records": selected,
         }
-        fact_refs.extend(f"{path}#/records/{index}" for index in indices)
-        data_gaps.extend(_fact_gaps(package, selected))
+        try:
+            from .fact_reference import build_fact_ref
+        except ImportError:  # pragma: no cover
+            from fact_reference import build_fact_ref
+        fact_refs.extend(build_fact_ref(path, index) for index in indices)
+        data_gaps.extend(_fact_gaps(package, raw_selected))
 
     return FactSelectionResult(
         sections=sections,
@@ -344,7 +447,24 @@ def execute_fact_selection(run_root: Path, selection):
             "primary_package": primary.value,
             "source_record_counts": {package.value: len(records) for package, records in package_records.items()},
             "selected_record_counts": {name: section["record_count"] for name, section in sections.items()},
+            "selection_rules": {
+                "filters": [item.to_dict() for item in selection.filters],
+                "fields": {package.value: list(fields) for package, fields in selection.fields.items()},
+                "joins": [item.to_dict() for item in selection.joins],
+            },
+            "truncation": {
+                name: {
+                    "source_record_count": section["source_record_count"],
+                    "selected_record_count": section["record_count"],
+                    "reason": (
+                        f"model record limit {package_limit} per package"
+                        if section["record_count"] < section["source_record_count"] else "not truncated"
+                    ),
+                }
+                for name, section in sections.items()
+            },
         },
         fact_refs=tuple(sorted(fact_refs)),
         data_gaps=tuple(data_gaps),
+        aggregates=aggregates,
     )

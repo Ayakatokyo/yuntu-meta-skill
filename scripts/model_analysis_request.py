@@ -105,6 +105,8 @@ def build_model_analysis_request(
     spec: AnalysisSpec,
     selected_facts: dict,
     fact_index: dict[str, object],
+    standardized_intent: dict | None = None,
+    capability_snapshot: dict | None = None,
 ) -> dict:
     """Create a host-ready, JSON-serializable model handoff request."""
     if not isinstance(spec, AnalysisSpec):
@@ -119,6 +121,16 @@ def build_model_analysis_request(
         ref for ref in fact_index
         if any(ref.startswith(f"{path}#") for path in selected_paths)
     )
+    intent = standardized_intent if isinstance(standardized_intent, dict) else {
+        "original_question": spec.business_question,
+        "research_object": "",
+        "operation": "",
+        "metrics": list(spec.metric_focus),
+        "dimensions": [],
+        "scope": spec.filters,
+        "expected_output": "",
+        "unsupported_requests": [],
+    }
     manifest = selected_facts.get("manifest", {})
     if not isinstance(manifest, dict):
         manifest = {}
@@ -147,7 +159,14 @@ def build_model_analysis_request(
             "analysis_id": spec.analysis_id,
             "run_id": spec.run_id,
             "analysis_spec": spec.to_dict(),
+            "original_question": intent.get("original_question", spec.business_question),
+            "standardized_intent": intent,
+            "capability_snapshot": capability_snapshot or {},
             "facts": packet.get("facts", {}),
+            "selected_records": packet.get("facts", {}),
+            "local_aggregates": selected_facts.get("aggregates", {}),
+            "allowed_fact_refs": selected_refs,
+            "data_gaps": selected_facts.get("data_gaps", []),
             "fact_refs": selected_refs,
             "system_rules": rules,
             "response_schema": RESPONSE_SCHEMA,
@@ -200,6 +219,12 @@ def validate_model_analysis_request(request: dict) -> list[str]:
     if not isinstance(refs, list) or any(not isinstance(ref, str) for ref in refs):
         errors.append("host_context.fact_refs must be a string array")
         refs = []
+    allowed_refs = host_context.get("allowed_fact_refs", refs)
+    if not isinstance(allowed_refs, list) or any(not isinstance(ref, str) for ref in allowed_refs):
+        errors.append("host_context.allowed_fact_refs must be a string array")
+        allowed_refs = []
+    if set(refs) - set(allowed_refs):
+        errors.append("host_context.fact_refs must be a subset of allowed_fact_refs")
     if isinstance(facts, dict):
         fact_paths = set(facts)
         for path, records in facts.items():
@@ -211,6 +236,15 @@ def validate_model_analysis_request(request: dict) -> list[str]:
                 continue
             if ref.split("#", 1)[0] not in fact_paths:
                 errors.append(f"host_context.fact_refs reference is outside selected facts: {ref}")
+    try:
+        from .fact_reference import FactReferenceError, parse_fact_ref
+    except ImportError:  # pragma: no cover
+        from fact_reference import FactReferenceError, parse_fact_ref
+    for position, ref in enumerate(allowed_refs):
+        try:
+            parse_fact_ref(ref)
+        except FactReferenceError as exc:
+            errors.append(f"host_context.allowed_fact_refs[{position}] {exc.message}")
     if host_context.get("response_schema") != RESPONSE_SCHEMA:
         errors.append(f"host_context.response_schema must be {RESPONSE_SCHEMA}")
     for field in ("analysis_id", "run_id", "facts_version", "prompt_version"):

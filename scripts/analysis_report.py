@@ -304,12 +304,19 @@ def _render_phase_two_chain(metadata: dict) -> list[str]:
     gaps = phase_two.get("data_gaps", [])
     if not isinstance(gaps, list):
         gaps = []
-    lines = ["## 分析链路", "", f"- 用户商业问题：{phase_two.get('business_question', '未记录')}"]
+    original_question = phase_two.get('business_question', intent.get('original_question', '未记录'))
+    lines = ["## 分析链路（透明度记录）", "", f"- 用户商业问题：{original_question}", f"- 客户原问题：{original_question}"]
     lines.append(
         "- AnalysisIntent：" + json.dumps({
+            "original_question": intent.get("original_question", phase_two.get("business_question", "")),
+            "research_object": intent.get("research_object", ""),
+            "operation": intent.get("operation", ""),
             "objectives": intent.get("objectives", []),
             "metrics": intent.get("metrics", []),
             "dimensions": intent.get("dimensions", []),
+            "scope": intent.get("scope", {}),
+            "expected_output": intent.get("expected_output", ""),
+            "unsupported_requests": intent.get("unsupported_requests", []),
         }, ensure_ascii=False, sort_keys=True)
     )
     lines.append(
@@ -318,6 +325,9 @@ def _render_phase_two_chain(metadata: dict) -> list[str]:
     )
     lines.append("- 源记录数：" + ("；".join(f"{key}={value}" for key, value in source_counts.items()) or "未记录"))
     lines.append("- 实际选中数：" + ("；".join(f"{key}={value}" for key, value in selected_counts.items()) or "未记录"))
+    lines.append("- 选择规则：" + json.dumps(summary.get("selection_rules", {}), ensure_ascii=False, sort_keys=True))
+    lines.append("- 聚合结果：" + json.dumps(phase_two.get("aggregates", {}), ensure_ascii=False, sort_keys=True))
+    lines.append("- 聚合/截断说明：" + json.dumps(summary.get("truncation", {}), ensure_ascii=False, sort_keys=True))
     lines.append("- 事实选择缺口：")
     if gaps:
         lines.extend(f"  - {_text(gap)}" for gap in gaps)
