@@ -28,7 +28,7 @@ except ImportError:  # pragma: no cover - direct script imports
 
 
 SCHEMA_VERSION = 3
-PACKAGE_NAMES = ("material_ranking", "audience", "script", "highlight_frames")
+PACKAGE_NAMES = ("material_ranking", "audience", "content_tags", "script", "interaction_series", "highlight_frames")
 AGE_PATTERN = re.compile(r"^(?:\d{2}-\d{2}|\d+\+)$")
 CROWD_GROUPS = {
     "genz",
@@ -247,6 +247,34 @@ def _script_payload(root: Path, details: dict[str, dict], classifications: dict[
     return {"schema_version": SCHEMA_VERSION, "records": records}
 
 
+def _content_tags_payload(root: Path, records: list[dict], classifications: dict[str, dict], brands: list[str]) -> dict:
+    result = []
+    for record in sorted(records, key=lambda item: item.get("rank", 0)):
+        material_id = str(record.get("material_id"))
+        result.append(_add_brand_fields({
+            "material_id": material_id,
+            "platform_content_tags": record.get("material_tags", []),
+            "data_availability": {"material_tags": record.get("data_availability", {}).get("material_tags", {"available": False, "missing_reason": "source_empty"})},
+            "source_paths": _source_paths(root, normalized="normalized/list-records.json", raw="raw-csv/list.csv"),
+        }, classifications.get(material_id, classify_brand("", brands=brands)), brands))
+    return {"schema_version": SCHEMA_VERSION, "records": result}
+
+
+def _interaction_payload(root: Path, details: dict[str, dict], classifications: dict[str, dict], brands: list[str]) -> dict:
+    result = []
+    for material_id, detail in sorted(details.items()):
+        result.append(_add_brand_fields({
+            "material_id": material_id,
+            "date_range": detail.get("date_range"),
+            "trend_series": detail.get("trend_series", []),
+            "high_points": detail.get("high_points", []),
+            "loss_points": detail.get("loss_points", []),
+            "data_availability": detail.get("data_availability", {}),
+            "source_paths": _source_paths(root, normalized=f"normalized/detail-records/{material_id}.json", raw=f"raw-csv/details/{material_id}.csv"),
+        }, classifications.get(material_id, classify_brand("", brands=brands)), brands))
+    return {"schema_version": SCHEMA_VERSION, "records": result}
+
+
 def _highlight_payload(root: Path, details: dict[str, dict], highlights: dict[str, dict], classifications: dict[str, dict], brands: list[str]) -> dict:
     records = []
     for material_id in sorted(set(details) | set(highlights)):
@@ -259,9 +287,6 @@ def _highlight_payload(root: Path, details: dict[str, dict], highlights: dict[st
         records.append(_add_brand_fields({
             "material_id": material_id,
             "date_range": detail.get("date_range"),
-            "trend_series": detail.get("trend_series", []),
-            "high_points": detail.get("high_points", []),
-            "loss_points": detail.get("loss_points", []),
             "frames": frames,
             "data_availability": detail.get("data_availability", {}),
             "source_paths": {
@@ -311,7 +336,9 @@ def _manifest(
     filenames = {
         "material_ranking": "material-ranking.json",
         "audience": "audience.json",
+        "content_tags": "content-tags.json",
         "script": "script.json",
+        "interaction_series": "interaction-series.json",
         "highlight_frames": "highlight-frames.json",
     }
     classifications = payloads["material_ranking"]["records"]
@@ -328,7 +355,7 @@ def _manifest(
         "run_id": run_id,
         "run_root": ".",
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "classification": {"packages": list(PACKAGE_NAMES), "principle": "source_facts_only"},
+        "classification": {"packages": list(payloads), "principle": "source_facts_and_optional_derived_assets"},
         "brand_classification": {
             "rule_version": BRAND_RULE_VERSION,
             "candidate_brands": list(brands),
@@ -355,11 +382,13 @@ def _manifest(
                 "source_paths": {
                     "material_ranking": ["normalized/list-records.json", "raw-csv/list.csv"],
                     "audience": ["normalized/list-records.json", "raw-csv/list.csv"],
+                    "content_tags": ["normalized/list-records.json", "raw-csv/list.csv"],
                     "script": ["normalized/detail-records/", "raw-csv/details/"],
+                    "interaction_series": ["normalized/detail-records/", "raw-csv/details/"],
                     "highlight_frames": ["normalized/detail-records/", "raw-csv/details/", "highlights-manifest.json"],
                 }[name],
             }
-            for name in PACKAGE_NAMES
+            for name in payloads
         },
         "source_artifacts": _source_artifacts(root, details),
     }
@@ -432,9 +461,12 @@ def _build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None =
     payloads = {
         "material_ranking": ranking_payload,
         "audience": _audience_payload(root, records, classifications, runtime_brands),
+        "content_tags": _content_tags_payload(root, records, classifications, runtime_brands),
         "script": _script_payload(root, details, classifications, runtime_brands),
-        "highlight_frames": _highlight_payload(root, details, highlights, classifications, runtime_brands),
+        "interaction_series": _interaction_payload(root, details, classifications, runtime_brands),
     }
+    if (root / "highlights-manifest.json").is_file():
+        payloads["highlight_frames"] = _highlight_payload(root, details, highlights, classifications, runtime_brands)
     manifest = _manifest(root, details, highlights, payloads, runtime_brands)
     destination = Path(output_dir) if output_dir is not None else root / "facts"
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -443,10 +475,14 @@ def _build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None =
         files = {
             "material_ranking": "material-ranking.json",
             "audience": "audience.json",
+            "content_tags": "content-tags.json",
             "script": "script.json",
+            "interaction_series": "interaction-series.json",
             "highlight_frames": "highlight-frames.json",
         }
         for name, filename in files.items():
+            if name not in payloads:
+                continue
             write_json_atomically(payloads[name], staging / filename)
             manifest["packages"][name]["sha256"] = _sha256(staging / filename)
         write_json_atomically(manifest, staging / "manifest.json")

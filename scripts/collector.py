@@ -38,13 +38,13 @@ except ImportError:
 
 try:
     from config_specs import (
-        ConfigSpecError, resolve_highlight_spec, resolve_query_spec,
+        ConfigSpecError, resolve_highlight_request, resolve_highlight_spec, resolve_query_spec,
         query_to_rpa_params, detail_to_rpa_params, spec_fingerprint,
         write_resolved_specs,
     )
 except ImportError:
     from .config_specs import (
-        ConfigSpecError, resolve_highlight_spec, resolve_query_spec,
+        ConfigSpecError, resolve_highlight_request, resolve_highlight_spec, resolve_query_spec,
         query_to_rpa_params, detail_to_rpa_params, spec_fingerprint,
         write_resolved_specs,
     )
@@ -565,7 +565,8 @@ def _parser():
     status_parser.add_argument("--output-dir", required=True)
     validate_parser = commands.add_parser("validate", help="Validate and print resolved configuration")
     validate_parser.add_argument("--query-spec", required=True)
-    validate_parser.add_argument("--highlight-spec", required=True)
+    validate_parser.add_argument("--highlight-spec")
+    validate_parser.add_argument("--highlight-mode", choices=("on", "off"))
     retry_parser = commands.add_parser(
         "retry-failed", help="Retry rejected detail fetches from an existing batch"
     )
@@ -607,7 +608,8 @@ def _parser():
     fetch_parser = commands.add_parser("collect", help="Collect configured rankings, details, and frames")
     fetch_parser.add_argument("--shop-id", required=True)
     fetch_parser.add_argument("--query-spec", required=True)
-    fetch_parser.add_argument("--highlight-spec", required=True)
+    fetch_parser.add_argument("--highlight-spec")
+    fetch_parser.add_argument("--highlight-mode", choices=("on", "off"))
     fetch_parser.add_argument("--output-dir", required=True)
     return parser
 
@@ -629,7 +631,8 @@ def _cmd_self_test():
 def _load_saved_specs(output_dir):
     root = Path(output_dir)
     query = resolve_query_spec(json.loads((root / "resolved-query-spec.json").read_text(encoding="utf-8")))
-    highlights = resolve_highlight_spec(json.loads((root / "resolved-highlight-spec.json").read_text(encoding="utf-8")))
+    highlight_path = root / "resolved-highlight-spec.json"
+    highlights = resolve_highlight_spec(json.loads(highlight_path.read_text(encoding="utf-8"))) if highlight_path.is_file() else None
     summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
     contract = summary.get("collectionContract") if isinstance(summary, dict) else None
     expected_fingerprint = (
@@ -934,7 +937,8 @@ def main(argv=None):
             return 0
         if args.command == "validate":
             query = resolve_query_spec(json.loads(Path(args.query_spec).read_text(encoding="utf-8")))
-            highlights = resolve_highlight_spec(json.loads(Path(args.highlight_spec).read_text(encoding="utf-8")))
+            raw_highlights = json.loads(Path(args.highlight_spec).read_text(encoding="utf-8")) if args.highlight_spec else None
+            highlights = resolve_highlight_request(raw_highlights, enabled={"on": True, "off": False}.get(args.highlight_mode))["spec"]
             print(json.dumps({"query": query, "highlights": highlights, "fingerprint": spec_fingerprint(query, highlights)}, ensure_ascii=False, indent=2))
             return 0
         if args.command == "status":
@@ -1135,7 +1139,8 @@ def main(argv=None):
             }, ensure_ascii=False, indent=2))
             return 0
         query = resolve_query_spec(json.loads(Path(args.query_spec).read_text(encoding="utf-8")))
-        highlights = resolve_highlight_spec(json.loads(Path(args.highlight_spec).read_text(encoding="utf-8")))
+        raw_highlights = json.loads(Path(args.highlight_spec).read_text(encoding="utf-8")) if args.highlight_spec else None
+        highlights = resolve_highlight_request(raw_highlights, enabled={"on": True, "off": False}.get(args.highlight_mode))["spec"]
         write_resolved_specs(args.output_dir, query, highlights)
         fingerprint = spec_fingerprint(query, highlights)
         status = fetch_batch(

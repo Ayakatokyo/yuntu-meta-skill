@@ -19,12 +19,6 @@ except ImportError:  # pragma: no cover - direct script imports
 
 WORKFLOW_PROTOCOL_VERSION = "yuntu-two-phase-v1"
 RUN_SUMMARY_NAME = "run-summary.json"
-FACT_PACKAGE_NAMES = (
-    "material_ranking",
-    "audience",
-    "script",
-    "highlight_frames",
-)
 COLLECTION_STAGES = (
     "collecting",
     "normalizing",
@@ -85,8 +79,7 @@ def _manifest_is_complete(root: Path) -> bool:
         packages = manifest.get("packages") if isinstance(manifest, dict) else None
         if not isinstance(packages, dict):
             return False
-        for name in FACT_PACKAGE_NAMES:
-            package = packages.get(name)
+        for name, package in packages.items():
             if not isinstance(package, dict):
                 return False
             relative = package.get("path")
@@ -389,7 +382,7 @@ def build_ready_receipt(run_root: Path) -> dict:
     fact_packages = {
         name: package.get("path")
         for name, package in packages.items()
-        if name in FACT_PACKAGE_NAMES and isinstance(package, dict) and isinstance(package.get("path"), str)
+        if isinstance(package, dict) and isinstance(package.get("path"), str)
     }
     receipt = {
         "status": status["status"],
@@ -398,7 +391,7 @@ def build_ready_receipt(run_root: Path) -> dict:
         "run_id": status.get("run_id") or manifest.get("run_id"),
         "coverage": manifest.get("coverage", {}) if isinstance(manifest, dict) else {},
         "fact_packages": fact_packages,
-        "available_modules": [name for name in FACT_PACKAGE_NAMES if name in fact_packages],
+        "available_modules": list(fact_packages),
         "brand_classification": manifest.get("brand_classification", {}) if isinstance(manifest, dict) else {},
         "script_availability": _script_availability(root, manifest) if manifest else {"record_count": 0, "source_empty_fields": []},
         "data_gaps": [],

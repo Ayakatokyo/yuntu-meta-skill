@@ -517,7 +517,7 @@ def _finalize_details(
     """Write the shared collection handoff after fetch or either retry path."""
     _refresh_ready_materials(root, manifest)
     postprocess_complete = all(
-        item.get("postprocessStatus") in {"succeeded", "reused"}
+        item.get("postprocessStatus") in {"succeeded", "reused", "not_requested"}
         for item in manifest.get("selectedMaterials", [])
     )
     highlights_complete = True
@@ -711,8 +711,7 @@ def _facts_status(root):
         packages = manifest.get("packages")
         if not isinstance(packages, dict):
             return "invalid"
-        for name in FACT_PACKAGE_NAMES:
-            package = packages.get(name)
+        for name, package in packages.items():
             if not isinstance(package, dict):
                 return "invalid"
             relative_path = package.get("path")
@@ -909,13 +908,14 @@ def fetch_batch(
         for item in manifest["unresolvedMaterials"]
         if isinstance(item, dict) and isinstance(item.get("material_id"), str)
     }
-    frames_by_material = load_highlights_manifest(root)
+    frames_by_material = load_highlights_manifest(root) if highlight_spec is not None else {}
     pending_details = {}
     pending_highlights = {}
     next_index = 0
 
     def checkpoint():
-        write_highlights_manifest(root, frames_by_material, configuration_fingerprint)
+        if highlight_spec is not None:
+            write_highlights_manifest(root, frames_by_material, configuration_fingerprint)
         _sync_postprocess_counts(summary, manifest)
         _sync_stage_counts(summary, manifest, root)
         write_json_atomically(manifest, manifest_path)
@@ -943,7 +943,7 @@ def fetch_batch(
     with ThreadPoolExecutor(max_workers=DETAIL_WAVE_CONCURRENCY) as detail_executor, ThreadPoolExecutor(
         max_workers=HIGHLIGHT_CONCURRENCY
     ) as highlight_executor:
-        missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else details_missing_standard_highlights(restored_details, root)
+        missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else []
         missing_highlight_ids = {
             detail["material_id"] for detail in missing_details
         }
@@ -951,7 +951,7 @@ def fetch_batch(
             if detail["material_id"] not in missing_highlight_ids:
                 entry = _selected_entry(manifest, detail["material_id"])
                 if entry is not None:
-                    entry["postprocessStatus"] = "reused"
+                    entry["postprocessStatus"] = "reused" if highlight_spec is not None else "not_requested"
         for detail in missing_details:
             submit_highlight(highlight_executor, detail)
 
@@ -999,10 +999,11 @@ def fetch_batch(
                             downloader=downloader,
                             detail_fetch_sec=_elapsed(result["started"]),
                         )
-                        selected_entry["postprocessStatus"] = "pending"
+                        selected_entry["postprocessStatus"] = "pending" if highlight_spec is not None else "not_requested"
                         manifest["selectedMaterials"].append(selected_entry)
                         selected_ids.add(material_id)
-                        submit_highlight(highlight_executor, detail_record)
+                        if highlight_spec is not None:
+                            submit_highlight(highlight_executor, detail_record)
                     except Exception as exc:
                         rejected_ids.add(material_id)
                         manifest["rejectedMaterials"].append(

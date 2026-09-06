@@ -213,15 +213,38 @@ def resolve_highlight_spec(payload: dict | None) -> dict:
     return {"schema_version": 1, "include_cover": include_cover, "metrics": metrics}
 
 
-def spec_fingerprint(query: dict, highlights: dict) -> str:
+def resolve_highlight_request(payload: dict | None, *, enabled: bool | None = None) -> dict:
+    """Normalize the stage-one image choice without weakening HighlightSpec validation."""
+    if enabled is not None and not isinstance(enabled, bool):
+        raise ConfigSpecError("highlight enabled must be boolean")
+    if payload is None:
+        if enabled is True:
+            raise ConfigSpecError("highlight_spec_required")
+        return {
+            "enabled": False,
+            "spec": None,
+            "request_source": "explicit_off" if enabled is False else "default_off",
+        }
+    if enabled is False:
+        raise ConfigSpecError("highlight_request_conflict")
+    return {
+        "enabled": True,
+        "spec": resolve_highlight_spec(payload),
+        "request_source": "explicit_on" if enabled is True else "legacy_spec",
+    }
+
+
+def spec_fingerprint(query: dict, highlights: dict | None) -> str:
     encoded = json.dumps({"query": query, "highlights": highlights}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
-def write_resolved_specs(output_dir, query: dict, highlights: dict) -> tuple[Path, Path]:
+def write_resolved_specs(output_dir, query: dict, highlights: dict | None) -> tuple[Path, Path | None]:
     root = Path(output_dir)
     query_path = root / "resolved-query-spec.json"
     highlight_path = root / "resolved-highlight-spec.json"
     write_json_atomically(query, query_path)
-    write_json_atomically(highlights, highlight_path)
-    return query_path, highlight_path
+    if highlights is not None:
+        write_json_atomically(highlights, highlight_path)
+        return query_path, highlight_path
+    return query_path, None

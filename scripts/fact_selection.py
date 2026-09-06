@@ -12,6 +12,8 @@ class FactPackage(str, Enum):
     MATERIAL_RANKING = "material_ranking"
     AUDIENCE = "audience"
     SCRIPT = "script"
+    CONTENT_TAGS = "content_tags"
+    INTERACTION_SERIES = "interaction_series"
     HIGHLIGHT_FRAMES = "highlight_frames"
 
 
