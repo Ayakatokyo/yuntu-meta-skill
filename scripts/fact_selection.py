@@ -22,6 +22,7 @@ class FactSelectionResult:
     fact_refs: tuple[str, ...]
     data_gaps: tuple[dict[str, Any], ...]
     validation_errors: tuple[str, ...] = ()
+    aggregates: dict[str, Any] | None = None
 
 
 class SelectionOperator(str, Enum):
@@ -36,6 +37,15 @@ class SelectionOperator(str, Enum):
     TOP_PERCENTILE = "top_percentile"
     BOTTOM_PERCENTILE = "bottom_percentile"
     CONTAINS = "contains"
+
+
+class AggregationOperation(str, Enum):
+    COUNT = "count"
+    SUM = "sum"
+    MEAN = "mean"
+    MEDIAN = "median"
+    PERCENTILE = "percentile"
+    DISTRIBUTION = "distribution"
 
 
 _SAFE_FIELD = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
@@ -153,6 +163,41 @@ class FactJoin:
 
 
 @dataclass(frozen=True)
+class FactAggregation:
+    package: FactPackage
+    field: str
+    operation: AggregationOperation | str
+    percentile: float | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "package", _enum(self.package, FactPackage, "fact package"))
+        object.__setattr__(self, "field", _field(self.field))
+        object.__setattr__(self, "operation", _enum(self.operation, AggregationOperation, "aggregation operation"))
+        if self.operation == AggregationOperation.PERCENTILE:
+            if not isinstance(self.percentile, (int, float)) or isinstance(self.percentile, bool) or not 0 <= self.percentile <= 100:
+                raise ValueError("percentile must be between 0 and 100")
+        elif self.percentile is not None:
+            raise ValueError("percentile is only valid for percentile aggregation")
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = {"package": self.package.value, "field": self.field, "operation": self.operation.value}
+        if self.percentile is not None:
+            payload["percentile"] = self.percentile
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "FactAggregation":
+        if not isinstance(payload, dict):
+            raise ValueError("fact aggregation must be an object")
+        return cls(
+            package=payload.get("package"),
+            field=payload.get("field"),
+            operation=payload.get("operation"),
+            percentile=payload.get("percentile"),
+        )
+
+
+@dataclass(frozen=True)
 class FactSelectionSpec:
     packages: tuple[FactPackage, ...]
     filters: tuple[FactFilter, ...]
@@ -160,6 +205,7 @@ class FactSelectionSpec:
     order_by: tuple[SortRule, ...]
     limit: int | None
     joins: tuple[FactJoin, ...]
+    aggregations: tuple[FactAggregation, ...] = ()
 
     def __post_init__(self) -> None:
         packages = tuple(_enum(item, FactPackage, "fact package") for item in self.packages)
@@ -172,9 +218,13 @@ class FactSelectionSpec:
         filters = tuple(item if isinstance(item, FactFilter) else FactFilter.from_dict(item) for item in self.filters)
         order_by = tuple(item if isinstance(item, SortRule) else SortRule.from_dict(item) for item in self.order_by)
         joins = tuple(item if isinstance(item, FactJoin) else FactJoin.from_dict(item) for item in self.joins)
+        aggregations = tuple(item if isinstance(item, FactAggregation) else FactAggregation.from_dict(item) for item in self.aggregations)
         object.__setattr__(self, "filters", filters)
         object.__setattr__(self, "order_by", order_by)
         object.__setattr__(self, "joins", joins)
+        object.__setattr__(self, "aggregations", aggregations)
+        if any(item.package not in packages for item in aggregations):
+            raise ValueError("aggregations contains packages not selected")
 
         normalized_fields: dict[FactPackage, tuple[str, ...]] = {}
         for package, raw_fields in self.fields.items():
@@ -201,6 +251,7 @@ class FactSelectionSpec:
             "order_by": [item.to_dict() for item in self.order_by],
             "limit": self.limit,
             "joins": [item.to_dict() for item in self.joins],
+            "aggregations": [item.to_dict() for item in self.aggregations],
         }
 
     @classmethod
@@ -214,10 +265,13 @@ class FactSelectionSpec:
             order_by=tuple(SortRule.from_dict(item) for item in payload.get("order_by", ())),
             limit=payload.get("limit"),
             joins=tuple(FactJoin.from_dict(item) for item in payload.get("joins", ())),
+            aggregations=tuple(FactAggregation.from_dict(item) for item in payload.get("aggregations", ())),
         )
 
 
 __all__ = [
+    "AggregationOperation",
+    "FactAggregation",
     "FactFilter",
     "FactJoin",
     "FactPackage",

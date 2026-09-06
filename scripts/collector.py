@@ -82,6 +82,7 @@ except ImportError:
 
 try:
     from analysis_facts import build_fact_index, load_selected_facts
+    from fact_catalog import build_fact_catalog
     from model_analysis_request import (
         HANDOFF_PROTOCOL as MODEL_ANALYSIS_HANDOFF_PROTOCOL,
         REQUEST_VERSION as MODEL_ANALYSIS_REQUEST_VERSION,
@@ -98,6 +99,7 @@ try:
     from analysis_spec import AnalysisInputRequired, parse_analysis_spec
 except ImportError:
     from .analysis_facts import build_fact_index, load_selected_facts
+    from .fact_catalog import build_fact_catalog
     from .model_analysis_request import (
         HANDOFF_PROTOCOL as MODEL_ANALYSIS_HANDOFF_PROTOCOL,
         REQUEST_VERSION as MODEL_ANALYSIS_REQUEST_VERSION,
@@ -689,13 +691,22 @@ def _analysis_context(run_dir, spec_path=None, input_payload=None):
     else:
         if not spec_path:
             raise ValueError("analyze requires --input or legacy --spec")
-        if workflow_status["status"] not in {"ready_for_analysis", "analysis_completed"}:
+        if workflow_status["status"] not in {"ready_for_analysis", "analysis_failed", "analysis_completed"}:
             raise ValueError("run must be ready_for_analysis before analysis can start")
         spec = parse_analysis_spec(json.loads(Path(spec_path).read_text(encoding="utf-8")))
     selected = load_selected_facts(root, spec)
     fact_index = build_fact_index(selected)
     packet = build_prompt_packet(spec, selected, fact_index)
-    request = build_model_analysis_request(spec, selected, fact_index)
+    intent_path = root / "analysis" / "analysis-intent.json"
+    standardized_intent = json.loads(intent_path.read_text(encoding="utf-8")) if intent_path.is_file() else None
+    catalog = build_fact_catalog(root)
+    request = build_model_analysis_request(
+        spec,
+        selected,
+        fact_index,
+        standardized_intent=standardized_intent,
+        capability_snapshot=catalog.to_dict(),
+    )
     request_errors = validate_model_analysis_request(request)
     if request_errors:
         raise ValueError("ModelAnalysisRequest 校验失败: " + "; ".join(request_errors))
@@ -731,10 +742,24 @@ def _workflow_analysis_context(run_dir):
         spec_payload = spec.to_dict()
         spec_payload["sections"] = selected_sections
         spec = parse_analysis_spec(spec_payload)
-    selected = {"manifest": manifest, "sections": selected_context["sections"]}
+    selected = {
+        "manifest": manifest,
+        "sections": selected_context["sections"],
+        "aggregates": selected_context.get("aggregates", {}),
+        "data_gaps": selected_context.get("data_gaps", []),
+    }
     fact_index = build_fact_index(selected)
     packet = build_prompt_packet(spec, selected, fact_index)
-    request = build_model_analysis_request(spec, selected, fact_index)
+    intent_path = root / "analysis" / "analysis-intent.json"
+    standardized_intent = json.loads(intent_path.read_text(encoding="utf-8")) if intent_path.is_file() else None
+    catalog = build_fact_catalog(root)
+    request = build_model_analysis_request(
+        spec,
+        selected,
+        fact_index,
+        standardized_intent=standardized_intent,
+        capability_snapshot=catalog.to_dict(),
+    )
     request_errors = validate_model_analysis_request(request)
     if request_errors:
         raise ValueError("ModelAnalysisRequest 校验失败: " + "; ".join(request_errors))
@@ -743,6 +768,7 @@ def _workflow_analysis_context(run_dir):
         "intent": json.loads((root / "analysis" / "analysis-intent.json").read_text(encoding="utf-8")),
         "selection_spec": selection_payload,
         "selection_summary": selected_context.get("selection_summary", {}),
+        "aggregates": selected_context.get("aggregates", {}),
         "data_gaps": selected_context.get("data_gaps", []),
     }
     return {
@@ -954,7 +980,7 @@ def main(argv=None):
         if args.command == "workflow":
             if not args.fact_selection_result and not args.analysis_result:
                 status = get_workflow_status(args.run_dir)
-                if status["status"] == "facts_selected":
+                if status["status"] in {"facts_selected", "analysis_failed"} and (Path(args.run_dir) / "analysis/selected-fact-context.json").is_file():
                     request = prepare_model_analysis_handoff(args.run_dir)
                     print(json.dumps({
                         "status": "awaiting_model_analysis",
@@ -1016,6 +1042,7 @@ def main(argv=None):
                     complete_model_analysis(
                         args.run_dir,
                         _analysis_output_paths(args.output)["result"],
+                        _analysis_output_paths(args.output)["report"],
                     )
                 except Exception as exc:
                     try:
@@ -1090,6 +1117,7 @@ def main(argv=None):
                 complete_model_analysis(
                     args.run_dir,
                     _analysis_output_paths(args.output)["result"],
+                    _analysis_output_paths(args.output)["report"],
                 )
             except Exception as exc:
                 try:

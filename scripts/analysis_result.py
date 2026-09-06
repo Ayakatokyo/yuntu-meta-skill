@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
-import re
 from typing import Any
+
+try:
+    from .fact_reference import FactReferenceError, parse_fact_ref
+except ImportError:  # pragma: no cover
+    from fact_reference import FactReferenceError, parse_fact_ref
 
 
 ALLOWED_TYPES = {"fact", "inference", "recommendation"}
@@ -15,7 +19,6 @@ BRAND_PROXY_MARKERS = ("标题识别品牌", "标签识别品牌", "品牌识别
 BRAND_SEMANTIC_MARKERS = ("品牌", "归因", "品牌表现", "品牌素材")
 INFERENCE_MARKERS = ("推断", "推测", "可能", "或许", "倾向", "更喜欢", "偏好", "似乎", "意味着")
 ASSOCIATION_MARKERS = ("关联", "相关", "共现", "交叉")
-FACT_REF_PATTERN = re.compile(r"^.+#/records/[0-9]+$")
 
 
 class StructuredValidationError(dict):
@@ -196,8 +199,10 @@ def validate_analysis_result(
         referenced_records = []
         for ref_position, ref in enumerate(refs):
             ref_path = f"{prefix}.fact_refs[{ref_position}]"
-            if not FACT_REF_PATTERN.match(ref):
-                errors.append(_error("fact_ref_out_of_bounds", ref_path, f"fact_ref has an invalid record path: {ref}", "使用 facts/<package>.json#/records/<nonnegative index>。"))
+            try:
+                parse_fact_ref(ref)
+            except FactReferenceError as exc:
+                errors.append(_error(exc.code, ref_path, exc.message, exc.suggestion))
                 continue
             if ref not in fact_index:
                 errors.append(_error("fact_ref_out_of_bounds", ref_path, f"fact_ref does not resolve: {ref}", "只引用本次选择且存在于 fact_index 的记录。"))

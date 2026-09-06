@@ -320,7 +320,9 @@ class CollectorTests(unittest.TestCase):
 
             self.assertEqual(raised.exception.code, 2)
             summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
-            self.assertEqual(summary["status"], "ready_for_analysis")
+            self.assertEqual(summary["status"], "analysis_failed")
+            attempts = json.loads((root / "analysis" / "analysis-attempts.json").read_text(encoding="utf-8"))
+            self.assertEqual(attempts[-1]["status"], "failed")
             self.assertTrue((root / "analysis.analysis-error.json").is_file())
             self.assertFalse((root / "analysis.analysis-result.json").exists())
             error_document = json.loads((root / "analysis.analysis-error.json").read_text(encoding="utf-8"))

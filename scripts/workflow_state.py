@@ -36,6 +36,7 @@ ANALYSIS_STAGES = (
     "awaiting_fact_selection",
     "facts_selected",
     "analysis_running",
+    "analysis_failed",
     "analysis_completed",
 )
 FAILURE_STAGES = ("partial", "failed")
@@ -52,6 +53,27 @@ class WorkflowStateError(RuntimeError):
 def _read_json(path: Path):
     with path.open(encoding="utf-8") as source:
         return json.load(source)
+
+
+def _attempts_path(root: Path) -> Path:
+    return root / "analysis" / "analysis-attempts.json"
+
+
+def _load_attempts(root: Path) -> list[dict]:
+    path = _attempts_path(root)
+    if not path.is_file():
+        return []
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return []
+    return payload if isinstance(payload, list) else []
+
+
+def _save_attempts(root: Path, attempts: list[dict]) -> None:
+    path = _attempts_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomically(attempts, path)
 
 
 def _manifest_is_complete(root: Path) -> bool:
@@ -198,7 +220,7 @@ def set_stage(run_root: Path, stage: str, **metadata) -> dict:
         repeat_analysis = current == "analysis_completed" and stage in {
             "awaiting_fact_selection", "analysis_running",
         }
-        retry_analysis = current == "analysis_running" and stage == "ready_for_analysis"
+        retry_analysis = current in {"analysis_running", "analysis_failed"} and stage == "analysis_running"
         if _STAGE_INDEX[stage] < _STAGE_INDEX[current] and not (repeat_analysis or retry_analysis):
             raise WorkflowStateError(f"workflow stage cannot move backward: {current} -> {stage}")
     if current == "not_started" and stage != "collecting":
@@ -240,11 +262,16 @@ def begin_model_analysis(run_root: Path, request_id: str) -> dict:
     if not isinstance(request_id, str) or not request_id.strip():
         raise WorkflowStateError("request_id is required")
     status = get_workflow_status(run_root)
-    if status["stage"] not in {"ready_for_analysis", "facts_selected", "analysis_completed"}:
+    if status["stage"] not in {"ready_for_analysis", "facts_selected", "analysis_failed", "analysis_completed"}:
         raise WorkflowStateError(
             "model analysis requires ready_for_analysis, facts_selected, or analysis_completed"
         )
-    return set_stage(Path(run_root), "analysis_running", request_id=request_id.strip())
+    root = Path(run_root)
+    attempt_id = uuid.uuid4().hex
+    attempts = _load_attempts(root)
+    attempts.append({"attempt_id": attempt_id, "request_id": request_id.strip(), "status": "running", "started_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
+    _save_attempts(root, attempts)
+    return set_stage(root, "analysis_running", request_id=request_id.strip(), attempt_id=attempt_id)
 
 
 def begin_fact_selection(run_root: Path, analysis_id: str) -> dict:
@@ -252,7 +279,7 @@ def begin_fact_selection(run_root: Path, analysis_id: str) -> dict:
     if not isinstance(analysis_id, str) or not analysis_id.strip():
         raise WorkflowStateError("analysis_id is required")
     status = get_workflow_status(run_root)
-    if status["stage"] not in {"ready_for_analysis", "analysis_completed"}:
+    if status["stage"] not in {"ready_for_analysis", "analysis_failed", "analysis_completed"}:
         raise WorkflowStateError(
             "fact selection requires ready_for_analysis or analysis_completed"
         )
@@ -270,15 +297,22 @@ def complete_fact_selection(run_root: Path, selection_path: Path) -> dict:
     return set_stage(Path(run_root), "facts_selected", selection_path=str(path))
 
 
-def complete_model_analysis(run_root: Path, result_path: Path) -> dict:
+def complete_model_analysis(run_root: Path, result_path: Path, report_path: Path | None = None) -> dict:
     """Persist successful model completion metadata after local validation."""
     path = Path(result_path)
     if not path.is_file():
         raise WorkflowStateError(f"analysis result is missing: {path}")
+    if report_path is not None and not Path(report_path).is_file():
+        raise WorkflowStateError(f"analysis report is missing: {report_path}")
     status = get_workflow_status(run_root)
     if status["stage"] != "analysis_running":
         raise WorkflowStateError("model analysis is not running")
-    return set_stage(Path(run_root), "analysis_completed", result_path=str(path))
+    root = Path(run_root)
+    attempts = _load_attempts(root)
+    if attempts and attempts[-1].get("status") == "running":
+        attempts[-1].update({"status": "completed", "result_path": str(path), "report_path": str(report_path) if report_path else None, "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
+        _save_attempts(root, attempts)
+    return set_stage(root, "analysis_completed", result_path=str(path))
 
 
 def fail_model_analysis(run_root: Path, request_id: str, error: str) -> dict:
@@ -286,12 +320,12 @@ def fail_model_analysis(run_root: Path, request_id: str, error: str) -> dict:
     status = get_workflow_status(run_root)
     if status["stage"] != "analysis_running":
         raise WorkflowStateError("model analysis is not running")
-    return set_stage(
-        Path(run_root),
-        "ready_for_analysis",
-        request_id=request_id,
-        error=str(error),
-    )
+    root = Path(run_root)
+    attempts = _load_attempts(root)
+    if attempts and attempts[-1].get("status") == "running":
+        attempts[-1].update({"status": "failed", "error": str(error), "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
+        _save_attempts(root, attempts)
+    return set_stage(root, "analysis_failed", request_id=request_id, error=str(error))
 
 
 def get_workflow_status(run_root: Path) -> dict:
@@ -368,8 +402,11 @@ def build_ready_receipt(run_root: Path) -> dict:
         "brand_classification": manifest.get("brand_classification", {}) if isinstance(manifest, dict) else {},
         "script_availability": _script_availability(root, manifest) if manifest else {"record_count": 0, "source_empty_fields": []},
         "data_gaps": [],
+        "retryable": status["status"] == "analysis_failed",
         "next_step": "数据已准备完成，请直接输入分析思路或商业问题；收到前不会启动商业分析。"
         if status["status"] == "ready_for_analysis" and _manifest_is_complete(root)
+        else "分析结果校验失败；请修正模型结果后在同一 run 中重试，不会重新采集或修改事实包。"
+        if status["status"] == "analysis_failed"
         else "采集或事实准备尚未完成，请先补齐可用数据。",
     }
     brand_metadata = receipt["brand_classification"]

@@ -118,6 +118,7 @@ def apply_fact_selection_result(run_dir: Path, payload: dict[str, Any]) -> dict[
         "sections": result.sections,
         "selection_summary": result.selection_summary,
         "fact_refs": list(result.fact_refs),
+        "aggregates": result.aggregates or {},
         "data_gaps": combined_gaps,
         "validation_errors": list(result.validation_errors),
     }
@@ -139,9 +140,23 @@ def prepare_model_analysis_handoff(run_dir: Path) -> dict[str, Any]:
     selected_context = _read(root / "analysis" / "selected-fact-context.json")
     if not isinstance(selected_context, dict) or not isinstance(selected_context.get("sections"), dict):
         raise ValueError("selected fact context is missing or invalid")
-    selected = {"manifest": manifest, "sections": selected_context["sections"]}
+    selected = {
+        "manifest": manifest,
+        "sections": selected_context["sections"],
+        "aggregates": selected_context.get("aggregates", {}),
+        "data_gaps": selected_context.get("data_gaps", []),
+    }
     fact_index = build_fact_index(selected)
-    request = build_model_analysis_request(spec, selected, fact_index)
+    intent_path = root / "analysis" / "analysis-intent.json"
+    standardized_intent = _read(intent_path) if intent_path.is_file() else None
+    catalog = build_fact_catalog(root)
+    request = build_model_analysis_request(
+        spec,
+        selected,
+        fact_index,
+        standardized_intent=standardized_intent,
+        capability_snapshot=catalog.to_dict(),
+    )
     _write(root / "analysis" / "model-analysis-request.json", request)
     _write(root / "analysis" / "prompt-packet.json", request["host_context"].get("facts", {}))
     return request
