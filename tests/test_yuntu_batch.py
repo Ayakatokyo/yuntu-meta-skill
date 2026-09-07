@@ -77,6 +77,15 @@ def list_record(material_id, group_id):
     }
 
 
+def ranked_list_record(material_id, title, show_cnt, interact_rate):
+    return {
+        "material_id": material_id,
+        "title": title,
+        "show_cnt": show_cnt,
+        "interact_rate": interact_rate,
+    }
+
+
 def highlight_spec():
     return {
         "include_cover": False,
@@ -354,6 +363,89 @@ class YuntuBatchTests(unittest.TestCase):
             [item["material_id"] for item in manifest["candidateMaterials"]], ["101", "202"]
         )
         self.assertEqual(manifest["selectionGroups"], [])
+
+    def test_fetch_batch_uses_local_display_field_selection_before_detail_calls(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: []
+        invoker = BatchInvoker([
+            ranked_list_record("1", "普通燕窝", 100, 0.10),
+            ranked_list_record("2", "不匹配", 200, 0.90),
+            ranked_list_record("3", "高互动燕窝", 300, 0.30),
+        ])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+                material_list={
+                    "filters": [
+                        {"field": "metrics.show_cnt", "operator": "gte", "value": 100},
+                        {"field": "title", "operator": "contains", "value": "燕窝"},
+                    ],
+                    "sort": {"field": "metrics.interact_rate", "direction": "desc"},
+                },
+                output_dir=root,
+                invoker=invoker,
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
+            list_records = json.loads(
+                (root / "normalized/list-records.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual([call["material_id"] for call in invoker.detail_calls], ["3"])
+        self.assertEqual(len(list_records), 3)
+        self.assertEqual(manifest["fullListCount"], 3)
+        self.assertEqual(manifest["matchedMaterialCount"], 2)
+        self.assertEqual(
+            manifest["materialList"],
+            {
+                "filters": [
+                    {"field": "metrics.show_cnt", "operator": "gte", "value": 100},
+                    {"field": "title", "operator": "contains", "value": "燕窝"},
+                ],
+                "sort": {"field": "metrics.interact_rate", "direction": "desc"},
+            },
+        )
+        self.assertEqual(
+            summary["collectionContract"]["materialList"], manifest["materialList"]
+        )
+
+    def test_no_local_match_persists_full_list_and_skips_detail_rpa(self):
+        batch = load_batch()
+        invoker = BatchInvoker([ranked_list_record("1", "普通燕窝", 100, 0.10)])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_range_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1000,
+                material_list={
+                    "filters": [{"field": "曝光量", "operator": "gt", "value": 9999}],
+                    "sort": {"field": "rank", "direction": "asc"},
+                },
+                output_dir=root,
+                invoker=invoker,
+            )
+            manifest = json.loads((root / "batch-manifest.json").read_text(encoding="utf-8"))
+            list_records = json.loads(
+                (root / "normalized/list-records.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(invoker.detail_calls, [])
+        self.assertEqual(len(list_records), 1)
+        self.assertEqual(manifest["fullListCount"], 1)
+        self.assertEqual(manifest["matchedMaterialCount"], 0)
+        self.assertEqual(manifest["error"], "no_materials_matched")
 
     def test_fetch_batch_records_normalizing_stage_before_fact_packaging(self):
         batch = load_batch()

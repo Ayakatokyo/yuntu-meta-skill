@@ -13,6 +13,9 @@ class YuntuRunStateError(RuntimeError):
 
 
 RUN_SUMMARY_NAME = "run-summary.json"
+DEFAULT_MATERIAL_LIST = {
+    "filters": [], "sort": {"field": "rank", "direction": "asc"}
+}
 
 
 def _snapshot(value):
@@ -29,7 +32,7 @@ def parameter_fingerprint(filters):
 
 def collection_contract(
     *, shop_id, list_params, detail_date_params, target_top_n, candidate_top_n,
-    configuration_fingerprint=None,
+    material_list=None, configuration_fingerprint=None,
 ):
     """Return the complete immutable identity of a resumable collection run."""
     if not isinstance(shop_id, str) or not shop_id.strip():
@@ -51,6 +54,9 @@ def collection_contract(
             "detailDateRange": detail_date_params,
             "targetTopN": target_top_n,
             "candidateTopN": candidate_top_n,
+            "materialList": _snapshot(material_list or {
+                "filters": [], "sort": {"field": "rank", "direction": "asc"}
+            }),
     }
     if configuration_fingerprint is not None:
         if not isinstance(configuration_fingerprint, str) or len(configuration_fingerprint) != 64:
@@ -77,7 +83,9 @@ def new_collection_summary(contract):
             "details": {"requestStatus": "pending"},
         },
         "stageCounts": {
+            "fullListCount": 0,
             "candidateCount": 0,
+            "matchedMaterialCount": 0,
             "detailSubmittedCount": 0,
             "detailRecordsPersistedCount": 0,
             "selectedCount": 0,
@@ -96,9 +104,17 @@ def collection_contract_matches(summary, contract):
     if not isinstance(stored, dict):
         return False
     expected = _snapshot(contract)
+    if stored == expected and summary.get("parameterFingerprint") == parameter_fingerprint(expected):
+        return True
+    # A pre-material-list run can resume only when the new local selection is
+    # the unchanged default rank ordering.
+    if expected.get("materialList") != DEFAULT_MATERIAL_LIST or "materialList" in stored:
+        return False
+    compatible = dict(expected)
+    compatible.pop("materialList", None)
     return (
-        stored == expected
-        and summary.get("parameterFingerprint") == parameter_fingerprint(expected)
+        stored == compatible
+        and summary.get("parameterFingerprint") == parameter_fingerprint(compatible)
     )
 
 

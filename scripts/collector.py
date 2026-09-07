@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Collect configured Yuntu rankings, details, and highlight frames."""
 
+from __future__ import annotations
+
 import argparse
 from datetime import datetime, timedelta
 import json
@@ -206,6 +208,21 @@ BUSINESS_PARAMS_SCHEMA = {
         "custom_end_date",
     ],
     "top_n": {"type": "positive integer", "default": 10},
+    "query_spec": {
+        "material_list": {
+            "description": "完整TOP1000落盘并规范化后执行的本地素材筛选与单列排序",
+            "filters": "AND; field可用云图展示名或注册表英文字段ID",
+            "sort": "单个已注册可排序字段，direction为asc或desc",
+            "example": {
+                "filters": [
+                    {"field": "曝光量", "operator": "gte", "value": 1000000},
+                    {"field": "视频标题", "operator": "contains", "value": "燕窝"},
+                ],
+                "sort": {"field": "互动率", "direction": "desc"},
+            },
+            "remote_api": False,
+        }
+    },
 }
 
 
@@ -1148,6 +1165,7 @@ def main(argv=None):
             detail_date_params=detail_to_rpa_params(query),
             target_top_n=query["collection"]["target_top_n"],
             candidate_top_n=query["collection"]["candidate_top_n"],
+            material_list=query["material_list"],
             output_dir=args.output_dir, invoker=_batch_invoker(),
             highlight_spec=highlights, configuration_fingerprint=fingerprint,
         )

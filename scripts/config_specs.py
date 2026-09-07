@@ -6,6 +6,20 @@ from datetime import date, datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
+import math
+
+try:
+    from .material_field_registry import (
+        MaterialFieldRegistry,
+        MaterialFieldRegistryError,
+        default_material_field_registry,
+    )
+except ImportError:
+    from material_field_registry import (
+        MaterialFieldRegistry,
+        MaterialFieldRegistryError,
+        default_material_field_registry,
+    )
 
 try:
     from .rpa_io import write_json_atomically
@@ -33,10 +47,72 @@ CROWD_GROUP_VALUES = {
 }
 HIGHLIGHT_METRICS = ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数")
 HIGHLIGHT_STRATEGIES = {"local_peaks", "top_values"}
+DEFAULT_MATERIAL_LIST = {
+    "filters": [], "sort": {"field": "rank", "direction": "asc"}
+}
 
 
 class ConfigSpecError(ValueError):
     """Raised when a public configuration cannot be resolved safely."""
+
+
+def _material_value(value, field, label):
+    if field.kind in {"text", "identifier", "string_list"}:
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigSpecError(f"{label} must be a nonblank string")
+        return value.strip()
+    if field.kind == "date":
+        return _date(value, label).isoformat()
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigSpecError(f"{label} must be a number")
+    if not math.isfinite(value):
+        raise ConfigSpecError(f"{label} must be finite")
+    if field.kind == "integer" and not isinstance(value, int):
+        raise ConfigSpecError(f"{label} must be an integer")
+    return value
+
+
+def resolve_material_list(payload: object | None, registry: MaterialFieldRegistry | None = None) -> dict:
+    if payload is None:
+        payload = {}
+    payload = _object(payload, "material_list")
+    _keys(payload, {"filters", "sort"}, "material_list")
+    registry = default_material_field_registry() if registry is None else registry
+    raw_filters = payload.get("filters", [])
+    if not isinstance(raw_filters, list):
+        raise ConfigSpecError("material_list.filters must be an array")
+    filters = []
+    seen = set()
+    for index, raw_filter in enumerate(raw_filters):
+        item = _object(raw_filter, f"material_list.filters[{index}]")
+        _keys(item, {"field", "operator", "value"}, f"material_list.filters[{index}]")
+        try:
+            field = registry.resolve(item.get("field"))
+        except MaterialFieldRegistryError as exc:
+            raise ConfigSpecError(f"unsupported material_list field: {item.get('field')}") from exc
+        operator = item.get("operator")
+        if operator not in field.filter_operators:
+            raise ConfigSpecError(f"unsupported material_list operator for {field.id}: {operator}")
+        value = _material_value(item.get("value"), field, f"material_list.filters[{index}].value")
+        normalized = {"field": field.id, "operator": operator, "value": value}
+        identity = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if identity in seen:
+            raise ConfigSpecError("material_list.filters cannot contain duplicate conditions")
+        seen.add(identity)
+        filters.append(normalized)
+    raw_sort = payload.get("sort", {"field": "rank", "direction": "asc"})
+    sort = _object(raw_sort, "material_list.sort")
+    _keys(sort, {"field", "direction"}, "material_list.sort")
+    try:
+        sort_field = registry.resolve(sort.get("field"))
+    except MaterialFieldRegistryError as exc:
+        raise ConfigSpecError(f"unsupported material_list sort field: {sort.get('field')}") from exc
+    if not sort_field.sortable:
+        raise ConfigSpecError(f"material_list sort field is not sortable: {sort_field.id}")
+    direction = sort.get("direction")
+    if direction not in {"asc", "desc"}:
+        raise ConfigSpecError("material_list.sort.direction must be asc or desc")
+    return {"filters": filters, "sort": {"field": sort_field.id, "direction": direction}}
 
 
 def _object(value, label):
@@ -88,7 +164,7 @@ def _positive(value, label):
 
 def resolve_query_spec(payload: dict) -> dict:
     payload = _object(payload, "QuerySpec")
-    _keys(payload, {"schema_version", "source", "industry", "period", "filters", "ranking", "collection"}, "QuerySpec")
+    _keys(payload, {"schema_version", "source", "industry", "period", "filters", "ranking", "collection", "material_list"}, "QuerySpec")
     if payload.get("schema_version") != 1:
         raise ConfigSpecError("schema_version must be 1")
     if payload.get("source") != SOURCE:
@@ -150,6 +226,7 @@ def resolve_query_spec(payload: dict) -> dict:
     candidate = _positive(collection.get("candidate_top_n", 1000), "collection.candidate_top_n")
     if candidate != 1000:
         raise ConfigSpecError("collection.candidate_top_n must be 1000")
+    material_list = resolve_material_list(payload.get("material_list"))
 
     return {
         "schema_version": 1,
@@ -159,6 +236,7 @@ def resolve_query_spec(payload: dict) -> dict:
         "filters": normalized_filters,
         "ranking": {"metric": ranking["metric"]},
         "collection": {"target_top_n": target, "candidate_top_n": candidate},
+        "material_list": material_list,
     }
 
 
@@ -235,7 +313,11 @@ def resolve_highlight_request(payload: dict | None, *, enabled: bool | None = No
 
 
 def spec_fingerprint(query: dict, highlights: dict | None) -> str:
-    encoded = json.dumps({"query": query, "highlights": highlights}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    query_for_fingerprint = dict(query)
+    if query_for_fingerprint.get("material_list") == DEFAULT_MATERIAL_LIST:
+        # The default is semantically identical to the pre-material-list contract.
+        query_for_fingerprint.pop("material_list", None)
+    encoded = json.dumps({"query": query_for_fingerprint, "highlights": highlights}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 

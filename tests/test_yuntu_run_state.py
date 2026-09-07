@@ -40,6 +40,38 @@ class YuntuRunStateTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first), 64)
 
+    def test_legacy_contract_matches_only_the_default_local_rank_selection(self):
+        state = load_module()
+        legacy = state.collection_contract(
+            shop_id="shop-42",
+            list_params={},
+            detail_date_params={"date_range_type": "LAST_7_DAYS"},
+            target_top_n=1,
+            candidate_top_n=1000,
+        )
+        legacy.pop("materialList")
+        summary = state.new_collection_summary(legacy)
+        current = state.collection_contract(
+            shop_id="shop-42",
+            list_params={},
+            detail_date_params={"date_range_type": "LAST_7_DAYS"},
+            target_top_n=1,
+            candidate_top_n=1000,
+            material_list={
+                "filters": [{"field": "rank", "operator": "gte", "value": 2}],
+                "sort": {"field": "rank", "direction": "asc"},
+            },
+        )
+
+        self.assertTrue(state.collection_contract_matches(summary, state.collection_contract(
+            shop_id="shop-42",
+            list_params={},
+            detail_date_params={"date_range_type": "LAST_7_DAYS"},
+            target_top_n=1,
+            candidate_top_n=1000,
+        )))
+        self.assertFalse(state.collection_contract_matches(summary, current))
+
     def test_register_artifact_writes_relative_path_checksum_and_size(self):
         state = load_module()
         with tempfile.TemporaryDirectory() as directory:

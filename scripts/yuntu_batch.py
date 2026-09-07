@@ -24,6 +24,8 @@ if __package__:
     )
     from . import yuntu_run_state as run_state
     from .workflow_state import get_workflow_status, set_stage
+    from .material_field_registry import default_material_field_registry
+    from .material_list_selection import select_materials, MaterialListSelectionError
 else:
     from rpa_io import (
         download_file,
@@ -43,6 +45,8 @@ else:
     )
     import yuntu_run_state as run_state
     from workflow_state import get_workflow_status, set_stage
+    from material_field_registry import default_material_field_registry
+    from material_list_selection import select_materials, MaterialListSelectionError
 
 
 class YuntuBatchError(RuntimeError):
@@ -51,6 +55,9 @@ class YuntuBatchError(RuntimeError):
 
 DETAIL_WAVE_CONCURRENCY = 3
 HIGHLIGHT_CONCURRENCY = 3
+DEFAULT_MATERIAL_LIST = {
+    "filters": [], "sort": {"field": "rank", "direction": "asc"}
+}
 FACT_PACKAGE_NAMES = (
     "material_ranking",
     "audience",
@@ -106,11 +113,17 @@ def _selection_group(record):
     }
 
 
-def _top_ranked_materials_from_list(records, target_top_n):
-    """Return unique global rank leaders while retaining detail validation context."""
+def _top_ranked_materials_from_list(records, target_top_n, material_list=None, registry=None):
+    """Return unique local-selection leaders while retaining detail validation context."""
+    material_list = DEFAULT_MATERIAL_LIST if material_list is None else material_list
+    registry = default_material_field_registry() if registry is None else registry
+    try:
+        selected_records = select_materials(records, material_list, registry)
+    except MaterialListSelectionError as exc:
+        raise YuntuBatchError(str(exc)) from exc
     selected = []
     seen = set()
-    for record in sorted(records, key=lambda item: item["rank"]):
+    for record in selected_records:
         material_id = record["material_id"]
         if material_id in seen:
             continue
@@ -191,6 +204,7 @@ def _new_manifest(
     detail_date_params,
     target_top_n,
     candidate_top_n,
+    material_list,
     summary,
 ):
     return {
@@ -203,6 +217,9 @@ def _new_manifest(
         "detailDateRange": detail_date_params,
         "targetTopN": target_top_n,
         "candidateTopN": candidate_top_n,
+        "materialList": material_list,
+        "fullListCount": 0,
+        "matchedMaterialCount": 0,
         "candidateMaterials": [],
         "selectionGroups": [],
         "submittedMaterials": [],
@@ -225,6 +242,7 @@ def _open_or_new_manifest(
     detail_date_params,
     target_top_n,
     candidate_top_n,
+    material_list,
     summary,
 ):
     if not manifest_path.is_file():
@@ -233,6 +251,7 @@ def _open_or_new_manifest(
             detail_date_params=detail_date_params,
             target_top_n=target_top_n,
             candidate_top_n=candidate_top_n,
+            material_list=material_list,
             summary=summary,
         )
     try:
@@ -244,6 +263,7 @@ def _open_or_new_manifest(
         or manifest.get("detailDateRange") != detail_date_params
         or manifest.get("targetTopN") != target_top_n
         or manifest.get("candidateTopN") != candidate_top_n
+        or manifest.get("materialList", DEFAULT_MATERIAL_LIST) != material_list
     ):
         raise YuntuBatchError(
             "output directory belongs to a different collection contract; choose a new output directory"
@@ -254,6 +274,7 @@ def _open_or_new_manifest(
             "runId": summary["runId"],
             "parameterFingerprint": summary["parameterFingerprint"],
             "collectionContract": summary["collectionContract"],
+            "materialList": material_list,
             "status": "running",
         }
     )
@@ -398,6 +419,8 @@ def _sync_stage_counts(summary, manifest, root):
     counts.update(
         {
             "candidateCount": len(manifest.get("candidateMaterials", [])),
+            "fullListCount": manifest.get("fullListCount", 0),
+            "matchedMaterialCount": manifest.get("matchedMaterialCount", 0),
             "detailSubmittedCount": len(manifest.get("submittedMaterials", [])),
             "detailRecordsPersistedCount": persisted_count,
             "selectedCount": len(manifest.get("selectedMaterials", [])),
@@ -791,6 +814,7 @@ def fetch_batch(
     detail_date_params,
     target_top_n,
     candidate_top_n,
+    material_list=None,
     output_dir,
     invoker,
     downloader=None,
@@ -804,6 +828,8 @@ def fetch_batch(
     if not isinstance(shop_id, str) or not shop_id.strip():
         raise YuntuBatchError("shop_id is required")
     downloader = FileDownloader() if downloader is None else downloader
+    material_list = DEFAULT_MATERIAL_LIST if material_list is None else material_list
+    registry = default_material_field_registry()
     root = Path(output_dir)
     manifest_path = root / "batch-manifest.json"
     contract = run_state.collection_contract(
@@ -812,6 +838,7 @@ def fetch_batch(
         detail_date_params=detail_date_params,
         target_top_n=target_top_n,
         candidate_top_n=candidate_top_n,
+        material_list=material_list,
         configuration_fingerprint=configuration_fingerprint,
     )
     try:
@@ -826,6 +853,7 @@ def fetch_batch(
         detail_date_params=detail_date_params,
         target_top_n=target_top_n,
         candidate_top_n=candidate_top_n,
+        material_list=material_list,
         summary=summary,
     )
     write_json_atomically(manifest, manifest_path)
@@ -846,6 +874,7 @@ def fetch_batch(
                 downloader=downloader,
             )
         list_records = normalize_list_records(raw_list, source_path=_relative(root, list_source))
+        manifest["fullListCount"] = len(list_records)
         list_record_path = root / "normalized" / "list-records.json"
         write_json_atomically(list_records, list_record_path)
         _record_artifact(summary, root, "listRecords", list_record_path, "normalized_list")
@@ -881,7 +910,21 @@ def fetch_batch(
         set_stage(root, "failed", reason="list collection failed")
         return 1
 
-    candidates = _top_ranked_materials_from_list(list_records, target_top_n)
+    try:
+        matched_records = select_materials(list_records, material_list, registry)
+    except MaterialListSelectionError as exc:
+        manifest["status"] = "selection_failed"
+        manifest["error"] = str(exc)
+        summary["status"] = "selection_failed"
+        write_json_atomically(manifest, manifest_path)
+        _save_summary(root, summary)
+        set_stage(root, "failed", reason="local material selection failed")
+        return 1
+    manifest["materialList"] = material_list
+    manifest["matchedMaterialCount"] = len(matched_records)
+    candidates = _top_ranked_materials_from_list(
+        list_records, target_top_n, material_list, registry
+    )
     manifest["candidateMaterials"] = [_manifest_material(item) for item in candidates]
     manifest["selectionGroups"] = []
     _restore_persisted_details(root, manifest, candidates)
@@ -894,6 +937,18 @@ def fetch_batch(
     write_json_atomically(detail_requests, detail_request_path)
     manifest["detailRequestPath"] = _relative(root, detail_request_path)
     _record_artifact(summary, root, "detailRequests", detail_request_path, "detail_request_params")
+    if not matched_records:
+        manifest["status"] = "failed"
+        manifest["error"] = "no_materials_matched"
+        manifest["timingsSec"]["totalSec"] = _elapsed(started)
+        summary["status"] = "failed"
+        summary["stages"]["details"]["requestStatus"] = "not_requested"
+        _refresh_ready_materials(root, manifest)
+        _sync_stage_counts(summary, manifest, root)
+        write_json_atomically(manifest, manifest_path)
+        _save_summary(root, summary)
+        set_stage(root, "failed", reason="no_materials_matched")
+        return 1
     summary["stages"]["details"]["requestStatus"] = "running"
     _sync_stage_counts(summary, manifest, root)
     _save_summary(root, summary)
@@ -1082,6 +1137,8 @@ def collection_status(*, output_dir):
             "details": {
                 "requestStatus": detail_stage.get("requestStatus", "unknown"),
                 "requestParamCount": len(detail_requests),
+                "fullListCount": manifest.get("fullListCount", 0),
+                "matchedMaterialCount": manifest.get("matchedMaterialCount", 0),
                 "submittedCount": len(manifest.get("submittedMaterials", [])),
                 "persistedRecordCount": persisted_details,
                 "selectedCount": len(manifest.get("selectedMaterials", [])),

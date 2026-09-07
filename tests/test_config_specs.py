@@ -59,6 +59,65 @@ class ConfigSpecTests(unittest.TestCase):
         with self.assertRaisesRegex(ConfigSpecError, "3 to 10"):
             resolve_query_spec(query(filters={"brand_scope": {"type": "SPECIFIED_BRANDS", "brands": []}}))
 
+    def test_material_list_normalizes_chinese_fields_to_actual_paths(self):
+        resolved = resolve_query_spec(query(
+            material_list={
+                "filters": [{"field": "曝光量", "operator": "gte", "value": 1000000}],
+                "sort": {"field": "互动率", "direction": "desc"},
+            }
+        ))
+
+        self.assertEqual(
+            resolved["material_list"]["filters"][0]["field"], "metrics.show_cnt"
+        )
+        self.assertEqual(
+            resolved["material_list"]["sort"],
+            {"field": "metrics.interact_rate", "direction": "desc"},
+        )
+        self.assertNotIn("material_list", query_to_rpa_params(resolved))
+
+    def test_material_list_defaults_to_rank_ascending(self):
+        resolved = resolve_query_spec(query())
+
+        self.assertEqual(
+            resolved["material_list"],
+            {"filters": [], "sort": {"field": "rank", "direction": "asc"}},
+        )
+
+    def test_default_material_list_does_not_change_legacy_fingerprint(self):
+        resolved = resolve_query_spec(query())
+        legacy = dict(resolved)
+        legacy.pop("material_list")
+
+        self.assertEqual(spec_fingerprint(resolved, None), spec_fingerprint(legacy, None))
+
+    def test_material_list_rejects_unknown_field_operator_and_wrong_value_type(self):
+        with self.assertRaisesRegex(ConfigSpecError, "unsupported"):
+            resolve_query_spec(query(material_list={
+                "filters": [{"field": "ROI", "operator": "gte", "value": 1}],
+            }))
+        with self.assertRaisesRegex(ConfigSpecError, "operator"):
+            resolve_query_spec(query(material_list={
+                "filters": [{"field": "曝光量", "operator": "contains", "value": "1"}],
+            }))
+        with self.assertRaisesRegex(ConfigSpecError, "value"):
+            resolve_query_spec(query(material_list={
+                "filters": [{"field": "曝光量", "operator": "gte", "value": "1"}],
+            }))
+
+    def test_material_list_rejects_duplicate_filters_and_non_sortable_sort(self):
+        with self.assertRaisesRegex(ConfigSpecError, "duplicate"):
+            resolve_query_spec(query(material_list={
+                "filters": [
+                    {"field": "曝光量", "operator": "gte", "value": 100},
+                    {"field": "metrics.show_cnt", "operator": "gte", "value": 100},
+                ],
+            }))
+        with self.assertRaisesRegex(ConfigSpecError, "sortable"):
+            resolve_query_spec(query(material_list={
+                "sort": {"field": "people_tags", "direction": "desc"},
+            }))
+
     def test_custom_period_and_filters_are_preserved(self):
         resolved = resolve_query_spec(query(
             period={"type": "CUSTOM", "start_date": "20260801", "end_date": "20260805"},
