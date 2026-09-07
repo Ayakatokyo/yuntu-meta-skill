@@ -62,6 +62,11 @@ except ImportError:
     from .rpa_io import write_json_atomically
 
 try:
+    from overview_report import OverviewReportError, write_overview
+except ImportError:
+    from .overview_report import OverviewReportError, write_overview
+
+try:
     from workflow_state import (
         begin_model_analysis,
         build_ready_receipt,
@@ -604,6 +609,11 @@ def _parser():
         "build-facts", help="Build source-only fact packages from an existing run"
     )
     facts_parser.add_argument("--run-dir", required=True)
+    overview_parser = commands.add_parser(
+        "render-overview", help="Render a verified offline material leaderboard overview"
+    )
+    overview_parser.add_argument("--run-dir", required=True)
+    overview_parser.add_argument("--output-dir")
     analyze_parser = commands.add_parser(
         "analyze", help="Analyze selected fact packages and render an auditable report"
     )
@@ -943,6 +953,15 @@ def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "render-overview":
+            output_dir = Path(args.output_dir) if args.output_dir else Path(args.run_dir) / "overview"
+            receipt = write_overview(
+                Path(args.run_dir),
+                output_dir,
+                SCRIPT_DIR.parent / "config" / "yuntu-material-field-registry-v1.json",
+            )
+            print(json.dumps(receipt, ensure_ascii=False, indent=2))
+            return 0
         if args.command == "list-accounts":
             print(json.dumps(list_accounts(), ensure_ascii=False, indent=2))
             return 0
@@ -1183,7 +1202,7 @@ def main(argv=None):
             "message": "请直接输入分析思路或商业问题；收到前不会启动商业分析。",
         }, ensure_ascii=False, indent=2))
         return 0
-    except (RpaConnectorError, ConfigSpecError, FactPackageError, WorkflowStateError, ValueError, OSError, json.JSONDecodeError) as exc:
+    except (RpaConnectorError, ConfigSpecError, FactPackageError, WorkflowStateError, OverviewReportError, ValueError, OSError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
 

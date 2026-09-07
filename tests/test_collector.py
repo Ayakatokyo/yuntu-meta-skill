@@ -42,6 +42,23 @@ class CollectorTests(unittest.TestCase):
         commands = collector._parser()._subparsers._group_actions[0].choices
         self.assertIn("analyze", commands)
 
+    def test_render_overview_does_not_initialize_collection_or_analysis(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "run"
+            run_dir.mkdir()
+            with mock.patch.object(collector, "write_overview", return_value={"status": "succeeded"}) as render, \
+                 mock.patch.object(collector, "fetch_batch", side_effect=AssertionError("must not collect")), \
+                 mock.patch.object(collector, "prepare_fact_selection_handoff", side_effect=AssertionError("must not analyze")), \
+                 mock.patch("builtins.print") as output:
+                status = collector.main(["render-overview", "--run-dir", str(run_dir)])
+        self.assertEqual(status, 0)
+        render.assert_called_once()
+        args, kwargs = render.call_args
+        self.assertEqual(args[0], run_dir)
+        self.assertEqual(args[1], run_dir / "overview")
+        self.assertTrue(str(args[2]).endswith("config/yuntu-material-field-registry-v1.json"))
+        output.assert_called_once()
+
     def test_analyze_writes_report_and_structured_result(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
