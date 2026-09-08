@@ -10,6 +10,7 @@ import sys
 
 
 RUNTIME_FILES = (
+    "SKILL.md",
     "scripts/collector.py",
     "scripts/brand_classifier.py",
     "scripts/fact_packages.py",

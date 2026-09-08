@@ -10,6 +10,11 @@ from scripts import collector
 
 
 ROOT = Path(__file__).resolve().parent
+RUNTIME_ENV = {
+    "ENV_BACKEND_HOST": "https://gateway.example/api",
+    "YUCE_AUTHORIZATION": "test-auth",
+    "YCSESSIONID": "test-cookie",
+}
 
 
 class CollectorTests(unittest.TestCase):
@@ -59,8 +64,8 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(session_id, "browser-session")
         self.assertEqual(cookies, {"YCSESSIONID": "browser-session"})
 
-    def test_gateway_login_failure_names_missing_platform_login(self):
-        with self.assertRaisesRegex(collector.RpaConnectorError, "not logged in"):
+    def test_gateway_login_failure_is_classified_without_assuming_login_source(self):
+        with self.assertRaisesRegex(collector.RpaConnectorError, "authentication_failed"):
             collector._require_successful_result({
                 "success": False,
                 "code": "500",
@@ -536,6 +541,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(output["manifest_path"], str(Path(directory) / "facts/manifest.json"))
         self.assertEqual(output["coverage"]["ranking_records"], 2)
 
+    @mock.patch.dict(collector.os.environ, RUNTIME_ENV, clear=True)
     def test_collect_translates_specs_into_batch_and_rpa_parameters(self):
         captured = {}
 
@@ -576,6 +582,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(output["facts_manifest_path"], str(Path(directory) / "facts/manifest.json"))
         self.assertEqual(output["facts_coverage"]["ranking_records"], 2)
 
+    @mock.patch.dict(collector.os.environ, RUNTIME_ENV, clear=True)
     def test_each_retry_command_builds_facts_and_reports_manifest(self):
         commands = (
             ("retry-failed", "retry_failed_batch", {"shop_id": "shop-1"}),
@@ -621,6 +628,7 @@ class CollectorTests(unittest.TestCase):
             "highlight_spec": {"metrics": {}},
         })
 
+    @mock.patch.dict(collector.os.environ, RUNTIME_ENV, clear=True)
     def test_facts_failure_returns_nonzero_with_facts_error(self):
         def fake_fetch_batch(**_kwargs):
             return 0

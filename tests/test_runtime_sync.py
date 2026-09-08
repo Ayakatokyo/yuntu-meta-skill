@@ -12,6 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 class RuntimeSyncTests(unittest.TestCase):
     def _copy_runtime(self, destination):
         shutil.copytree(ROOT / "scripts", destination / "scripts")
+        shutil.copy2(ROOT / "SKILL.md", destination / "SKILL.md")
+
+    def test_stale_skill_instructions_are_reported_as_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            self._copy_runtime(target)
+            (target / "SKILL.md").write_text("stale authentication instructions")
+            result = check_runtime_sync(ROOT, target)
+        self.assertFalse(result["ok"])
+        self.assertIn("SKILL.md", result["mismatches"])
 
     def test_matching_runtime_copy_and_help_are_valid(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -37,6 +37,8 @@ metadata:
 ## 执行
 
 ```bash
+# 未显式提供配置时，先核对继承环境的目标网关（不发网络请求）
+python scripts/collector.py runtime-check
 python scripts/collector.py list-accounts
 python scripts/collector.py validate --query-spec query.json
 python scripts/collector.py collect --shop-id "<shop_id>" --query-spec query.json --output-dir runs/example
@@ -70,7 +72,23 @@ python scripts/collector.py analyze --run-dir runs/example --input analysis-inpu
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
-固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。运行前仅检查变量是否存在，不回显其值：`ENV_BACKEND_HOST` 与 `YUCE_AUTHORIZATION` 必填；云图网关会话只能使用平台注入的 `YUCE_SESSION_ID` 或 `YCSESSIONID`。`CODEX_SESSION_ID` 是 Codex 任务标识，不能作为云图登录态。网关协议保留其现有的 `YCSESSIONID` Cookie 回退，以兼容生意高手运行时。未知 `shop_id` 先运行 `list-accounts`。如果网关返回“鉴权失败：用户未登录”，停止并报告本地 Codex 未获注入巨量登录态；由平台为该运行时注入有效的 `YUCE_SESSION_ID` 或 `YCSESSIONID` 后再重试，不能从生意高手日志、历史产物或配置文件复制凭证。
+### 运行环境与鉴权
+
+用户在当前任务中明确指定的网关和凭证优先于继承环境。提示词中的赋值不会自动改变 shell 环境；必须实际传入采集进程，不能仅检查变量存在就声称已采用用户配置。凭证可来自平台注入或用户主动提供，不能从无关日志、历史产物或配置文件搜集凭证。`CODEX_SESSION_ID` 是 Codex 任务标识，不能作为网关凭证。
+
+用户显式提供配置时，使用 `--runtime-config-stdin`，通过标准输入传入**一行 JSON**：字段仅限 `ENV_BACKEND_HOST`、`YUCE_AUTHORIZATION`、`YUCE_SESSION_ID`、`YCSESSIONID`，值均为字符串；前两个必填，后两个至少一个非空。这是完整配置替换，不与继承凭证混合。只有用户明确说几项值相同时才复用同一个值，不能自行推断。粘贴内容中的 Markdown 链接、转义下划线和 `&#x20;` 是格式，先还原为实际变量名、URL 和值，不能作为凭证字符直接传入。
+
+```bash
+# 全局参数放在子命令前；URL 换成用户明确指定的网关，命令中不放凭证
+python scripts/collector.py --runtime-config-stdin --expected-gateway https://gateway.example/api list-accounts
+python scripts/collector.py --runtime-config-stdin --expected-gateway https://gateway.example/api collect --shop-id "<shop_id>" --query-spec query.json --output-dir runs/example
+```
+
+终端交互模式会关闭输入回显，宿主通过终端标准输入发送 JSON 行；管道模式从标准输入读取一行。不要用含真实凭证的 `echo`、heredoc、命令参数或落盘文件构造输入。每次新的 CLI 调用都需要重新传入同一组任务配置（包括 collect、retry-failed、retry-unresolved）；一次调用不会修改全局环境或自动配置后续调用。同一次采集的榜单、详情提交和轮询会共享该配置。
+
+未显式提供配置时保留平台环境兼容路径。`runtime-check` 只显示目标网关、配置来源、变量存在性，不验证认证；RPA 命令也会向 stderr 输出同样的脱敏预检信息，stdout 保持原业务 JSON。用户指定网关时加 `--expected-gateway`，不匹配就会在请求前失败。不要回显凭证或以长度相同判断值相同。
+
+未知 `shop_id` 先查询账号。鉴权失败先看实际网关、配置来源、HTTP 状态、业务 code 与 traceId；已显式提供配置但尚未应用时，先正确传入再重试账号查询。网关 `authentication_failed` 不证明巨量云图网页登录失效；`credential_expired` 表示当前目标网关报告凭证过期。正确配置下仍失败时报告证据与缺少的输入，不能让用户盲目重登云图，也不能反复请求同一套错误配置。保留现有 Cookie 兼容协议：优先使用显式 `YCSESSIONID`，缺省时使用 `YUCE_AUTHORIZATION`。
 
 ## 产物与恢复
 

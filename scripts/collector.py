@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 from datetime import datetime, timedelta
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import sys
@@ -293,6 +295,38 @@ def runtime_config(environ=None):
     return api_base, authorization, session_id, {"YCSESSIONID": cookie_session}
 
 
+def _cli_runtime(args):
+    """Resolve one complete configuration without mutating the parent environment."""
+    keys = ("ENV_BACKEND_HOST", "YUCE_AUTHORIZATION", "YUCE_SESSION_ID", "YCSESSIONID")
+    if args.runtime_config_stdin:
+        # One JSON line permits both a pipe and a persistent terminal without EOF.
+        raw = getpass.getpass("Runtime configuration JSON (hidden): ") if sys.stdin.isatty() else sys.stdin.readline()
+        try:
+            environment = json.loads(raw)
+        except (ValueError, TypeError):
+            raise RpaConnectorError("runtime stdin must contain one JSON object on one line") from None
+        if not isinstance(environment, dict) or set(environment) - set(keys):
+            raise RpaConnectorError("runtime stdin accepts only the four documented runtime variables")
+        if any(not isinstance(value, str) for value in environment.values()):
+            raise RpaConnectorError("runtime variable values must be strings")
+        source = "stdin"
+    else:
+        environment = {key: os.environ[key] for key in keys if key in os.environ}
+        source = "environment"
+    gateway, _, _, _ = runtime_config(environment)
+    if args.expected_gateway and gateway != args.expected_gateway.strip().rstrip("/"):
+        raise RpaConnectorError(
+            f"gateway mismatch: actual={gateway}; apply the explicitly requested runtime configuration"
+        )
+    receipt = {
+        "gateway": gateway,
+        "source": source,
+        "variables_present": {key: bool(environment.get(key, "").strip()) for key in keys},
+        "authentication_verified": False,
+    }
+    return environment, receipt
+
+
 def _parse_date(value, field_name):
     if not isinstance(value, str):
         raise RpaConnectorError(
@@ -485,22 +519,49 @@ def _response_json(response, action):
         ) from exc
 
 
-def _require_successful_result(result):
+def _require_successful_result(result, *, gateway=None, http_status=None):
     if not isinstance(result, dict):
         raise RpaConnectorError("gateway returned a malformed result")
     if result.get("success") is not True:
-        message = str(result.get("msg") or "")
-        if "未登录" in message or "鉴权失败" in message:
-            raise RpaConnectorError(
-                "RPA gateway authentication failed: the local runtime is not logged in. "
-                "Ask the platform to inject a valid YUCE_SESSION_ID or YCSESSIONID; "
-                "do not copy credentials from logs or run artifacts."
-            )
-        code = result.get("code")
+        message = str(result.get("msg") or result.get("message") or "")
+        category = "unsuccessful_result"
+        if "过期" in message and ("token" in message.lower() or "令牌" in message):
+            category = "credential_expired"
+        elif "未登录" in message or "鉴权失败" in message or http_status in (401, 403):
+            category = "authentication_failed"
+        # Do not echo arbitrary server messages (they can contain credentials).
+        code = str(result.get("code", "unknown"))
+        code = code if re.fullmatch(r"[0-9]{1,8}", code) else "unknown"
+        trace = str(result.get("traceId", "unavailable"))
+        trace = trace if re.fullmatch(r"[A-Za-z0-9_-]{1,80}", trace) else "unavailable"
+        guidance = (
+            " Check the target gateway and credential configuration source; "
+            "this does not establish the Yuntu website login state."
+            if category in {"authentication_failed", "credential_expired"} else ""
+        )
         raise RpaConnectorError(
-            f"gateway returned an unsuccessful result (code={code!r})"
+            f"RPA gateway {category} (gateway={gateway}, HTTP={http_status}, code={code}, traceId={trace})."
+            + guidance
         )
     return result
+
+
+def _gateway_result(response, action, gateway):
+    status = getattr(response, "status_code", None)
+    status = status if isinstance(status, int) else None
+    if status in (401, 403):
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        return _require_successful_result(
+            {**body, "success": False}, gateway=gateway, http_status=status
+        )
+    _raise_for_status(response, action)
+    return _require_successful_result(
+        _response_json(response, action), gateway=gateway, http_status=status
+    )
 
 
 def list_accounts(environ=None, session=None):
@@ -521,8 +582,7 @@ def list_accounts(environ=None, session=None):
         raise RpaConnectorError(
             "unable to list RPA accounts: transport request failed"
         ) from exc
-    _raise_for_status(response, "list RPA accounts")
-    return _require_successful_result(_response_json(response, "list RPA accounts"))
+    return _gateway_result(response, "list RPA accounts", api_base)
 
 
 def _operation_function_code(operation):
@@ -533,9 +593,8 @@ def _operation_function_code(operation):
     raise RpaConnectorError("operation must be list or detail")
 
 
-def _response_data(response, action):
-    _raise_for_status(response, action)
-    result = _require_successful_result(_response_json(response, action))
+def _response_data(response, action, gateway):
+    result = _gateway_result(response, action, gateway)
     data = result.get("data")
     if not isinstance(data, dict):
         raise RpaConnectorError(f"gateway {action} response is missing an object data field")
@@ -568,7 +627,7 @@ def submit_fetch_task(operation, shop_id, business_params, *, environ=None, sess
         raise RpaConnectorError(
             f"unable to submit RPA {operation}: transport request failed"
         ) from exc
-    data = _response_data(response, f"submit RPA {operation}")
+    data = _response_data(response, f"submit RPA {operation}", api_base)
     task_group_id = data.get("task_group_id")
     if not isinstance(task_group_id, str) or not task_group_id.strip():
         raise RpaConnectorError(f"submit RPA {operation} response is missing task_group_id")
@@ -595,7 +654,7 @@ def query_fetch_task(
         )
     except Exception as exc:
         raise RpaConnectorError("unable to query RPA task status: transport request failed") from exc
-    return _response_data(response, "query RPA task status")
+    return _response_data(response, "query RPA task status", api_base)
 
 
 def wait_fetch_task(
@@ -651,8 +710,7 @@ def _invoke_list_sync(shop_id, business_params, environ=None, session=None):
         raise RpaConnectorError(
             "unable to fetch RPA list: transport request failed"
         ) from exc
-    _raise_for_status(response, "fetch RPA list")
-    return _require_successful_result(_response_json(response, "fetch RPA list"))
+    return _gateway_result(response, "fetch RPA list", api_base)
 
 
 def _invoke_detail_async(shop_id, business_params, environ=None, session=None):
@@ -675,17 +733,17 @@ def invoke_detail(shop_id, business_params, environ=None, session=None):
     )
 
 
-def _batch_invoker():
+def _batch_invoker(environ=None):
     def detail_params(params):
         return {name: params[name] for name in DETAIL_FIELDS if name in params}
 
     return ConnectorInvoker(
-        lambda sid, params: invoke_list(sid, params),
-        lambda sid, params: invoke_detail(sid, detail_params(params)),
+        lambda sid, params: invoke_list(sid, params, environ=environ),
+        lambda sid, params: invoke_detail(sid, detail_params(params), environ=environ),
         submit_detail=lambda sid, params: submit_fetch_task(
-            "detail", sid, validate_detail_business_params(detail_params(params))
+            "detail", sid, validate_detail_business_params(detail_params(params)), environ=environ
         ),
-        wait_detail=lambda task_group_id: wait_fetch_task(task_group_id),
+        wait_detail=lambda task_group_id: wait_fetch_task(task_group_id, environ=environ),
     )
 
 
@@ -701,7 +759,10 @@ def _positive_int_argument(value):
 
 def _parser():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runtime-config-stdin", action="store_true", help="Read a complete task runtime configuration as one JSON line from stdin")
+    parser.add_argument("--expected-gateway", help="Reject a runtime gateway different from this URL before any request")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("runtime-check", help="Show redacted runtime configuration without making network requests")
     commands.add_parser("list-accounts", help="List available RPA accounts")
     commands.add_parser("schema", help="Print collection parameter metadata")
     commands.add_parser("self-test", help="Run offline connector checks")
@@ -1075,6 +1136,15 @@ def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        environment = None
+        if args.command in {"runtime-check", "list-accounts", "collect", "retry-failed", "retry-unresolved"}:
+            environment, receipt = _cli_runtime(args)
+            if args.command == "runtime-check":
+                print(json.dumps(receipt, ensure_ascii=False, indent=2))
+                return 0
+            print(json.dumps({"runtime": receipt}, ensure_ascii=False), file=sys.stderr)
+        elif args.runtime_config_stdin or args.expected_gateway:
+            raise RpaConnectorError("runtime options are only supported for runtime-check and RPA commands")
         if args.command == "render-overview":
             output_dir = Path(args.output_dir) if args.output_dir else Path(args.run_dir) / "overview"
             receipt = write_overview(
@@ -1085,7 +1155,7 @@ def main(argv=None):
             print(json.dumps(receipt, ensure_ascii=False, indent=2))
             return 0
         if args.command == "list-accounts":
-            print(json.dumps(list_accounts(), ensure_ascii=False, indent=2))
+            print(json.dumps(list_accounts(environ=environment), ensure_ascii=False, indent=2))
             return 0
         if args.command == "schema":
             print(json.dumps(BUSINESS_PARAMS_SCHEMA, ensure_ascii=False, indent=2))
@@ -1110,7 +1180,7 @@ def main(argv=None):
             specs = _load_saved_specs(args.output_dir)
             status = retry_failed_batch(
                 shop_id=args.shop_id, output_dir=args.output_dir,
-                invoker=_batch_invoker(), highlight_spec=specs[1]
+                invoker=_batch_invoker(environ=environment), highlight_spec=specs[1]
             )
             facts_manifest = _build_facts_after_run(args.output_dir)
             _print_batch_result(args.output_dir, facts_manifest)
@@ -1119,7 +1189,7 @@ def main(argv=None):
             specs = _load_saved_specs(args.output_dir)
             status = retry_unresolved_batch(
                 shop_id=args.shop_id, output_dir=args.output_dir,
-                invoker=_batch_invoker(), highlight_spec=specs[1]
+                invoker=_batch_invoker(environ=environment), highlight_spec=specs[1]
             )
             facts_manifest = _build_facts_after_run(args.output_dir)
             _print_batch_result(args.output_dir, facts_manifest)
@@ -1307,7 +1377,7 @@ def main(argv=None):
             target_top_n=query["collection"]["target_top_n"],
             candidate_top_n=query["collection"]["candidate_top_n"],
             material_list=query["material_list"],
-            output_dir=args.output_dir, invoker=_batch_invoker(),
+            output_dir=args.output_dir, invoker=_batch_invoker(environ=environment),
             highlight_spec=highlights, configuration_fingerprint=fingerprint,
         )
         facts_manifest = _build_facts_after_run(args.output_dir)
