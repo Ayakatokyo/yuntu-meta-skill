@@ -1,8 +1,10 @@
-# 云图-行业内容榜-素材详情秒级拆解
+# 云图-行业内容榜-素材详情秒级拆解（历史读取）
+
+> 本页仅描述历史批次的旧 `detail` function code、`date_range_type` 和旧结果格式。新采集必须使用 [details 异步连接器](rpa_conn_juliang_yt_industry_content_rankings_details.md)，不会自动回退到本页协议。
 
 ## 固定元数据
 
-- `function_code`: `rpa.conn.juliang.yt.industry.content.rankings.detail`
+- `function_code`: `rpa.conn.juliang.yt.industry.content.rankings.detail`（仅历史）
 - `platform`: `RPA_JULIANG_YT_ACCOUNT_PASSWORD`
 - `data_source_type`: `rpa`
 
@@ -13,7 +15,7 @@
 ## 入参说明
 
 - `material_id`
-- `date_range_type`
+- `date_range_type`（仅历史）
 - `custom_start_date`
 - `custom_end_date`
 

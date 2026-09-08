@@ -68,6 +68,31 @@ class BatchInvoker:
         }
 
 
+class AsyncBatchInvoker(BatchInvoker):
+    supports_detail_task_recovery = True
+
+    def __init__(self, list_records, fail_waits=0):
+        super().__init__(list_records)
+        self.submit_calls = []
+        self.wait_calls = []
+        self.fail_waits = fail_waits
+
+    def submit_detail(self, shop_id, detail_params):
+        self.submit_calls.append((shop_id, dict(detail_params)))
+        return f"tg-{detail_params['material_id']}"
+
+    def wait_detail(self, task_group_id):
+        self.wait_calls.append(task_group_id)
+        if self.fail_waits:
+            self.fail_waits -= 1
+            raise RuntimeError("temporary poll transport timeout")
+        material_id = task_group_id.removeprefix("tg-")
+        return {
+            "status": "completed",
+            "data": [{"materialId": material_id, "dateType": "LAST_7_DAYS", "trends": []}],
+        }
+
+
 def list_record(material_id, group_id):
     return {
         "material_id": material_id,
@@ -100,6 +125,65 @@ def highlight_spec():
 
 
 class YuntuBatchTests(unittest.TestCase):
+    def test_async_detail_submission_is_accounted_and_resume_polls_without_resubmit(self):
+        batch = load_batch()
+        batch.generate_highlights_for_detail = lambda *_args: []
+        with tempfile.TemporaryDirectory() as directory:
+            invoker = AsyncBatchInvoker([
+                {"material_id": "101", "title": "素材 A"},
+            ], fail_waits=1)
+            first_status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1,
+                output_dir=directory,
+                invoker=invoker,
+            )
+            first_manifest = json.loads(
+                (Path(directory) / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(first_status, 1)
+            self.assertEqual(len(invoker.submit_calls), 1)
+            attempt = first_manifest["taskRuns"]["detail:101"]["attempts"][-1]
+            self.assertEqual(attempt["task_group_id"], "tg-101")
+            self.assertEqual(attempt["error_class"], "poll_timeout")
+            self.assertEqual(first_manifest["taskRuns"]["detail:101"]["task_group_id"], "tg-101")
+            self.assertEqual(first_manifest["taskRuns"]["detail:101"]["status"], "unresolved")
+            self.assertEqual(first_manifest["unresolvedMaterials"][0]["reason"], "poll_unconfirmed")
+
+            second_status = batch.fetch_batch(
+                shop_id="shop-42",
+                list_params={},
+                detail_date_params={"date_type": "LAST_7_DAYS"},
+                target_top_n=1,
+                candidate_top_n=1,
+                output_dir=directory,
+                invoker=invoker,
+            )
+            manifest = json.loads(
+                (Path(directory) / "batch-manifest.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(second_status, 0)
+        self.assertEqual(len(invoker.submit_calls), 1)
+        self.assertEqual(invoker.wait_calls, ["tg-101", "tg-101"])
+        self.assertEqual(manifest["unresolvedMaterials"], [])
+        self.assertEqual(manifest["selectedMaterials"][0]["material_id"], "101")
+        self.assertEqual(
+            manifest["taskRuns"]["detail:101"]["functionCode"],
+            "rpa.conn.juliang.yt.industry.content.rankings.details",
+        )
+        self.assertEqual(
+            manifest["taskRuns"]["detail:101"]["attempts"][-1]["taskGroupId"],
+            "tg-101",
+        )
+        self.assertEqual(
+            manifest["taskRuns"]["detail:101"]["attempts"][-1]["artifact_status"],
+            "normalized",
+        )
+
     def test_detail_wave_is_limited_to_three_items(self):
         batch = load_batch()
         candidates = [{"material_id": str(index)} for index in range(4)]

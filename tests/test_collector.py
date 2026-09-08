@@ -42,6 +42,118 @@ class CollectorTests(unittest.TestCase):
         commands = collector._parser()._subparsers._group_actions[0].choices
         self.assertIn("analyze", commands)
 
+    def test_detail_connector_uses_fixed_async_submit_contract(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"task_group_id": "tg-101"}}
+
+        session = mock.Mock()
+        session.post.return_value = Response()
+        environment = {
+            "ENV_BACKEND_HOST": "https://gateway.example/",
+            "YUCE_AUTHORIZATION": "auth",
+            "YUCE_SESSION_ID": "session",
+        }
+        task_group_id = collector.submit_fetch_task(
+            "detail", "shop-1",
+            {"material_id": "101", "date_type": "LAST_7_DAYS"},
+            environ=environment, session=session,
+        )
+
+        self.assertEqual(task_group_id, "tg-101")
+        _, kwargs = session.post.call_args
+        url = session.post.call_args.args[0]
+        self.assertTrue(url.endswith("/adg/v1/agent/fetch/tasks"))
+        self.assertEqual(
+            kwargs["json"]["function_code"],
+            "rpa.conn.juliang.yt.industry.content.rankings.details",
+        )
+        self.assertEqual(kwargs["json"]["business_params"]["date_type"], "LAST_7_DAYS")
+        self.assertNotIn("date_range_type", kwargs["json"]["business_params"])
+
+    def test_wait_fetch_task_polls_until_completed_and_rejects_old_date_key(self):
+        class Response:
+            def __init__(self, status):
+                self.status = status
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"status": self.status, "payload": []}}
+
+        session = mock.Mock()
+        session.post.side_effect = [Response("pending"), Response("completed")]
+        environment = {
+            "ENV_BACKEND_HOST": "https://gateway.example/",
+            "YUCE_AUTHORIZATION": "auth",
+            "YUCE_SESSION_ID": "session",
+        }
+        with mock.patch.object(collector.time, "sleep") as sleep:
+            result = collector.wait_fetch_task(
+                "tg-101", environ=environment, session=session,
+                timeout_seconds=2, poll_interval_seconds=1,
+            )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(session.post.call_count, 2)
+        sleep.assert_called()
+        with self.assertRaisesRegex(collector.RpaConnectorError, "date_range_type"):
+            collector.validate_detail_business_params(
+                {"material_id": "101", "date_range_type": "LAST_7_DAYS"}
+            )
+
+    def test_list_connector_keeps_synchronous_invoke_contract(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": [{"material_id": "101"}]}
+
+        session = mock.Mock()
+        session.post.return_value = Response()
+        environment = {
+            "ENV_BACKEND_HOST": "https://gateway.example/",
+            "YUCE_AUTHORIZATION": "auth",
+            "YUCE_SESSION_ID": "session",
+        }
+
+        result = collector.invoke_list(
+            "shop-1", {"industry": "食品饮料"}, environ=environment, session=session
+        )
+
+        self.assertEqual(result["data"][0]["material_id"], "101")
+        self.assertTrue(session.post.call_args.args[0].endswith("/adg/v1/agent/invoke"))
+        self.assertEqual(
+            session.post.call_args.kwargs["json"]["function_code"],
+            "rpa.conn.juliang.yt.industry.content.rankings.list",
+        )
+
+    def test_wait_fetch_task_rejects_unknown_remote_status(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"success": True, "data": {"status": "queued"}}
+
+        session = mock.Mock()
+        session.post.return_value = Response()
+        environment = {
+            "ENV_BACKEND_HOST": "https://gateway.example/",
+            "YUCE_AUTHORIZATION": "auth",
+            "YUCE_SESSION_ID": "session",
+        }
+        with mock.patch.object(collector.time, "sleep"):
+            with self.assertRaisesRegex(collector.RpaConnectorError, "unknown status"):
+                collector.wait_fetch_task(
+                    "tg-101", environ=environment, session=session,
+                    timeout_seconds=2, poll_interval_seconds=1,
+                )
+
     def test_render_overview_does_not_initialize_collection_or_analysis(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory) / "run"
@@ -423,7 +535,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(captured["shop_id"], "shop-1")
         self.assertEqual(captured["list_params"]["ranking_limit_type"], "CTR_TOP1000")
         self.assertEqual(captured["list_params"]["time_range_type"], "LAST_7_DAYS")
-        self.assertEqual(captured["detail_date_params"], {"date_range_type": "LAST_7_DAYS"})
+        self.assertEqual(captured["detail_date_params"], {"date_type": "LAST_7_DAYS"})
         self.assertEqual(captured["target_top_n"], 2)
         self.assertEqual(captured["candidate_top_n"], 1000)
         self.assertEqual(

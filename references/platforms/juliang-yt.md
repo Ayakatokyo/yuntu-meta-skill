@@ -1,14 +1,16 @@
 # 平台知识地图：巨量云图
 
-本页用于把“巨量云图 / 行业灵感 / 行业内容榜 / 素材详情秒级拆解”路由到当前技能内部的两个固定连接器知识页。
+本页用于把“巨量云图 / 行业灵感 / 行业内容榜 / 素材详情秒级拆解”路由到当前技能内部的列表连接器和新版详情任务连接器知识页。
 
 ## 连接器入口
 
 - 列表：`references/connectors/juliang-yt/rpa_conn_juliang_yt_industry_content_rankings_list.md`
-- 详情：`references/connectors/juliang-yt/rpa_conn_juliang_yt_industry_content_rankings_detail.md`
+- 新详情：`references/connectors/juliang-yt/rpa_conn_juliang_yt_industry_content_rankings_details.md`
+- 历史详情读取：`references/connectors/juliang-yt/rpa_conn_juliang_yt_industry_content_rankings_detail.md`
 
 ## 说明
 
 - 平台固定为 `RPA_JULIANG_YT_ACCOUNT_PASSWORD`
 - 不允许外部覆盖 `function_code`
+- 新详情采集固定使用 `rpa.conn.juliang.yt.industry.content.rankings.details`、`date_type` 和异步 fetch task/status；旧详情页只服务历史批次读取
 - 当前技能在两个连接器结果之上增加了完整 Top1000 列表持久化、全局 Top N 详情选择、规范化和五指标截帧资产；前 N 条详情失败不会由排名更低的素材补位

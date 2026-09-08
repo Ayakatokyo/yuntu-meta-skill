@@ -226,22 +226,30 @@ def _script_payload(root: Path, details: dict[str, dict], classifications: dict[
     records = []
     for material_id in sorted(details):
         detail = details[material_id]
+        detail_source = detail.get("source_paths", {}).get(
+            "detail", f"raw-csv/details/{material_id}.csv"
+        )
         availability = detail.get("data_availability", {})
         classification = classifications.get(material_id, classify_brand("", brands=brands))
         records.append(_add_brand_fields({
             "material_id": material_id,
             "date_range": detail.get("date_range"),
+            "audience_portrait": detail.get("audience_portrait", {}),
             "script_text": detail.get("script_text", ""),
             "content_formula": detail.get("content_formula"),
+            "creative_breakdown": detail.get("creative_breakdown"),
             "script_segments": detail.get("script_segments", []),
             "data_availability": {
                 key: availability.get(key, {"available": False, "missing_reason": "source_empty"})
-                for key in ("script_text", "content_formula", "script_segments")
+                for key in (
+                    "script_text", "content_formula", "creative_breakdown",
+                    "audience_portrait", "script_segments",
+                )
             },
             "source_paths": _source_paths(
                 root,
                 normalized=f"normalized/detail-records/{material_id}.json",
-                raw=f"raw-csv/details/{material_id}.csv",
+                raw=detail_source,
             ),
         }, classification, brands))
     return {"schema_version": SCHEMA_VERSION, "records": records}
@@ -263,14 +271,18 @@ def _content_tags_payload(root: Path, records: list[dict], classifications: dict
 def _interaction_payload(root: Path, details: dict[str, dict], classifications: dict[str, dict], brands: list[str]) -> dict:
     result = []
     for material_id, detail in sorted(details.items()):
+        detail_source = detail.get("source_paths", {}).get(
+            "detail", f"raw-csv/details/{material_id}.csv"
+        )
         result.append(_add_brand_fields({
             "material_id": material_id,
             "date_range": detail.get("date_range"),
+            "core_metrics": detail.get("core_metrics", {}),
             "trend_series": detail.get("trend_series", []),
             "high_points": detail.get("high_points", []),
             "loss_points": detail.get("loss_points", []),
             "data_availability": detail.get("data_availability", {}),
-            "source_paths": _source_paths(root, normalized=f"normalized/detail-records/{material_id}.json", raw=f"raw-csv/details/{material_id}.csv"),
+            "source_paths": _source_paths(root, normalized=f"normalized/detail-records/{material_id}.json", raw=detail_source),
         }, classifications.get(material_id, classify_brand("", brands=brands)), brands))
     return {"schema_version": SCHEMA_VERSION, "records": result}
 

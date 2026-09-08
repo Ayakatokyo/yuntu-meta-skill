@@ -258,7 +258,7 @@ def query_to_rpa_params(resolved: dict) -> dict:
 
 def detail_to_rpa_params(resolved: dict) -> dict:
     period = resolved["period"]
-    params = {"date_range_type": period["type"]}
+    params = {"date_type": period["type"]}
     if period["type"] == "CUSTOM":
         params.update(custom_start_date=period["start_date"], custom_end_date=period["end_date"])
     return params
