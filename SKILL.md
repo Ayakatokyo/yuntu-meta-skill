@@ -70,7 +70,7 @@ python scripts/collector.py analyze --run-dir runs/example --input analysis-inpu
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
-固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。运行前仅检查变量是否存在，不回显其值：`ENV_BACKEND_HOST` 与 `YUCE_AUTHORIZATION` 必填；会话 ID 依次使用 `YUCE_SESSION_ID`、`YCSESSIONID`、`CODEX_SESSION_ID`。网关协议保留其现有的 `YCSESSIONID` Cookie 回退，以兼容生意高手运行时。未知 `shop_id` 先运行 `list-accounts`。如果网关返回“鉴权失败：用户未登录”，停止并报告本地 Codex 未获注入巨量登录态；由平台为该运行时注入有效的 `YUCE_SESSION_ID` 或 `YCSESSIONID` 后再重试，不能从生意高手日志、历史产物或配置文件复制凭证。
+固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。运行前仅检查变量是否存在，不回显其值：`ENV_BACKEND_HOST` 与 `YUCE_AUTHORIZATION` 必填；云图网关会话只能使用平台注入的 `YUCE_SESSION_ID` 或 `YCSESSIONID`。`CODEX_SESSION_ID` 是 Codex 任务标识，不能作为云图登录态。网关协议保留其现有的 `YCSESSIONID` Cookie 回退，以兼容生意高手运行时。未知 `shop_id` 先运行 `list-accounts`。如果网关返回“鉴权失败：用户未登录”，停止并报告本地 Codex 未获注入巨量登录态；由平台为该运行时注入有效的 `YUCE_SESSION_ID` 或 `YCSESSIONID` 后再重试，不能从生意高手日志、历史产物或配置文件复制凭证。
 
 ## 产物与恢复
 

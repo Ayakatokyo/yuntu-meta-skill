@@ -42,16 +42,13 @@ class CollectorTests(unittest.TestCase):
         commands = collector._parser()._subparsers._group_actions[0].choices
         self.assertIn("analyze", commands)
 
-    def test_runtime_config_uses_codex_session_with_gateway_cookie_fallback(self):
-        api_base, authorization, session_id, cookies = collector.runtime_config({
-            "ENV_BACKEND_HOST": "https://gateway.example/",
-            "YUCE_AUTHORIZATION": "auth",
-            "CODEX_SESSION_ID": "codex-session",
-        })
-        self.assertEqual(api_base, "https://gateway.example")
-        self.assertEqual(authorization, "auth")
-        self.assertEqual(session_id, "codex-session")
-        self.assertEqual(cookies, {"YCSESSIONID": "auth"})
+    def test_runtime_config_does_not_treat_codex_session_as_gateway_login(self):
+        with self.assertRaisesRegex(collector.RpaConnectorError, "YUCE_SESSION_ID or YCSESSIONID"):
+            collector.runtime_config({
+                "ENV_BACKEND_HOST": "https://gateway.example/",
+                "YUCE_AUTHORIZATION": "auth",
+                "CODEX_SESSION_ID": "codex-session",
+            })
 
     def test_runtime_config_keeps_platform_cookie_when_provided(self):
         _, _, session_id, cookies = collector.runtime_config({

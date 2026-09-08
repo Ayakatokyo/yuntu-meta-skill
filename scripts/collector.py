@@ -256,10 +256,9 @@ def runtime_config(environ=None):
     if not str(
         environment.get("YUCE_SESSION_ID")
         or environment.get("YCSESSIONID")
-        or environment.get("CODEX_SESSION_ID")
         or ""
     ).strip():
-        missing.append("YUCE_SESSION_ID, YCSESSIONID, or CODEX_SESSION_ID")
+        missing.append("YUCE_SESSION_ID or YCSESSIONID")
     if missing:
         raise RpaConnectorError(
             "missing RPA runtime environment variables: " + ", ".join(missing)
@@ -287,7 +286,6 @@ def runtime_config(environ=None):
     session_id = str(
         environment.get("YUCE_SESSION_ID")
         or environment.get("YCSESSIONID")
-        or environment.get("CODEX_SESSION_ID")
     ).strip()
     # The gateway's existing runtime contract also expects the authorization
     # context in YCSESSIONID when a browser cookie is not separately injected.
