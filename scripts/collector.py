@@ -156,7 +156,6 @@ SUCCESS_TASK_STATUSES = {"completed", "partial_success"}
 REQUIRED_ENVIRONMENT = (
     "ENV_BACKEND_HOST",
     "YUCE_AUTHORIZATION",
-    "YUCE_SESSION_ID",
 )
 DATE_RANGE_TYPES = {"LAST_7_DAYS", "LAST_30_DAYS", "CUSTOM"}
 AGE_VALUES = {
@@ -254,8 +253,13 @@ def runtime_config(environ=None):
         for name in REQUIRED_ENVIRONMENT[:2]
         if not str(environment.get(name) or "").strip()
     ]
-    if not str(environment.get("YUCE_SESSION_ID") or environment.get("YCSESSIONID") or "").strip():
-        missing.append("YUCE_SESSION_ID or YCSESSIONID")
+    if not str(
+        environment.get("YUCE_SESSION_ID")
+        or environment.get("YCSESSIONID")
+        or environment.get("CODEX_SESSION_ID")
+        or ""
+    ).strip():
+        missing.append("YUCE_SESSION_ID, YCSESSIONID, or CODEX_SESSION_ID")
     if missing:
         raise RpaConnectorError(
             "missing RPA runtime environment variables: " + ", ".join(missing)
@@ -283,8 +287,10 @@ def runtime_config(environ=None):
     session_id = str(
         environment.get("YUCE_SESSION_ID")
         or environment.get("YCSESSIONID")
-        or authorization
+        or environment.get("CODEX_SESSION_ID")
     ).strip()
+    # The gateway's existing runtime contract also expects the authorization
+    # context in YCSESSIONID when a browser cookie is not separately injected.
     cookie_session = str(environment.get("YCSESSIONID") or authorization).strip()
     return api_base, authorization, session_id, {"YCSESSIONID": cookie_session}
 
@@ -482,8 +488,20 @@ def _response_json(response, action):
 
 
 def _require_successful_result(result):
-    if not isinstance(result, dict) or result.get("success") is not True:
-        raise RpaConnectorError("gateway returned an unsuccessful result")
+    if not isinstance(result, dict):
+        raise RpaConnectorError("gateway returned a malformed result")
+    if result.get("success") is not True:
+        message = str(result.get("msg") or "")
+        if "未登录" in message or "鉴权失败" in message:
+            raise RpaConnectorError(
+                "RPA gateway authentication failed: the local runtime is not logged in. "
+                "Ask the platform to inject a valid YUCE_SESSION_ID or YCSESSIONID; "
+                "do not copy credentials from logs or run artifacts."
+            )
+        code = result.get("code")
+        raise RpaConnectorError(
+            f"gateway returned an unsuccessful result (code={code!r})"
+        )
     return result
 
 

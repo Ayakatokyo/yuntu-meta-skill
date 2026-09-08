@@ -1,8 +1,8 @@
 ---
 name: yuntu-meta-skill
 description: 采集巨量云图行业素材及可用源事实，并可在第一阶段按规则生成高光帧资产；第二阶段基于已落盘证据完成商业分析。
-argument_hint: 输入行业、时间范围、榜单类型、品牌和人群筛选、素材列表本地筛选及详情素材数。高光帧默认不生成；仅在第一阶段明确需要时补充现有规则。
 metadata:
+  argument_hint: 输入行业、时间范围、榜单类型、品牌和人群筛选、素材列表本地筛选及详情素材数。高光帧默认不生成；仅在第一阶段明确需要时补充现有规则。
   pre_input: 请采集云图行业素材及相关数据。行业是 ____（必填）；时间范围是 ____（默认近7天，自定义时填写起止日期）；榜单类型是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）；品牌范围是 ____（默认全行业，或指定3至10个品牌）；需要获取详情的素材数是 ____（默认10）；年龄、性别、八大人群筛选是 ____（可选，留空不过滤）；素材列表本地筛选/排序是 ____（可选，例如先落盘完整TOP1000后按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）。是否同时生成高光帧图片：____（可选，默认否）。仅选择是时，填写封面设置，以及需要的高光指标、提取策略和帧数。请在第一阶段完成取数和已选择的图片提取，整理实际可用数据后停止，等待我输入商业分析思路。
 ---
 
@@ -70,7 +70,7 @@ python scripts/collector.py analyze --run-dir runs/example --input analysis-inpu
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
-固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。未知 `shop_id` 先运行 `list-accounts`。
+固定连接器和运行时凭证由平台环境提供；不要把凭证写入命令、配置、清单或输出。运行前仅检查变量是否存在，不回显其值：`ENV_BACKEND_HOST` 与 `YUCE_AUTHORIZATION` 必填；会话 ID 依次使用 `YUCE_SESSION_ID`、`YCSESSIONID`、`CODEX_SESSION_ID`。网关协议保留其现有的 `YCSESSIONID` Cookie 回退，以兼容生意高手运行时。未知 `shop_id` 先运行 `list-accounts`。如果网关返回“鉴权失败：用户未登录”，停止并报告本地 Codex 未获注入巨量登录态；由平台为该运行时注入有效的 `YUCE_SESSION_ID` 或 `YCSESSIONID` 后再重试，不能从生意高手日志、历史产物或配置文件复制凭证。
 
 ## 产物与恢复
 
