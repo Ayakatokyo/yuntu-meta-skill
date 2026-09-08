@@ -184,6 +184,8 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         model = build_overview_data(run_dir, REGISTRY)
         html = render_overview_html(model)
         self.assertEqual(model["scriptFormulaOverview"]["coverage"]["formulaMaterialCount"], 2)
+        self.assertEqual(model["scriptFormulaOverview"]["source"]["taxonomyVersion"], "yuntu-content-formula-taxonomy-v1")
+        self.assertNotIn('"41"', json.dumps(model["scriptFormulaOverview"], ensure_ascii=False))
         self.assertIn('data-section="audience"', html)
         self.assertIn('data-section="scripts"', html)
         self.assertIn("renderAudience", html)

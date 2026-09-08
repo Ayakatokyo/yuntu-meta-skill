@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
-from typing import Any
 
 try:
     from audience_overview import AudienceOverviewError, _load_manifest_package, _read_json, _safe_path, _verify_file
@@ -17,7 +15,6 @@ class ScriptFormulaOverviewError(ValueError):
     """Raised when script formula facts cannot be verified safely."""
 
 
-_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _TAXONOMY_PATH = Path(__file__).resolve().parents[1] / "config/yuntu-content-formula-taxonomy-v1.json"
 
 
@@ -42,17 +39,44 @@ def _verify_detail_sources(root: Path, summary: dict, records: list[dict]) -> No
         _verify_file(_safe_path(root, expected_path, "detail source path"), artifact, "detail source")
 
 
-def _load_taxonomy() -> dict[str, dict[str, str]]:
+def _load_taxonomy() -> dict[str, object]:
     try:
         taxonomy = json.loads(_TAXONOMY_PATH.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ScriptFormulaOverviewError("formula taxonomy is missing or unreadable") from exc
-    if taxonomy.get("schemaVersion") != 1 or taxonomy.get("version") != "yuntu-content-formula-taxonomy-v1":
+    version = taxonomy.get("version")
+    if taxonomy.get("schemaVersion") != 1 or not isinstance(version, str) or not version.strip():
         raise ScriptFormulaOverviewError("formula taxonomy version is invalid")
     primary, secondary = taxonomy.get("primary"), taxonomy.get("secondary")
     if not isinstance(primary, dict) or not isinstance(secondary, dict):
         raise ScriptFormulaOverviewError("formula taxonomy is invalid")
-    return {"primary": primary, "secondary": secondary}
+    for mapping in (primary, secondary):
+        if any(not isinstance(key, str) or not isinstance(value, str) or not value.strip() for key, value in mapping.items()):
+            raise ScriptFormulaOverviewError("formula taxonomy mapping is invalid")
+    return {"version": version.strip(), "primary": primary, "secondary": secondary}
+
+
+def _resolve_formula_ref(value: object, taxonomy: dict[str, object], level: str) -> tuple[str | None, str | None, list[str]]:
+    mapping = taxonomy.get(level)
+    if not isinstance(mapping, dict):
+        return None, None, ["formula_hierarchy_unavailable"]
+    if type(value) is int:
+        ref_id = str(value)
+        label = mapping.get(ref_id)
+        return ref_id, label, [] if isinstance(label, str) else ["formula_taxonomy_unmapped"]
+    if isinstance(value, dict):
+        ref_id = value.get("id")
+        source_label = value.get("label")
+        if type(ref_id) is not int or not isinstance(source_label, str) or not source_label.strip():
+            return None, None, ["formula_hierarchy_unavailable"]
+        ref_id_text = str(ref_id)
+        label = source_label.strip()
+        gaps = []
+        fallback = mapping.get(ref_id_text)
+        if isinstance(fallback, str) and fallback != label:
+            gaps.append("formula_taxonomy_label_conflict")
+        return ref_id_text, label, gaps
+    return None, None, ["formula_hierarchy_unavailable"]
 
 
 def build_script_formula_overview(run_dir: Path) -> dict:
@@ -80,6 +104,8 @@ def build_script_formula_overview(run_dir: Path) -> dict:
     primary_ids: dict[str, set[str]] = {}
     secondary_ids: dict[str, dict[str, set[str]]] = {}
     gaps: dict[str, int] = {}
+    entries: list[tuple[str, str, str, list[tuple[str, str]]]] = []
+    explicit_names: dict[tuple[str, str], set[str]] = {}
     for record in records:
         material_id = str(record["material_id"])
         availability = record.get("data_availability", {}).get("content_formula") if isinstance(record.get("data_availability"), dict) else None
@@ -95,24 +121,38 @@ def build_script_formula_overview(run_dir: Path) -> dict:
             _gap(gaps, "formula_hierarchy_unavailable")
             continue
         for item in labels:
-            if not isinstance(item, dict) or type(item.get("level_1_label")) is not int or not isinstance(item.get("level_2_labels"), list):
+            if not isinstance(item, dict) or not isinstance(item.get("level_2_labels"), list):
                 _gap(gaps, "formula_hierarchy_unavailable")
                 continue
-            primary_id = str(item["level_1_label"])
-            primary_label = taxonomy["primary"].get(primary_id)
-            if primary_label is None:
-                _gap(gaps, "formula_taxonomy_unmapped")
+            primary_id, primary_label, primary_gaps = _resolve_formula_ref(item.get("level_1_label"), taxonomy, "primary")
+            for code in primary_gaps:
+                _gap(gaps, code)
+            if primary_id is None or primary_label is None:
                 continue
-            primary_ids.setdefault(primary_label, set()).add(material_id)
+            if isinstance(item.get("level_1_label"), dict):
+                explicit_names.setdefault(("primary", primary_id), set()).add(primary_label)
+            secondary_entries: list[tuple[str, str]] = []
             for secondary_id in item["level_2_labels"]:
-                if type(secondary_id) is not int:
-                    _gap(gaps, "formula_hierarchy_unavailable")
+                secondary_ref_id, secondary_label, secondary_gaps = _resolve_formula_ref(secondary_id, taxonomy, "secondary")
+                for code in secondary_gaps:
+                    _gap(gaps, code)
+                if secondary_ref_id is None or secondary_label is None:
                     continue
-                secondary_label = taxonomy["secondary"].get(str(secondary_id))
-                if secondary_label is None:
-                    _gap(gaps, "formula_taxonomy_unmapped")
-                    continue
-                secondary_ids.setdefault(primary_label, {}).setdefault(secondary_label, set()).add(material_id)
+                secondary_entries.append((secondary_ref_id, secondary_label))
+                if isinstance(secondary_id, dict):
+                    explicit_names.setdefault(("secondary", secondary_ref_id), set()).add(secondary_label)
+            entries.append((material_id, primary_id, primary_label, secondary_entries))
+    conflicting_ids = {key: names for key, names in explicit_names.items() if len(names) > 1}
+    for _level, _ref_id in conflicting_ids:
+        _gap(gaps, "formula_source_label_conflict")
+    for material_id, primary_id, primary_label, secondary_entries in entries:
+        if ("primary", primary_id) in conflicting_ids:
+            continue
+        primary_ids.setdefault(primary_label, set()).add(material_id)
+        for secondary_id, secondary_label in secondary_entries:
+            if ("secondary", secondary_id) in conflicting_ids:
+                continue
+            secondary_ids.setdefault(primary_label, {}).setdefault(secondary_label, set()).add(material_id)
     formula_materials = set().union(*primary_ids.values()) if primary_ids else set()
     primary_total = len(formula_materials)
     primary_buckets = []
@@ -128,7 +168,7 @@ def build_script_formula_overview(run_dir: Path) -> dict:
     return {
         "schemaVersion": 1,
         "status": "available",
-        "source": {"path": "facts/script.json", "recordCount": len(records), "taxonomyVersion": "yuntu-content-formula-taxonomy-v1"},
+        "source": {"path": "facts/script.json", "recordCount": len(records), "taxonomyVersion": taxonomy["version"]},
         "coverage": {"scriptMaterialCount": len(records), "formulaMaterialCount": len(formula_materials)},
         "primaryBuckets": primary_buckets,
         "secondaryBucketsByPrimary": secondary_buckets,
