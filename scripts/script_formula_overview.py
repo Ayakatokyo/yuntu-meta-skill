@@ -1,0 +1,136 @@
+"""Build a strict, taxonomy-bound script formula overview."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Any
+
+try:
+    from audience_overview import AudienceOverviewError, _load_manifest_package, _read_json, _safe_path, _verify_file
+except ImportError:
+    from .audience_overview import AudienceOverviewError, _load_manifest_package, _read_json, _safe_path, _verify_file
+
+
+class ScriptFormulaOverviewError(ValueError):
+    """Raised when script formula facts cannot be verified safely."""
+
+
+_SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+_TAXONOMY_PATH = Path(__file__).resolve().parents[1] / "config/yuntu-content-formula-taxonomy-v1.json"
+
+
+def _gap(gaps: dict[str, int], code: str) -> None:
+    gaps[code] = gaps.get(code, 0) + 1
+
+
+def _verify_detail_sources(root: Path, summary: dict, records: list[dict]) -> None:
+    artifacts = summary.get("artifacts")
+    if not isinstance(artifacts, dict):
+        raise ScriptFormulaOverviewError("detail source declarations are missing")
+    for record in records:
+        material_id = str(record.get("material_id", ""))
+        source_paths = record.get("source_paths")
+        normalized = source_paths.get("normalized") if isinstance(source_paths, dict) else None
+        expected_path = f"normalized/detail-records/{material_id}.json"
+        if normalized != expected_path:
+            raise ScriptFormulaOverviewError("detail normalized source path is invalid")
+        artifact = artifacts.get(f"detailRecord:{material_id}")
+        if not isinstance(artifact, dict) or artifact.get("path") != expected_path:
+            raise ScriptFormulaOverviewError("detail source declaration is missing")
+        _verify_file(_safe_path(root, expected_path, "detail source path"), artifact, "detail source")
+
+
+def _load_taxonomy() -> dict[str, dict[str, str]]:
+    try:
+        taxonomy = json.loads(_TAXONOMY_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ScriptFormulaOverviewError("formula taxonomy is missing or unreadable") from exc
+    if taxonomy.get("schemaVersion") != 1 or taxonomy.get("version") != "yuntu-content-formula-taxonomy-v1":
+        raise ScriptFormulaOverviewError("formula taxonomy version is invalid")
+    primary, secondary = taxonomy.get("primary"), taxonomy.get("secondary")
+    if not isinstance(primary, dict) or not isinstance(secondary, dict):
+        raise ScriptFormulaOverviewError("formula taxonomy is invalid")
+    return {"primary": primary, "secondary": secondary}
+
+
+def build_script_formula_overview(run_dir: Path) -> dict:
+    root = Path(run_dir).resolve()
+    try:
+        _, summary, package = _load_manifest_package(root, "script")
+        records = _read_json(_safe_path(root, package["path"], "script package path"), "script facts", dict).get("records")
+    except AudienceOverviewError as exc:
+        raise ScriptFormulaOverviewError(str(exc)) from exc
+    expected_count = package.get("record_count")
+    if type(expected_count) is not int or not isinstance(records, list) or len(records) != expected_count:
+        raise ScriptFormulaOverviewError("script record_count does not match facts")
+    package_sources = package.get("source_paths")
+    if not isinstance(package_sources, list) or "normalized/detail-records/" not in package_sources:
+        raise ScriptFormulaOverviewError("script normalized source declaration is missing")
+    declared_ids = package.get("material_ids")
+    actual_ids = [record.get("material_id") for record in records if isinstance(record, dict)]
+    if not isinstance(declared_ids, list) or set(actual_ids) != set(declared_ids) or len(set(actual_ids)) != len(actual_ids):
+        raise ScriptFormulaOverviewError("script material_ids do not match facts")
+    try:
+        _verify_detail_sources(root, summary, records)
+    except AudienceOverviewError as exc:
+        raise ScriptFormulaOverviewError(str(exc)) from exc
+    taxonomy = _load_taxonomy()
+    primary_ids: dict[str, set[str]] = {}
+    secondary_ids: dict[str, dict[str, set[str]]] = {}
+    gaps: dict[str, int] = {}
+    for record in records:
+        material_id = str(record["material_id"])
+        availability = record.get("data_availability", {}).get("content_formula") if isinstance(record.get("data_availability"), dict) else None
+        formula = record.get("content_formula")
+        if not isinstance(availability, dict) or availability.get("available") is not True or not isinstance(formula, dict):
+            _gap(gaps, "formula_source_empty")
+            continue
+        labels = formula.get("labels")
+        if labels == []:
+            _gap(gaps, "formula_source_empty")
+            continue
+        if not isinstance(labels, list):
+            _gap(gaps, "formula_hierarchy_unavailable")
+            continue
+        for item in labels:
+            if not isinstance(item, dict) or type(item.get("level_1_label")) is not int or not isinstance(item.get("level_2_labels"), list):
+                _gap(gaps, "formula_hierarchy_unavailable")
+                continue
+            primary_id = str(item["level_1_label"])
+            primary_label = taxonomy["primary"].get(primary_id)
+            if primary_label is None:
+                _gap(gaps, "formula_taxonomy_unmapped")
+                continue
+            primary_ids.setdefault(primary_label, set()).add(material_id)
+            for secondary_id in item["level_2_labels"]:
+                if type(secondary_id) is not int:
+                    _gap(gaps, "formula_hierarchy_unavailable")
+                    continue
+                secondary_label = taxonomy["secondary"].get(str(secondary_id))
+                if secondary_label is None:
+                    _gap(gaps, "formula_taxonomy_unmapped")
+                    continue
+                secondary_ids.setdefault(primary_label, {}).setdefault(secondary_label, set()).add(material_id)
+    formula_materials = set().union(*primary_ids.values()) if primary_ids else set()
+    primary_total = len(formula_materials)
+    primary_buckets = []
+    for label, materials in sorted(primary_ids.items(), key=lambda pair: (-len(pair[1]), pair[0])):
+        primary_buckets.append({"label": label, "value": len(materials), "share": len(materials) / primary_total if primary_total else 0})
+    secondary_buckets: dict[str, list[dict]] = {}
+    for primary, buckets in secondary_ids.items():
+        total = len(primary_ids[primary])
+        secondary_buckets[primary] = [
+            {"label": label, "value": len(materials), "share": len(materials) / total if total else 0}
+            for label, materials in sorted(buckets.items(), key=lambda pair: (-len(pair[1]), pair[0]))
+        ]
+    return {
+        "schemaVersion": 1,
+        "status": "available",
+        "source": {"path": "facts/script.json", "recordCount": len(records), "taxonomyVersion": "yuntu-content-formula-taxonomy-v1"},
+        "coverage": {"scriptMaterialCount": len(records), "formulaMaterialCount": len(formula_materials)},
+        "primaryBuckets": primary_buckets,
+        "secondaryBucketsByPrimary": secondary_buckets,
+        "gaps": [{"code": code, "count": count} for code, count in sorted(gaps.items())],
+    }

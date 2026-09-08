@@ -179,6 +179,28 @@ class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
 
 
 class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
+    def test_real_overview_contains_audience_and_formula_sections(self):
+        run_dir = ROOT / "runs/food-drink-exposure-20260820-27-top10"
+        model = build_overview_data(run_dir, REGISTRY)
+        html = render_overview_html(model)
+        self.assertEqual(model["scriptFormulaOverview"]["coverage"]["formulaMaterialCount"], 2)
+        self.assertIn('data-section="audience"', html)
+        self.assertIn('data-section="scripts"', html)
+        self.assertIn("renderAudience", html)
+        self.assertIn("renderScriptFormula", html)
+        self.assertIn("secondaryBucketsByPrimary", html)
+        self.assertIn("max-width:1120px", html)
+        self.assertIn(".audience-card", html)
+        self.assertIn(".donut-layout", html)
+        self.assertIn("grid-template-columns:repeat(2,minmax(0,1fr))", html)
+        self.assertIn(".donut-layout .chart-box", html)
+        self.assertIn(".chart-grid > .chart-card .donut-layout { flex:1; }", html)
+        self.assertNotIn("audience-material-count", html)
+        self.assertIn(".script-formula-svg", html)
+        self.assertIn("script-card-header", html)
+        self.assertIn("script-formula-donut", html)
+        self.assertNotIn("fetch(", html)
+
     def test_rendered_html_has_qianchuan_style_dialog_fixed_title_and_page_size(self):
         with tempfile.TemporaryDirectory() as directory:
             model = build_overview_data(self.make_run(directory), REGISTRY)
