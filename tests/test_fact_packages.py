@@ -43,7 +43,9 @@ class FactPackageTests(unittest.TestCase):
         ], ensure_ascii=False), encoding="utf-8")
         detail = {
             "material_id": "101", "date_range": {"type": "LAST_7_DAYS"},
+            "audience_portrait": {"性别": ["女"]},
             "script_text": "", "content_formula": None, "script_segments": [],
+            "creative_breakdown": {"raw": {"hook": "痛点"}, "tags": ["痛点"]},
             "trend_series": [{"trend_name": "点击指数", "series": [{"second": 0, "value": 1}]}],
             "high_points": [], "loss_points": [],
             "data_availability": {
@@ -104,6 +106,8 @@ class FactPackageTests(unittest.TestCase):
             ranking["records"][0]["brand_classification"],
         )
         script = json.loads((self.run_dir / "facts/script.json").read_text())
+        self.assertEqual(script["records"][0]["audience_portrait"], {"性别": ["女"]})
+        self.assertEqual(script["records"][0]["creative_breakdown"]["tags"], ["痛点"])
         self.assertFalse(script["records"][0]["data_availability"]["script_text"]["available"])
         self.assertEqual(
             script["records"][0]["brand_classification"],

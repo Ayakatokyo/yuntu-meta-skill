@@ -8,7 +8,7 @@ metadata:
 
 # 可配置云图采集与商业分析工作流
 
-该技能负责榜单、详情和高光帧资产，并通过同一入口分两阶段运行：首次调用只采集并准备事实资产，停在 `ready_for_analysis`；阶段一明确停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二次调用才进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。
+该技能负责榜单、详情和高光帧资产，并通过同一入口分两阶段运行：首次调用只采集并准备事实资产，停在 `ready_for_analysis`；阶段一明确停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二次调用才进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。新详情采集固定使用 `rpa.conn.juliang.yt.industry.content.rankings.details`、`date_type` 和异步 fetch task/status；历史批次仍可读取旧详情格式，但不作为新批次回退路径。
 
 ## 输入
 
@@ -74,7 +74,7 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 
 ## 产物与恢复
 
-运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
+运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；恢复只轮询已登记任务，临时网络异常保留为可恢复 unresolved。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
 
 `collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 

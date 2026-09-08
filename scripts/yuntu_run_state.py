@@ -74,6 +74,7 @@ def new_collection_summary(contract):
         "parameterFingerprint": parameter_fingerprint(contract_snapshot),
         "collectionContract": contract_snapshot,
         "status": "collecting",
+        "taskRuns": {},
         "stages": {
             "list": {
                 "requestStatus": "pending",

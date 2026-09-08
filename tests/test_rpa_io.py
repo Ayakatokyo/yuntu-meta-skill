@@ -155,6 +155,46 @@ class RpaIoTests(unittest.TestCase):
             [{"material_id": "3"}],
         )
 
+    def test_unpack_gateway_result_accepts_completed_task_files_and_nested_result_content(self):
+        io = load_module()
+        for result in (
+            {
+                "status": "completed",
+                "data": {"files": [{"fileUrl": "https://download.example/details.csv"}]},
+            },
+            {
+                "status": "partial_success",
+                "data": {"result_content": {"files": [{"fileUrl": "https://download.example/details.csv"}]}},
+            },
+        ):
+            with self.subTest(result=result):
+                unpacked = io.unpack_gateway_result(result)
+                self.assertEqual(unpacked.kind, "files")
+                self.assertEqual(unpacked.file_url, "https://download.example/details.csv")
+
+    def test_unpack_gateway_result_rejects_unfinished_task_and_accepts_completed_records(self):
+        io = load_module()
+        with self.assertRaisesRegex(io.RpaIoError, "complete"):
+            io.unpack_gateway_result({"status": "running", "data": {"records": []}})
+        self.assertEqual(
+            io.unpack_gateway_result(
+                {"status": "completed", "data": {"records": [{"materialId": "101"}]}}
+            ).records,
+            [{"materialId": "101"}],
+        )
+        self.assertEqual(
+            io.unpack_gateway_result(
+                {"status": "completed", "payload": {"materialId": "102"}}
+            ).records,
+            [{"materialId": "102"}],
+        )
+        self.assertEqual(
+            io.unpack_gateway_result(
+                {"status": "completed", "data": {"payload": [{"materialId": "103"}]}}
+            ).records,
+            [{"materialId": "103"}],
+        )
+
     def test_download_file_atomically_and_reject_empty_file(self):
         io = load_module()
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -262,7 +302,8 @@ class RpaIoTests(unittest.TestCase):
 
             records = io.parse_csv_records(source)
 
-            self.assertEqual(records[0]["object_index"], "{'ctr': invalid}")
+        self.assertEqual(records[0]["object_index"], "{'ctr': invalid}")
+        self.assertEqual(records[0]["__parse_failed_fields__"], ["object_index"])
 
     def test_parse_csv_records_rejects_bad_headers_and_empty_files(self):
         io = load_module()

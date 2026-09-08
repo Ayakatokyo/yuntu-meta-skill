@@ -47,11 +47,18 @@ class ConfigSpecTests(unittest.TestCase):
         resolved = resolve_query_spec(query())
         self.assertEqual(resolved["collection"], {"target_top_n": 10, "candidate_top_n": 1000})
         self.assertEqual(query_to_rpa_params(resolved)["ranking_limit_type"], "CTR_TOP1000")
-        self.assertEqual(detail_to_rpa_params(resolved), {"date_range_type": "LAST_7_DAYS"})
+        self.assertEqual(detail_to_rpa_params(resolved), {"date_type": "LAST_7_DAYS"})
         with self.assertRaisesRegex(ConfigSpecError, "must be 1000"):
             resolve_query_spec(query(collection={"target_top_n": 2, "candidate_top_n": 4}))
         with self.assertRaisesRegex(ConfigSpecError, "cannot exceed 1000"):
             resolve_query_spec(query(collection={"target_top_n": 1001}))
+
+    def test_detail_parameters_use_new_connector_date_type(self):
+        resolved = resolve_query_spec(query(period={"type": "CUSTOM", "start_date": "20260801", "end_date": "20260805"}))
+        self.assertEqual(
+            detail_to_rpa_params(resolved),
+            {"date_type": "CUSTOM", "custom_start_date": "20260801", "custom_end_date": "20260805"},
+        )
 
     def test_query_rejects_unknown_fields_and_invalid_brand_scope(self):
         with self.assertRaisesRegex(ConfigSpecError, "unknown QuerySpec fields"):

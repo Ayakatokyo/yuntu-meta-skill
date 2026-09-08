@@ -1,6 +1,7 @@
 """Batch fetch orchestration for Yuntu rankings analysis."""
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from datetime import datetime
 import json
 from pathlib import Path
 import time
@@ -74,15 +75,35 @@ SELECTION_GROUP_FIELDS = {
 
 
 class ConnectorInvoker:
-    def __init__(self, invoke_list, invoke_detail):
+    def __init__(self, invoke_list, invoke_detail, *, submit_detail=None, wait_detail=None):
         self._invoke_list = invoke_list
         self._invoke_detail = invoke_detail
+        self._submit_detail = submit_detail
+        self._wait_detail = wait_detail
 
     def invoke_list(self, shop_id, list_params):
         return self._invoke_list(shop_id, list_params)
 
     def invoke_detail(self, shop_id, detail_params):
         return self._invoke_detail(shop_id, detail_params)
+
+    @property
+    def supports_detail_task_recovery(self):
+        return callable(self._submit_detail) and callable(self._wait_detail)
+
+    def submit_detail(self, shop_id, detail_params):
+        if not self.supports_detail_task_recovery:
+            raise YuntuBatchError("detail task submission recovery is unavailable")
+        return self._submit_detail(shop_id, detail_params)
+
+    def wait_detail(self, task_group_id):
+        if not self.supports_detail_task_recovery:
+            raise YuntuBatchError("detail task status recovery is unavailable")
+        return self._wait_detail(task_group_id)
+
+
+def _supports_detail_task_recovery(invoker):
+    return bool(getattr(invoker, "supports_detail_task_recovery", False))
 
 
 class FileDownloader:
@@ -208,7 +229,7 @@ def _new_manifest(
     summary,
 ):
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "runId": summary["runId"],
         "parameterFingerprint": summary["parameterFingerprint"],
         "collectionContract": summary["collectionContract"],
@@ -222,6 +243,7 @@ def _new_manifest(
         "matchedMaterialCount": 0,
         "candidateMaterials": [],
         "selectionGroups": [],
+        "taskRuns": {},
         "submittedMaterials": [],
         "selectedMaterials": [],
         "rejectedMaterials": [],
@@ -270,7 +292,7 @@ def _open_or_new_manifest(
         )
     manifest.update(
         {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "runId": summary["runId"],
             "parameterFingerprint": summary["parameterFingerprint"],
             "collectionContract": summary["collectionContract"],
@@ -281,6 +303,7 @@ def _open_or_new_manifest(
     for key in (
         "candidateMaterials",
         "selectionGroups",
+        "taskRuns",
         "submittedMaterials",
         "selectedMaterials",
         "rejectedMaterials",
@@ -289,6 +312,8 @@ def _open_or_new_manifest(
     ):
         manifest.setdefault(key, [])
     manifest.setdefault("timingsSec", {})
+    if not isinstance(manifest.get("taskRuns"), dict):
+        manifest["taskRuns"] = {}
     return manifest
 
 
@@ -338,6 +363,7 @@ def _restore_persisted_details(root, manifest, candidates):
 
 def _mark_unresolved_submissions(manifest, candidates):
     """Keep interrupted detail requests visible without silently retrying them."""
+    _sync_task_run_field_aliases(manifest)
     candidate_by_id = {item["material_id"]: item for item in candidates}
     terminal_ids = _selected_ids(manifest)
     for key in ("rejectedMaterials", "cancelledMaterials", "unresolvedMaterials"):
@@ -354,6 +380,13 @@ def _mark_unresolved_submissions(manifest, candidates):
         item = candidate_by_id.get(material_id)
         if item is None or material_id in terminal_ids:
             continue
+        task_run = manifest.get("taskRuns", {}).get(f"detail:{material_id}")
+        attempts = task_run.get("attempts", []) if isinstance(task_run, dict) else []
+        active = attempts[-1] if attempts and isinstance(attempts[-1], dict) else {}
+        if active.get("task_group_id") and active.get("remote_status") in {
+            "submitted", "pending", "running"
+        }:
+            continue
         unresolved.append(
             {
                 **_manifest_material(item),
@@ -362,6 +395,181 @@ def _mark_unresolved_submissions(manifest, candidates):
         )
         terminal_ids.add(material_id)
     manifest["unresolvedMaterials"] = unresolved
+
+
+def _now_iso():
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _task_run(manifest, item, detail_date_params):
+    material_id = item["material_id"]
+    task_runs = manifest.setdefault("taskRuns", {})
+    return task_runs.setdefault(
+        f"detail:{material_id}",
+        {
+            "material_id": material_id,
+            "selection_group": item.get("selectionGroup", {}),
+            "operation": "detail",
+            "function_code": "rpa.conn.juliang.yt.industry.content.rankings.details",
+            "functionCode": "rpa.conn.juliang.yt.industry.content.rankings.details",
+            "business_params": {"material_id": material_id, **detail_date_params},
+            "businessParams": {"material_id": material_id, **detail_date_params},
+            "task_group_id": None,
+            "taskGroupId": None,
+            "status": "pending",
+            "attempted_at": None,
+            "attemptedAt": None,
+            "error_class": None,
+            "errorClass": None,
+            "attempts": [],
+        },
+    )
+
+
+def _sync_task_run_field_aliases(manifest):
+    """Keep the durable ledger readable by both old and new consumers."""
+    task_runs = manifest.get("taskRuns")
+    if not isinstance(task_runs, dict):
+        return
+    field_pairs = (
+        ("function_code", "functionCode"),
+        ("business_params", "businessParams"),
+        ("task_group_id", "taskGroupId"),
+        ("attempted_at", "attemptedAt"),
+        ("error_class", "errorClass"),
+    )
+    attempt_pairs = (
+        ("task_group_id", "taskGroupId"),
+        ("request_status", "requestStatus"),
+        ("remote_status", "remoteStatus"),
+        ("artifact_status", "artifactStatus"),
+        ("submitted_at", "submittedAt"),
+        ("last_observed_at", "lastObservedAt"),
+        ("error_class", "errorClass"),
+        ("artifact_paths", "artifactPaths"),
+    )
+    for task_run in task_runs.values():
+        if not isinstance(task_run, dict):
+            continue
+        for snake, camel in field_pairs:
+            if snake in task_run:
+                task_run[camel] = task_run[snake]
+            elif camel in task_run:
+                task_run[snake] = task_run[camel]
+        for attempt in task_run.get("attempts", []):
+            if not isinstance(attempt, dict):
+                continue
+            for snake, camel in attempt_pairs:
+                if snake in attempt:
+                    attempt[camel] = attempt[snake]
+                elif camel in attempt:
+                    attempt[snake] = attempt[camel]
+
+
+def _active_detail_task_attempt(manifest, material_id):
+    task_run = manifest.get("taskRuns", {}).get(f"detail:{material_id}")
+    attempts = task_run.get("attempts", []) if isinstance(task_run, dict) else []
+    if not attempts or not isinstance(attempts[-1], dict):
+        return None
+    attempt = attempts[-1]
+    task_group_id = attempt.get("task_group_id") or attempt.get("taskGroupId")
+    remote_status = attempt.get("remote_status") or attempt.get("remoteStatus")
+    if task_group_id and remote_status in {
+        "submitted", "pending", "running"
+    }:
+        attempt.setdefault("task_group_id", task_group_id)
+        attempt.setdefault("taskGroupId", task_group_id)
+        attempt.setdefault("remote_status", remote_status)
+        attempt.setdefault("remoteStatus", remote_status)
+        return attempt
+    return None
+
+
+def _new_detail_attempt(manifest, item, detail_date_params):
+    task_run = _task_run(manifest, item, detail_date_params)
+    now = _now_iso()
+    attempt = {
+        "attempt": len(task_run["attempts"]) + 1,
+        "task_group_id": None,
+        "taskGroupId": None,
+        "request_status": "submitting",
+        "requestStatus": "submitting",
+        "remote_status": "submitted",
+        "remoteStatus": "submitted",
+        "artifact_status": "pending",
+        "artifactStatus": "pending",
+        "submitted_at": now,
+        "submittedAt": now,
+        "last_observed_at": now,
+        "lastObservedAt": now,
+        "errors": [],
+        "error_class": None,
+        "errorClass": None,
+        "artifact_paths": [],
+        "artifactPaths": [],
+    }
+    task_run["attempts"].append(attempt)
+    task_run.update({
+        "task_group_id": None,
+        "taskGroupId": None,
+        "status": "submitting",
+        "attempted_at": now,
+        "attemptedAt": now,
+        "error_class": None,
+        "errorClass": None,
+    })
+    return attempt
+
+
+def _wait_detail_task_result(*, item, task_group_id, invoker):
+    started = time.monotonic()
+    try:
+        return {
+            "item": item,
+            "result": invoker.wait_detail(task_group_id),
+            "started": started,
+            "task_group_id": task_group_id,
+            "error": None,
+        }
+    except Exception as exc:
+        return {
+            "item": item,
+            "result": None,
+            "started": started,
+            "task_group_id": task_group_id,
+            "error": exc,
+        }
+
+
+def _detail_wait_error_class(error):
+    """Classify polling failures without treating protocol drift as transient."""
+    message = str(error).casefold()
+    if "rpa task failed" in message:
+        return "remote_failed"
+    if "unknown status" in message:
+        return "protocol"
+    if "poll timeout" in message:
+        return "poll_timeout"
+    return "poll_timeout"
+
+
+def _detail_artifact_error_class(error):
+    """Map local materialization failures to the persisted task error contract."""
+    message = str(error).casefold()
+    if "normalize" in error.__class__.__name__.casefold():
+        return "normalize"
+    if "download" in message or "file" in message and "url" in message:
+        return "download"
+    if any(token in message for token in ("parse", "payload", "records", "csv")):
+        return "parse"
+    return "protocol"
+
+
+def _remove_material_from_bucket(manifest, bucket, material_id):
+    manifest[bucket] = [
+        item for item in manifest.get(bucket, [])
+        if not isinstance(item, dict) or item.get("material_id") != material_id
+    ]
 
 
 def _has_existing_collection_artifacts(root):
@@ -592,6 +800,8 @@ def _finalize_details(
     )
     _sync_postprocess_counts(summary, manifest)
     _sync_stage_counts(summary, manifest, root)
+    _sync_task_run_field_aliases(manifest)
+    summary["taskRuns"] = manifest.get("taskRuns", {})
     write_json_atomically(manifest, manifest_path)
     _save_summary(root, summary)
     if not succeeded:
@@ -615,7 +825,10 @@ def _invoke_detail_result(*, item, shop_id, detail_date_params, invoker):
         return {"item": item, "result": None, "started": started, "error": exc}
 
 
-def _persist_detail(*, root, summary, item, gateway_result, downloader, detail_fetch_sec):
+def _persist_detail(
+    *, root, summary, item, gateway_result, downloader, detail_fetch_sec,
+    expected_context=None,
+):
     """Normalize a successful detail response and build its durable manifest entry."""
     material_id = item["material_id"]
     raw_detail, detail_source = _materialize_records(
@@ -629,6 +842,7 @@ def _persist_detail(*, root, summary, item, gateway_result, downloader, detail_f
         material_id=material_id,
         source_path=_relative(root, detail_source),
         expected_selection_group=_expected_selection_group(item),
+        expected_context=expected_context,
     )
     detail_output = root / "normalized" / "detail-records" / f"{material_id}.json"
     write_json_atomically(detail_record, detail_output)
@@ -963,16 +1177,25 @@ def fetch_batch(
         for item in manifest["unresolvedMaterials"]
         if isinstance(item, dict) and isinstance(item.get("material_id"), str)
     }
+    async_details = _supports_detail_task_recovery(invoker)
+    active_task_ids = {
+        item["material_id"]
+        for item in candidates
+        if _active_detail_task_attempt(manifest, item["material_id"])
+    }
+    unresolved_ids.update(active_task_ids)
     frames_by_material = load_highlights_manifest(root) if highlight_spec is not None else {}
     pending_details = {}
     pending_highlights = {}
     next_index = 0
 
     def checkpoint():
+        _sync_task_run_field_aliases(manifest)
         if highlight_spec is not None:
             write_highlights_manifest(root, frames_by_material, configuration_fingerprint)
         _sync_postprocess_counts(summary, manifest)
         _sync_stage_counts(summary, manifest, root)
+        summary["taskRuns"] = manifest.get("taskRuns", {})
         write_json_atomically(manifest, manifest_path)
         _save_summary(root, summary)
 
@@ -998,6 +1221,22 @@ def fetch_batch(
     with ThreadPoolExecutor(max_workers=DETAIL_WAVE_CONCURRENCY) as detail_executor, ThreadPoolExecutor(
         max_workers=HIGHLIGHT_CONCURRENCY
     ) as highlight_executor:
+        if async_details:
+            # Recovery is deliberately driven only by taskRuns. The persisted
+            # task id is the authority; submittedMaterials alone is not enough
+            # to justify another remote submission.
+            for item in candidates:
+                attempt = _active_detail_task_attempt(manifest, item["material_id"])
+                if attempt is None:
+                    continue
+                future = detail_executor.submit(
+                    _wait_detail_task_result,
+                    item=item,
+                    task_group_id=attempt["task_group_id"],
+                    invoker=invoker,
+                )
+                pending_details[future] = item["material_id"]
+
         missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else []
         missing_highlight_ids = {
             detail["material_id"] for detail in missing_details
@@ -1023,13 +1262,77 @@ def fetch_batch(
                     break
                 for item in wave:
                     manifest["submittedMaterials"].append(_manifest_material(item))
-                    future = detail_executor.submit(
-                        _invoke_detail_result,
-                        item=item,
-                        shop_id=shop_id,
-                        detail_date_params=detail_date_params,
-                        invoker=invoker,
-                    )
+                    if async_details:
+                        # Record the attempt before submitting so that a
+                        # checkpoint exists even if submission itself fails.
+                        attempt = _new_detail_attempt(
+                            manifest, item, detail_date_params
+                        )
+                        checkpoint()
+                        try:
+                            task_group_id = invoker.submit_detail(
+                                shop_id, _detail_request(item, detail_date_params)
+                            )
+                        except Exception as exc:
+                            task_run = _task_run(manifest, item, detail_date_params)
+                            attempt.update({
+                                "request_status": "unresolved",
+                                "last_observed_at": _now_iso(),
+                                "error_class": "transport",
+                                "errors": [str(exc)],
+                            })
+                            task_run.update({"status": "unresolved", "error_class": "transport"})
+                            unresolved_ids.add(item["material_id"])
+                            manifest["unresolvedMaterials"].append({
+                                **_manifest_material(item),
+                                "reason": "submit_unconfirmed",
+                                "error": str(exc),
+                                "error_class": "transport",
+                            })
+                            continue
+                        if not isinstance(task_group_id, str) or not task_group_id.strip():
+                            error_text = "detail task submission returned an empty task_group_id"
+                            attempt.update({
+                                "request_status": "unresolved",
+                                "last_observed_at": _now_iso(),
+                                "error_class": "protocol",
+                                "errors": [error_text],
+                            })
+                            _task_run(manifest, item, detail_date_params).update({
+                                "status": "unresolved", "error_class": "protocol"
+                            })
+                            unresolved_ids.add(item["material_id"])
+                            manifest["unresolvedMaterials"].append({
+                                **_manifest_material(item),
+                                "reason": "submit_unconfirmed",
+                                "error": error_text,
+                                "error_class": "protocol",
+                            })
+                            continue
+                        attempt.update({
+                            "task_group_id": task_group_id.strip(),
+                            "request_status": "submitted",
+                            "last_observed_at": _now_iso(),
+                        })
+                        _task_run(manifest, item, detail_date_params).update({
+                            "task_group_id": task_group_id.strip(),
+                            "status": "submitted",
+                        })
+                        checkpoint()
+                        future = detail_executor.submit(
+                            _wait_detail_task_result,
+                            item=item,
+                            task_group_id=task_group_id.strip(),
+                            invoker=invoker,
+                        )
+                    else:
+                        future = detail_executor.submit(
+                            _invoke_detail_result,
+                            item=item,
+                            shop_id=shop_id,
+                            detail_date_params=detail_date_params,
+                            invoker=invoker,
+                        )
                     pending_details[future] = item["material_id"]
                 checkpoint()
 
@@ -1043,9 +1346,60 @@ def fetch_batch(
                     pending_details.pop(future)
                     item = result["item"]
                     material_id = item["material_id"]
+                    task_attempt = _active_detail_task_attempt(manifest, material_id)
                     try:
                         if result["error"] is not None:
+                            if task_attempt is not None:
+                                error_text = str(result["error"])
+                                error_class = _detail_wait_error_class(result["error"])
+                                if error_class not in {"remote_failed", "protocol"}:
+                                    task_attempt.update({
+                                        "request_status": "unresolved",
+                                        "remote_status": task_attempt.get("remote_status", "submitted"),
+                                        "last_observed_at": _now_iso(),
+                                        "error_class": error_class,
+                                        "errors": task_attempt.get("errors", []) + [error_text],
+                                    })
+                                    _task_run(manifest, item, detail_date_params).update({
+                                        "status": "unresolved",
+                                        "error_class": error_class,
+                                    })
+                                    unresolved_ids.add(material_id)
+                                    if not any(
+                                        entry.get("material_id") == material_id
+                                        for entry in manifest["unresolvedMaterials"]
+                                        if isinstance(entry, dict)
+                                    ):
+                                        manifest["unresolvedMaterials"].append({
+                                            **_manifest_material(item),
+                                            "reason": "poll_unconfirmed",
+                                            "error": error_text,
+                                            "error_class": error_class,
+                                        })
+                                    continue
                             raise result["error"]
+                        if task_attempt is not None:
+                            terminal_status = str(
+                                result["result"].get("status") or ""
+                            ).casefold()
+                            if terminal_status == "failed":
+                                raise YuntuBatchError(
+                                    f"RPA task failed: {material_id}"
+                                )
+                            if terminal_status not in {"completed", "partial_success"}:
+                                raise YuntuBatchError(
+                                    f"RPA task returned unknown status {terminal_status!r}: {material_id}"
+                                )
+                            task_run = _task_run(manifest, item, detail_date_params)
+                            task_attempt.update({
+                                "request_status": "completed",
+                                "remote_status": result["result"].get("status", "completed"),
+                                "last_observed_at": _now_iso(),
+                            })
+                            _task_run(manifest, item, detail_date_params).update({
+                                "status": "completed",
+                                "error_class": None,
+                            })
                         detail_record, selected_entry = _persist_detail(
                             root=root,
                             summary=summary,
@@ -1053,14 +1407,45 @@ def fetch_batch(
                             gateway_result=result["result"],
                             downloader=downloader,
                             detail_fetch_sec=_elapsed(result["started"]),
+                            expected_context=detail_date_params,
                         )
+                        if task_attempt is not None:
+                            task_run = _task_run(manifest, item, detail_date_params)
+                            task_attempt.update({
+                                "artifact_status": "normalized",
+                                "artifact_paths": [
+                                    selected_entry["rawDetailPath"],
+                                    selected_entry["detailRecordPath"],
+                                ],
+                                "last_observed_at": _now_iso(),
+                            })
+                            task_run["status"] = "persisted"
                         selected_entry["postprocessStatus"] = "pending" if highlight_spec is not None else "not_requested"
                         manifest["selectedMaterials"].append(selected_entry)
                         selected_ids.add(material_id)
+                        _remove_material_from_bucket(manifest, "unresolvedMaterials", material_id)
+                        unresolved_ids.discard(material_id)
                         if highlight_spec is not None:
                             submit_highlight(highlight_executor, detail_record)
                     except Exception as exc:
                         rejected_ids.add(material_id)
+                        if task_attempt is not None:
+                            error_text = str(exc)
+                            task_run = _task_run(manifest, item, detail_date_params)
+                            task_attempt.update({
+                                "request_status": "failed",
+                                "artifact_status": "failed",
+                                "last_observed_at": _now_iso(),
+                                "error_class": (
+                                    "remote_failed" if "RPA task failed" in error_text
+                                    else _detail_artifact_error_class(exc)
+                                ),
+                                "errors": task_attempt.get("errors", []) + [error_text],
+                            })
+                            task_run.update({
+                                "status": "failed",
+                                "error_class": task_attempt["error_class"],
+                            })
                         manifest["rejectedMaterials"].append(
                             {
                                 **_manifest_material(item),
@@ -1127,6 +1512,7 @@ def collection_status(*, output_dir):
         "runId": summary.get("runId") or manifest.get("runId"),
         "parameterFingerprint": summary.get("parameterFingerprint"),
         "collectionContract": summary.get("collectionContract"),
+        "taskRuns": manifest.get("taskRuns", {}),
         "stages": {
             "list": {
                 "requestStatus": list_stage.get("requestStatus", "unknown"),
@@ -1140,6 +1526,7 @@ def collection_status(*, output_dir):
                 "fullListCount": manifest.get("fullListCount", 0),
                 "matchedMaterialCount": manifest.get("matchedMaterialCount", 0),
                 "submittedCount": len(manifest.get("submittedMaterials", [])),
+                "taskRunCount": len(manifest.get("taskRuns", {})),
                 "persistedRecordCount": persisted_details,
                 "selectedCount": len(manifest.get("selectedMaterials", [])),
                 "rejectedCount": len(manifest.get("rejectedMaterials", [])),
@@ -1193,6 +1580,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             "output directory belongs to a different collection contract; choose a new output directory"
         )
     manifest = _load_json(manifest_path)
+    _sync_task_run_field_aliases(manifest)
     detail_date_params = contract["detailDateRange"]
     if manifest.get("detailDateRange") != detail_date_params:
         raise YuntuBatchError("batch manifest detailDateRange does not match collection contract")
@@ -1215,23 +1603,82 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
             still_retry_items.append(item)
             continue
         detail_started = time.monotonic()
+        task_attempt = _active_detail_task_attempt(manifest, material_id)
         try:
+            if _supports_detail_task_recovery(invoker):
+                task_run = _task_run(manifest, item, detail_date_params)
+                if task_attempt is None:
+                    task_attempt = _new_detail_attempt(
+                        manifest, item, detail_date_params
+                    )
+                    write_json_atomically(manifest, manifest_path)
+                    task_group_id = invoker.submit_detail(
+                        shop_id, _detail_request(item, detail_date_params)
+                    )
+                    if not isinstance(task_group_id, str) or not task_group_id.strip():
+                        raise YuntuBatchError("detail task submission returned an empty task_group_id")
+                    task_attempt.update({
+                        "task_group_id": task_group_id.strip(),
+                        "request_status": "submitted",
+                        "last_observed_at": _now_iso(),
+                    })
+                    task_run.update({
+                        "task_group_id": task_group_id.strip(),
+                        "status": "submitted",
+                    })
+                    _sync_task_run_field_aliases(manifest)
+                    write_json_atomically(manifest, manifest_path)
+                gateway_result = invoker.wait_detail(task_attempt["task_group_id"])
+                task_attempt.update({
+                    "request_status": "completed",
+                    "remote_status": gateway_result.get("status", "completed"),
+                    "last_observed_at": _now_iso(),
+                })
+                task_run["status"] = "completed"
+            else:
+                gateway_result = invoker.invoke_detail(
+                    shop_id, _detail_request(item, detail_date_params)
+                )
             detail_record, selected_entry = _persist_detail(
                 root=root,
                 summary=summary,
                 item=item,
-                gateway_result=invoker.invoke_detail(
-                    shop_id, _detail_request(item, detail_date_params)
-                ),
+                gateway_result=gateway_result,
                 downloader=downloader,
                 detail_fetch_sec=_elapsed(detail_started),
+                expected_context=detail_date_params,
             )
+            if task_attempt is not None:
+                task_attempt.update({
+                    "artifact_status": "normalized",
+                    "artifact_paths": [
+                        selected_entry["rawDetailPath"],
+                        selected_entry["detailRecordPath"],
+                    ],
+                    "last_observed_at": _now_iso(),
+                })
+                task_run["status"] = "persisted"
             if material_id not in selected_ids:
                 selected_entry["postprocessStatus"] = "pending"
                 manifest.setdefault("selectedMaterials", []).append(selected_entry)
                 selected_ids.add(material_id)
                 recovered_details.append(detail_record)
         except Exception as exc:
+            if task_attempt is not None:
+                error_text = str(exc)
+                remote_failed = "RPA task failed" in error_text
+                task_attempt.update({
+                    "request_status": "failed" if remote_failed else "unresolved",
+                    "remote_status": "failed" if remote_failed else task_attempt.get("remote_status", "submitted"),
+                    "artifact_status": "failed" if remote_failed else "pending",
+                    "last_observed_at": _now_iso(),
+                    "error_class": "remote_failed" if remote_failed else "poll_timeout",
+                    "errors": task_attempt.get("errors", []) + [error_text],
+                })
+                task_run.update({
+                    "status": "failed" if remote_failed else "unresolved",
+                    "error_class": "remote_failed" if remote_failed else "poll_timeout",
+                })
             retry_count = int(item.get("retryCount", 0)) + 1
             updated = dict(item)
             updated["reason"] = exc.__class__.__name__
@@ -1261,6 +1708,7 @@ def _retry_batch_items(*, shop_id, output_dir, invoker, item_key, downloader=Non
         manifest.get("selectedMaterials", []), key=lambda item: item.get("rank", 0)
     )
     manifest[item_key] = still_retry_items
+    _sync_task_run_field_aliases(manifest)
     return _finalize_details(
         root,
         manifest,

@@ -252,6 +252,64 @@ class YuntuNormalizerTests(unittest.TestCase):
         )
         self.assertTrue(record["data_availability"]["script_segments"]["available"])
 
+    def test_normalize_new_nested_detail_maps_fields_and_five_trend_aliases(self):
+        normalizer = load_module()
+        record = normalizer.normalize_detail_records(
+            {
+                "coreData": {
+                    "objectId": "101",
+                    "dateType": "LAST_7_DAYS",
+                    "title": "嵌套素材",
+                    "videoDuration": 12,
+                    "ctr": "0.4",
+                },
+                "audiencePortrait": {"年龄": ["31-35"], "性别": ["女"]},
+                "secondTrend": {
+                    key: {"tendList": [{"x": 0, "y": index + 1}]}
+                    for index, key in enumerate(("likeIndex", "lossIndex", "clickIndex", "interactIndex", "commentIndex"))
+                },
+                "contentFormula": {
+                    "本视频内容公式": {"labels": ["痛点"]},
+                    "视频标题": {"text": "标题钩子"},
+                    "视频画面": {"detail": {"scene": "厨房"}},
+                    "视频脚本": {"text": "前三秒提出问题"},
+                },
+                "creativeBreakdown": {"hook": "痛点、提问"},
+                "videoScript": {
+                    "segments": [{"startMs": 0, "endMs": 3000, "text": "你是否也有困扰？"}],
+                },
+            },
+            material_id="101",
+            source_path="raw-csv/details/101.csv",
+            expected_context={"date_type": "LAST_7_DAYS"},
+        )
+        self.assertEqual(record["source_schema"], "new_nested_detail")
+        self.assertEqual(record["title"], "嵌套素材")
+        self.assertEqual(record["audience_portrait"]["性别"], ["女"])
+        self.assertEqual(record["script_text"], "前三秒提出问题")
+        self.assertEqual(record["script_segments"][0]["start_ms"], 0)
+        self.assertEqual(
+            [item["trend_name"] for item in record["trend_series"]],
+            ["点赞指数", "流失指数", "点击指数", "互动指数", "评论指数"],
+        )
+        self.assertEqual(record["content_formula"]["sources"]["visual"]["detail"]["scene"], "厨房")
+        self.assertIn("痛点", record["creative_breakdown"]["tags"])
+        self.assertEqual(record["period_verification"]["mode"], "relative_type_only")
+
+    def test_normalize_detail_rejects_nested_id_conflict_and_period_mismatch(self):
+        normalizer = load_module()
+        with self.assertRaisesRegex(normalizer.YuntuNormalizeError, "conflicts"):
+            normalizer.normalize_detail_records(
+                {"materialId": "101", "coreData": {"objectId": "202", "dateType": "LAST_7_DAYS"}},
+                material_id="101", source_path="details/101.csv",
+            )
+        with self.assertRaisesRegex(normalizer.YuntuNormalizeError, "period"):
+            normalizer.normalize_detail_records(
+                {"coreData": {"objectId": "101", "dateType": "LAST_30_DAYS"}},
+                material_id="101", source_path="details/101.csv",
+                expected_context={"date_type": "LAST_7_DAYS"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
