@@ -19,9 +19,19 @@ except ImportError:
 try:
     from audience_overview import AudienceOverviewError, build_audience_overview
     from script_formula_overview import ScriptFormulaOverviewError, build_script_formula_overview
+    from highlight_overview import (
+        HighlightOverviewError,
+        build_highlight_overview,
+        copy_verified_highlight_assets,
+    )
 except ImportError:
     from .audience_overview import AudienceOverviewError, build_audience_overview
     from .script_formula_overview import ScriptFormulaOverviewError, build_script_formula_overview
+    from .highlight_overview import (
+        HighlightOverviewError,
+        build_highlight_overview,
+        copy_verified_highlight_assets,
+    )
 
 
 SCHEMA_VERSION = 1
@@ -332,6 +342,16 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
         script_formula_overview = build_script_formula_overview(run_root)
     except ScriptFormulaOverviewError:
         script_formula_overview = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "script_formula_overview_unavailable"}]}
+    try:
+        highlight_overview = build_highlight_overview(run_root)
+    except HighlightOverviewError:
+        highlight_overview = {
+            "schemaVersion": 1,
+            "status": "unavailable",
+            "source": {"materialCount": 0, "verifiedFrameCount": 0},
+            "cards": [],
+            "gaps": [{"code": "highlight_overview_unavailable"}],
+        }
     return {
         "schemaVersion": SCHEMA_VERSION,
         "kind": OVERVIEW_KIND,
@@ -347,6 +367,7 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
         "rows": rows,
         "audienceOverview": audience_overview,
         "scriptFormulaOverview": script_formula_overview,
+        "highlightOverview": highlight_overview,
     }
 
 
@@ -438,6 +459,27 @@ button:disabled { cursor:default; opacity:.45; }
 .script-formula-segment.active { filter:brightness(.9); stroke-width:3; }
 .chart-tooltip { position:fixed; z-index:30; max-width:280px; padding:10px 12px; pointer-events:none; background:#172033; color:#fff; border-radius:8px; box-shadow:0 8px 24px rgba(15,23,42,.2); font-size:12px; line-height:1.65; }
 .chart-tooltip[hidden] { display:none; }
+.highlight-section { display:grid; gap:16px; }
+.highlight-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:14px; }
+.highlight-card { min-width:0; overflow:hidden; padding:12px; background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:0 8px 24px rgba(34,64,112,.05); }
+.highlight-thumb { display:block; width:100%; aspect-ratio:9 / 16; min-height:0; padding:0; overflow:hidden; border:0; border-radius:8px; background:#e9eef6; }
+.highlight-thumb img { display:block; width:100%; height:100%; object-fit:contain; }
+.highlight-thumb:focus-visible { outline:3px solid rgba(37,99,235,.35); outline-offset:2px; }
+.highlight-conditions,.highlight-values { display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; text-align:center; }
+.highlight-conditions { gap:2px; min-height:18px; margin:8px 0 4px; }
+.highlight-values { gap:2px; min-height:18px; margin:0 0 10px; }
+.highlight-condition,.highlight-value { display:block; width:100%; min-width:0; overflow:hidden; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
+.highlight-condition { color:var(--text); font-size:12px; font-weight:600; line-height:1.35; }
+.highlight-value { color:var(--muted); font-size:12px; line-height:1.35; }
+.highlight-material { display:block; width:100%; min-width:0; padding:4px 0; color:#1d4ed8; cursor:pointer; font-size:12px; line-height:1.4; text-align:center; text-decoration:underline; text-decoration-thickness:1px; text-underline-offset:2px; white-space:normal; overflow-wrap:anywhere; word-break:break-word; }
+.highlight-material:focus-visible { outline:3px solid rgba(37,99,235,.24); outline-offset:2px; border-radius:4px; }
+.highlight-modal[hidden] { display:none; }
+.highlight-modal { position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:24px; }
+.highlight-modal-backdrop { position:absolute; inset:0; background:rgba(15,23,42,.72); }
+.highlight-modal-panel { position:relative; display:flex; flex-direction:column; align-items:center; width:min(960px,100%); max-height:calc(100vh - 48px); padding:18px; border-radius:16px; background:var(--surface); box-shadow:0 24px 70px rgba(15,23,42,.35); }
+.highlight-modal-close { align-self:flex-end; min-width:36px; min-height:36px; padding:0; border:0; border-radius:50%; color:var(--muted); font-size:24px; }
+.highlight-modal-image { display:block; max-width:100%; max-height:calc(100vh - 150px); object-fit:contain; border-radius:10px; background:#0f172a; }
+.highlight-modal-caption { margin:12px 0 0; color:var(--muted); font-size:13px; text-align:center; }
 .table-wrap { overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 24px rgba(34,64,112,.05); }
 table { width:100%; min-width:980px; border-collapse:separate; border-spacing:0; }
 th,td { padding:14px 16px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; vertical-align:middle; }
@@ -491,13 +533,14 @@ body.modal-open { overflow:hidden; }
 .field-modal-footer-actions { display:flex; gap:8px; }
 .field-modal-footer .primary { border-color:var(--accent); background:var(--accent); color:#fff; }
 @media (max-width:900px) { .field-modal-body { grid-template-columns:160px minmax(0,1fr); } .field-modal-selected { grid-column:2; max-height:190px; border-top:1px solid var(--line); } }
-@media (max-width:700px) { body { padding:18px 12px; } h1 { font-size:24px; } input[type=search] { min-width:0; } .field-modal { padding:10px; } .field-modal-panel { height:calc(100vh - 20px); } .field-modal-body { display:flex; flex-direction:column; } .field-modal-groups { display:flex; gap:6px; padding:10px; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line); } .field-modal-groups button { flex:0 0 auto; width:auto; margin:0; white-space:nowrap; } .field-modal-selected { max-height:190px; border-top:1px solid var(--line); border-left:0; } .field-option-grid { grid-template-columns:1fr; } .field-modal-footer { align-items:flex-end; flex-direction:column; } .field-modal-footer-actions { width:100%; } .field-modal-footer-actions button { flex:1; } .field-modal-footer p { align-self:flex-start; } .material-name-column { min-width:300px; width:300px; } .chart-grid,.donut-layout,.script-formula-donut { grid-template-columns:1fr; } .donut-layout svg,.script-formula-donut svg { margin:0 auto; } .section-nav { overflow:auto; } .section-nav button { flex:0 0 auto; } }
+@media (max-width:900px) { .highlight-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:700px) { body { padding:18px 12px; } h1 { font-size:24px; } input[type=search] { min-width:0; } .field-modal { padding:10px; } .field-modal-panel { height:calc(100vh - 20px); } .field-modal-body { display:flex; flex-direction:column; } .field-modal-groups { display:flex; gap:6px; padding:10px; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line); } .field-modal-groups button { flex:0 0 auto; width:auto; margin:0; white-space:nowrap; } .field-modal-selected { max-height:190px; border-top:1px solid var(--line); border-left:0; } .field-option-grid { grid-template-columns:1fr; } .field-modal-footer { align-items:flex-end; flex-direction:column; } .field-modal-footer-actions { width:100%; } .field-modal-footer-actions button { flex:1; } .field-modal-footer p { align-self:flex-start; } .material-name-column { min-width:300px; width:300px; } .chart-grid,.donut-layout,.script-formula-donut { grid-template-columns:1fr; } .donut-layout svg,.script-formula-donut svg { margin:0 auto; } .section-nav { overflow:auto; } .section-nav button { flex:0 0 auto; } .highlight-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .highlight-modal { padding:10px; } .highlight-modal-panel { max-height:calc(100vh - 20px); padding:10px; } }
 </style>
 </head>
 <body>
 <main>
 <h1>云图素材榜单数据工作台</h1>
-<nav class="section-nav" aria-label="报告部分"><button type="button" data-section="materials" class="active">素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts">脚本内容公式</button></nav>
+<nav class="section-nav" aria-label="报告部分"><button type="button" data-section="materials" class="active">素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts">脚本内容公式</button><button type="button" data-section="highlights">高光帧数据</button></nav>
 <section id="materials-panel" class="report-section" data-section-panel="materials">
 <div class="toolbar"><input id="search" type="search" placeholder="输入素材标题或 ID" aria-label="输入素材标题或 ID"><button id="field-button" type="button">自定义指标</button></div>
 <section id="field-management" class="field-modal" role="dialog" aria-modal="true" aria-labelledby="field-management-title" hidden>
@@ -531,6 +574,21 @@ body.modal-open { overflow:hidden; }
     <div class="script-formula-donut"><div id="script-formula-secondary-chart" class="chart-box"></div><div id="script-formula-secondary-legend" class="legend" aria-label="二级内容公式图例"></div></div>
   </div>
 </section>
+<section id="highlights-panel" class="highlight-section" data-section-panel="highlights" hidden>
+  <div id="highlight-unavailable" class="audience-card empty" hidden>高光帧数据不可用</div>
+  <div id="highlight-content">
+    <div id="highlight-grid" class="highlight-grid"></div>
+    <div class="pager"><span id="highlight-range"></span><span><button id="highlight-first" type="button">首</button><button id="highlight-previous" type="button">前</button><span id="highlight-pages"></span><button id="highlight-next" type="button">后</button><button id="highlight-last" type="button">末</button></span></div>
+  </div>
+</section>
+<section id="highlight-modal" class="highlight-modal" role="dialog" aria-modal="true" aria-labelledby="highlight-modal-caption" hidden>
+  <div class="highlight-modal-backdrop" data-highlight-action="close"></div>
+  <div class="highlight-modal-panel">
+    <button id="highlight-modal-close" class="highlight-modal-close" type="button" data-highlight-action="close" aria-label="关闭高光帧大图">×</button>
+    <img id="highlight-modal-image" class="highlight-modal-image" alt="">
+    <p id="highlight-modal-caption" class="highlight-modal-caption"></p>
+  </div>
+</section>
 <div id="chart-tooltip" class="chart-tooltip" role="status" aria-live="polite" hidden></div>
 </main>
 <script id="overview-model" type="application/json">''' + embedded + r'''</script>
@@ -538,6 +596,7 @@ body.modal-open { overflow:hidden; }
 (() => {
   const model = JSON.parse(document.getElementById("overview-model").textContent);
   const pageSize = 10;
+  const highlightPageSize = 12;
   const storageKey = `yuntu-overview:${model.runId}:v${model.schemaVersion}`;
   const fieldGroupOrder = ["素材基础信息", "内容曝光与播放", "点击与转化", "互动指标"];
   const presentationFields = model.fields.filter(field => field.id !== "material_id");
@@ -549,8 +608,9 @@ body.modal-open { overflow:hidden; }
   const requiredFieldIds = ["title"].filter(id => fieldMap[id]);
   const defaultFieldIds = Array.isArray(model.defaultFieldIds) ? model.defaultFieldIds : requiredFieldIds;
   const initialSort = model.queryContext.materialList && model.queryContext.materialList.sort || {};
-  const state = { query: "", visibleFieldIds: [], draftFieldIds: null, fieldSearch: "", activeFieldGroup: groupNames[0] || "", sort: { field: initialSort.field || null, direction: initialSort.direction || "none" }, page: 1 };
+  const state = { query: "", exactMaterialId: null, pendingMaterialId: null, visibleFieldIds: [], draftFieldIds: null, fieldSearch: "", activeFieldGroup: groupNames[0] || "", sort: { field: initialSort.field || null, direction: initialSort.direction || "none" }, page: 1 };
   const search = document.getElementById("search"), modal = document.getElementById("field-management"), fieldGroups = document.getElementById("field-groups"), fieldSearch = document.getElementById("field-search"), fieldOptions = document.getElementById("field-options"), selectedFields = document.getElementById("selected-fields"), selectedCount = document.getElementById("selected-count"), tableContainer = document.getElementById("table-container");
+  const highlightModal = document.getElementById("highlight-modal"), highlightModalImage = document.getElementById("highlight-modal-image"), highlightModalCaption = document.getElementById("highlight-modal-caption"), highlightGrid = document.getElementById("highlight-grid");
   function normalize(value) { return String(value == null ? "" : value).normalize("NFKC").toLocaleLowerCase().trim(); }
   function orderedVisibleFieldIds(ids) { const selected = new Set(Array.isArray(ids) ? ids : []); requiredFieldIds.forEach(id => selected.add(id)); return orderedFields.filter(field => selected.has(field.id)).map(field => field.id); }
   function missing(value) { return value == null || value === ""; }
@@ -560,9 +620,11 @@ body.modal-open { overflow:hidden; }
   const chartTooltip = document.getElementById("chart-tooltip");
   const audience = model.audienceOverview || {status: "unavailable"};
   const scriptFormula = model.scriptFormulaOverview || {status: "unavailable"};
+  const highlightOverview = model.highlightOverview || {status: "unavailable", cards: []};
   const colors = ["#2563eb", "#60a5fa", "#14b8a6", "#f59e0b", "#ef6a6a", "#8b5cf6", "#64748b", "#22c55e"];
   const audienceState = {donutSelection: {gender: null, age: null}};
   const scriptFormulaState = {selectedPrimary: null, selectedSecondary: null};
+  const highlightState = {page: 1, lastFocused: null};
   function hideChartTooltip() { chartTooltip.hidden = true; }
   function showChartTooltip(event, bucket, level, total) { const source = event.currentTarget || event.target; const rect = source && source.getBoundingClientRect ? source.getBoundingClientRect() : null; chartTooltip.innerHTML = `<div>${escaped(level)}：${escaped(bucket.label)}</div><div>覆盖素材数：${escaped(bucket.value)}</div><div>占比：${escaped(new Intl.NumberFormat("zh-CN", {style:"percent", maximumFractionDigits:2}).format(bucket.share))}</div><div>当前维度标签覆盖总和：${escaped(total)}</div>`; chartTooltip.hidden = false; chartTooltip.style.left = `${Math.min(Math.max(12, rect ? rect.right + 8 : 16), Math.max(12, window.innerWidth - chartTooltip.offsetWidth - 12))}px`; chartTooltip.style.top = `${Math.min(Math.max(12, rect ? rect.top : 16), Math.max(12, window.innerHeight - chartTooltip.offsetHeight - 12))}px`; }
   function attachChartInteractions(container, buckets, level, total, dimension) { container.querySelectorAll("[data-chart-index]").forEach(element => { const bucket = buckets[Number(element.dataset.chartIndex)]; element.addEventListener("pointerenter", event => showChartTooltip(event, bucket, level, total)); element.addEventListener("pointerleave", hideChartTooltip); element.addEventListener("focus", event => showChartTooltip(event, bucket, level, total)); element.addEventListener("blur", hideChartTooltip); if (dimension) element.addEventListener("click", event => toggleDonutSelection(dimension, event.currentTarget.dataset.chartIndex)); }); }
@@ -577,12 +639,21 @@ body.modal-open { overflow:hidden; }
   function setScriptFormulaSelection(index) { scriptFormulaState.selectedSecondary = index == null ? null : Number(index); document.querySelectorAll("[data-script-formula-secondary-index]").forEach(item => { const selected = Number(item.dataset.scriptFormulaSecondaryIndex) === scriptFormulaState.selectedSecondary; item.classList.toggle("active", selected); item.setAttribute("aria-pressed", String(selected)); if (item.classList.contains("script-formula-segment")) { const angle = Number(item.dataset.scriptFormulaAngle || 0); const distance = selected ? 8 : 0; item.style.transform = `translate(${(Math.cos(angle) * distance).toFixed(2)}px,${(Math.sin(angle) * distance).toFixed(2)}px)`; } }); }
   function attachScriptFormulaInteractions(container, buckets, level, total) { container.querySelectorAll("[data-script-formula-index],[data-script-formula-secondary-index]").forEach(element => { const index = Number(element.dataset.scriptFormulaSecondaryIndex ?? element.dataset.scriptFormulaIndex), bucket = buckets[index]; element.addEventListener("pointerenter", event => showChartTooltip(event, bucket, level, total)); element.addEventListener("pointerleave", hideChartTooltip); element.addEventListener("focus", event => showChartTooltip(event, bucket, level, total)); element.addEventListener("blur", hideChartTooltip); if (level === "二级内容公式") element.addEventListener("click", () => setScriptFormulaSelection(scriptFormulaState.selectedSecondary === index ? null : index)); }); }
   function renderScriptFormula() { const chart = document.getElementById("script-formula-chart"), secondaryCard = document.getElementById("script-formula-secondary-card"), secondaryChart = document.getElementById("script-formula-secondary-chart"), secondaryLegend = document.getElementById("script-formula-secondary-legend"), secondaryTitle = document.getElementById("script-formula-secondary-title"), title = document.getElementById("script-formula-title"), hint = document.getElementById("script-formula-hint"); hideChartTooltip(); if (scriptFormula.status !== "available") { title.textContent = "一级内容公式"; hint.hidden = true; chart.innerHTML = '<div class="empty">脚本内容公式不可用</div>'; secondaryCard.hidden = true; return; } const primaryBuckets = Array.isArray(scriptFormula.primaryBuckets) ? scriptFormula.primaryBuckets : []; hint.hidden = false; if (!primaryBuckets.length) { chart.innerHTML = '<div class="empty">暂无可展示的一级内容公式</div>'; secondaryCard.hidden = true; return; } const width = Math.max(560, Math.min(760, primaryBuckets.length * 170, (chart.clientWidth || 900) - 8)), height = 290, left = 42, bottom = 72, plotHeight = height - bottom - 20, max = Math.max(...primaryBuckets.map(bucket => Number(bucket.value)), 1), band = (width - left - 18) / primaryBuckets.length; const bars = primaryBuckets.map((bucket, index) => { const barHeight = Math.max(2, Number(bucket.value) / max * plotHeight), barWidth = band * .52, x = left + index * band + (band - barWidth) / 2, y = height - bottom - barHeight, center = x + barWidth / 2, shortLabel = bucket.label.length > 8 ? `${bucket.label.slice(0,8)}…` : bucket.label; return `<rect class="script-formula-bar" data-script-formula-index="${index}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="5" tabindex="0" role="button" aria-label="${escaped(bucket.label)}，覆盖${escaped(bucket.value)}个素材，占比${escaped(formulaShare(bucket))}" data-script-primary="${escaped(bucket.label)}"></rect><text class="chart-value" x="${center.toFixed(2)}" y="${Math.max(14,y-6).toFixed(2)}" text-anchor="middle">${escaped(bucket.value)}</text><text class="chart-label" x="${center.toFixed(2)}" y="${height-42}" text-anchor="middle">${escaped(shortLabel)}</text>`; }).join(""); chart.innerHTML = `<svg class="script-formula-svg" style="width:${width}px;height:${height}px" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="group" aria-label="一级内容公式柱状图"><line class="chart-axis" x1="${left}" y1="${height-bottom}" x2="${width-12}" y2="${height-bottom}"></line>${bars}</svg>`; attachScriptFormulaInteractions(chart, primaryBuckets, "一级内容公式", scriptFormula.coverage.formulaMaterialCount); chart.querySelectorAll("[data-script-primary]").forEach(element => { const select = () => { scriptFormulaState.selectedPrimary = element.dataset.scriptPrimary; renderScriptFormula(); }; element.addEventListener("click", select); element.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } }); }); if (scriptFormulaState.selectedPrimary == null) { secondaryCard.hidden = true; return; } const primary = scriptFormulaState.selectedPrimary, primaryBucket = primaryBuckets.find(item => item.label === primary), secondaryBuckets = (scriptFormula.secondaryBucketsByPrimary?.[primary] || []).map(item => ({...item, total: primaryBucket ? primaryBucket.value : 0})); secondaryCard.hidden = false; secondaryTitle.textContent = `${primary} · 二级内容公式分布`; if (!secondaryBuckets.length) { secondaryChart.innerHTML = '<div class="empty">暂无该一级内容公式的二级公式数据</div>'; secondaryLegend.innerHTML = ""; return; } let cursor = -Math.PI / 2; const secondaryValueTotal = secondaryBuckets.reduce((sum, bucket) => sum + Math.max(0, Number(bucket.value) || 0), 0), segments = secondaryBuckets.map((bucket, index) => { const end = cursor + bucket.value / secondaryValueTotal * Math.PI * 2, angle = (cursor + end) / 2, path = donutPath(cursor, end, 96, 58, 116, 130); cursor = end; return `<path class="donut-segment script-formula-segment" data-script-formula-secondary-index="${index}" data-script-formula-angle="${angle.toFixed(6)}" d="${path}" fill="${colors[index % colors.length]}" tabindex="0" role="img" aria-pressed="false" aria-label="${escaped(bucket.label)}，覆盖${escaped(bucket.value)}个素材，占比${escaped(formulaShare(bucket))}"></path>`; }).join(""); secondaryChart.innerHTML = `<svg viewBox="0 0 232 270" role="group" aria-label="${escaped(primary)}二级内容公式环形图">${segments}<text class="donut-center-label" x="116" y="124">当前一级覆盖素材数</text><text class="donut-center-value" x="116" y="150">${escaped(primaryBucket ? primaryBucket.value : 0)}</text></svg>`; secondaryLegend.innerHTML = secondaryBuckets.map((bucket, index) => `<button type="button" class="legend-item" data-script-formula-secondary-index="${index}" tabindex="0" role="img" aria-pressed="false" aria-label="${escaped(bucket.label)}，覆盖${escaped(bucket.value)}个素材，占比${escaped(formulaShare(bucket))}"><span class="legend-swatch" style="background:${colors[index % colors.length]}"></span><span>${escaped(bucket.label)}<span class="legend-detail">${escaped(bucket.value)} 个素材 · ${escaped(formulaShare(bucket))}</span></span></button>`).join(""); attachScriptFormulaInteractions(secondaryChart, secondaryBuckets, "二级内容公式", primaryBucket ? primaryBucket.value : 0); attachScriptFormulaInteractions(secondaryLegend, secondaryBuckets, "二级内容公式", primaryBucket ? primaryBucket.value : 0); }
-  renderAudience(); renderScriptFormula();
+  function highlightConditionLabel(reason) { if (reason.type === "cover") return "封面画面"; const kind = reason.type === "top_values" ? "数值" : "波峰"; return `${reason.trend_name}${kind}Top${reason.rank}`; }
+  function highlightValueLabel(second, reason) { if (reason.type === "cover") return ""; const value = new Intl.NumberFormat("zh-CN", {maximumFractionDigits:4}).format(Number(reason.value)); return `${second}s · ${reason.trend_name} ${value}`; }
+  function highlightConditionReasons(card) { const reasons = Array.isArray(card.reasons) ? card.reasons : [], metricReasons = reasons.filter(reason => reason.type !== "cover"); return (metricReasons.length ? metricReasons : reasons).map(highlightConditionLabel).filter(Boolean); }
+  function highlightValueReasons(card) { return (Array.isArray(card.reasons) ? card.reasons : []).map(reason => highlightValueLabel(card.second, reason)).filter(Boolean); }
+  function highlightDescription(card) { return [...highlightConditionReasons(card), ...highlightValueReasons(card)].join(" · "); }
+  function renderHighlights() { const content = document.getElementById("highlight-content"), unavailable = document.getElementById("highlight-unavailable"), cards = Array.isArray(highlightOverview.cards) ? highlightOverview.cards : [], available = highlightOverview.status === "available" && cards.length > 0; content.hidden = !available; unavailable.hidden = available; if (!available) return; const pageCount = Math.max(1, Math.ceil(cards.length / highlightPageSize)); highlightState.page = Math.min(highlightState.page, pageCount); const start = (highlightState.page - 1) * highlightPageSize, pageCards = cards.slice(start, start + highlightPageSize); highlightGrid.innerHTML = pageCards.map(card => { const conditions = highlightConditionReasons(card), values = highlightValueReasons(card), description = highlightDescription(card); return `<article class="highlight-card"><button type="button" class="highlight-thumb" data-highlight-open="${escaped(card.id)}" aria-label="查看${escaped(description)}大图"><img src="${escaped(card.assetPath)}" alt="${escaped(description)}"></button><div class="highlight-conditions" aria-label="命中筛选条件">${conditions.map(condition => `<span class="highlight-condition" title="${escaped(condition)}">${escaped(condition)}</span>`).join("")}</div><div class="highlight-values" aria-label="对应指标数值">${values.map(value => `<span class="highlight-value" title="${escaped(value)}">${escaped(value)}</span>`).join("")}</div><a href="#single-material-data" class="highlight-material" data-highlight-material-id="${escaped(card.materialId)}" title="后续定位到单素材数据：${escaped(card.materialTitle)}">查看素材：${escaped(card.materialTitle)}</a></article>`; }).join(""); document.getElementById("highlight-range").textContent = `显示 ${start + 1}-${Math.min(start + highlightPageSize, cards.length)} / ${cards.length}`; document.getElementById("highlight-pages").textContent = `${highlightState.page} / ${pageCount}`; ["highlight-first", "highlight-previous"].forEach(id => document.getElementById(id).disabled = highlightState.page <= 1); ["highlight-next", "highlight-last"].forEach(id => document.getElementById(id).disabled = highlightState.page >= pageCount); }
+  function openHighlightModal(cardId, trigger) { const card = (highlightOverview.cards || []).find(item => item.id === cardId); if (!card) return; const description = highlightDescription(card); highlightState.lastFocused = trigger || document.activeElement; highlightModalImage.src = card.assetPath; highlightModalImage.alt = description; highlightModalCaption.textContent = `${card.materialTitle} · ${description}`; highlightModal.hidden = false; document.body.classList.add("modal-open"); document.getElementById("highlight-modal-close").focus(); }
+  function closeHighlightModal() { highlightModal.hidden = true; highlightModalImage.removeAttribute("src"); document.body.classList.remove("modal-open"); if (highlightState.lastFocused && typeof highlightState.lastFocused.focus === "function") highlightState.lastFocused.focus(); highlightState.lastFocused = null; }
+  function jumpToMaterial(materialId) { state.pendingMaterialId = materialId; window.dispatchEvent(new CustomEvent("yuntu:highlight-material", {detail: {materialId}})); }
+  renderAudience(); renderScriptFormula(); renderHighlights();
   function highlighted(value) { const text = escaped(value); const query = normalize(state.query); if (!query) return text; const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu"); return text.replace(pattern, match => `<mark>${match}</mark>`); }
   function display(value, field) { if (missing(value)) return "—"; if (field.id === "video_duration") return `${escaped(value)} 秒`; if (field.valueType === "rate") return `${new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 2}).format(Number(value) * 100)}%`; if (field.valueType === "number") return new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 2}).format(Number(value)); if (field.valueType === "list") return escaped(value.join("、")); if (field.valueType === "date") { const raw = String(value); return escaped(raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6)}` : raw); } return escaped(value); }
   function compareValues(left, right, field) { const leftMissing = missing(left), rightMissing = missing(right); if (leftMissing || rightMissing) return leftMissing === rightMissing ? 0 : (leftMissing ? 1 : -1); if (field.valueType === "number" || field.valueType === "rate") return Number(left) - Number(right); if (field.valueType === "date") return String(left).localeCompare(String(right)); return normalize(left).localeCompare(normalize(right)); }
   function compareRows(left, right) { const field = fieldMap[state.sort.field]; if (missing(left.values[field.id]) || missing(right.values[field.id])) return compareValues(left.values[field.id], right.values[field.id], field); const result = compareValues(left.values[field.id], right.values[field.id], field); if (result) return state.sort.direction === "desc" ? -result : result; const rank = compareValues(left.values.rank, right.values.rank, {valueType: "number"}); if (rank) return rank; return normalize(left.materialId).localeCompare(normalize(right.materialId)); }
-  function matchingRows() { const query = normalize(state.query); const rows = model.rows.filter(row => !query || normalize(row.materialId).includes(query) || normalize(row.values.title).includes(query)); if (state.sort.field && state.sort.direction !== "none" && fieldMap[state.sort.field] && fieldMap[state.sort.field].sortable) rows.sort(compareRows); return rows; }
+  function matchingRows() { const query = normalize(state.query); const rows = state.exactMaterialId ? model.rows.filter(row => row.materialId === state.exactMaterialId) : model.rows.filter(row => !query || normalize(row.materialId).includes(query) || normalize(row.values.title).includes(query)); if (state.sort.field && state.sort.direction !== "none" && fieldMap[state.sort.field] && fieldMap[state.sort.field].sortable) rows.sort(compareRows); return rows; }
   function renderFieldDialog() { state.draftFieldIds = orderedVisibleFieldIds(state.draftFieldIds || state.visibleFieldIds); fieldGroups.innerHTML = groupNames.map(group => `<button type="button" class="${!state.fieldSearch && state.activeFieldGroup === group ? "active" : ""}" data-field-group="${escaped(group)}">${escaped(group)}<span>${orderedFields.filter(field => field.group === group).length}</span></button>`).join(""); const query = normalize(state.fieldSearch); const available = query ? orderedFields.filter(field => normalize(field.label).includes(query) || normalize(field.id).includes(query)) : orderedFields.filter(field => field.group === state.activeFieldGroup); const grouped = {}; available.forEach(field => (grouped[field.group] ||= []).push(field)); fieldOptions.innerHTML = Object.entries(grouped).map(([group, fields]) => `<section class="field-option-section"><h3>${escaped(group)}</h3><div class="field-option-grid">${fields.map(field => `<label class="field-option"><input type="checkbox" data-field-id="${escaped(field.id)}"${state.draftFieldIds.includes(field.id) ? " checked" : ""}${requiredFieldIds.includes(field.id) ? " disabled" : ""}><span>${escaped(field.label)}</span></label>`).join("")}</div></section>`).join("") || '<div class="empty">没有匹配字段</div>'; const selected = state.draftFieldIds.map(id => fieldMap[id]).filter(Boolean); selectedCount.textContent = `（${selected.length}）`; selectedFields.innerHTML = selected.map(field => `<li class="field-modal-selected-item"><span class="field-drag-handle">☷</span><span>${escaped(field.label)}</span>${requiredFieldIds.includes(field.id) ? '<span class="field-required">固定</span>' : `<button type="button" data-remove-field-id="${escaped(field.id)}" aria-label="移除${escaped(field.label)}">×</button>`}</li>`).join(""); }
   function openFieldDialog() { state.draftFieldIds = orderedVisibleFieldIds(state.visibleFieldIds); state.fieldSearch = ""; state.activeFieldGroup = groupNames[0] || ""; fieldSearch.value = ""; modal.hidden = false; document.body.classList.add("modal-open"); renderFieldDialog(); fieldSearch.focus(); }
   function closeFieldDialog() { modal.hidden = true; state.draftFieldIds = null; state.fieldSearch = ""; document.body.classList.remove("modal-open"); }
@@ -594,12 +665,15 @@ body.modal-open { overflow:hidden; }
   modal.addEventListener("click", event => { const action = event.target.closest("[data-field-action]")?.dataset.fieldAction; if (action === "cancel") closeFieldDialog(); if (action === "confirm") confirmFieldDialog(); if (action === "reset") { state.draftFieldIds = orderedVisibleFieldIds(defaultFieldIds); renderFieldDialog(); } const group = event.target.closest("[data-field-group]")?.dataset.fieldGroup; if (group) { state.activeFieldGroup = group; state.fieldSearch = ""; fieldSearch.value = ""; renderFieldDialog(); } const removeId = event.target.closest("[data-remove-field-id]")?.dataset.removeFieldId; if (removeId && !requiredFieldIds.includes(removeId)) { state.draftFieldIds = orderedVisibleFieldIds(state.draftFieldIds.filter(id => id !== removeId)); renderFieldDialog(); } });
   modal.addEventListener("change", event => { const input = event.target.closest("input[data-field-id]"); if (!input) return; state.draftFieldIds = orderedVisibleFieldIds(input.checked ? [...state.draftFieldIds, input.dataset.fieldId] : state.draftFieldIds.filter(id => id !== input.dataset.fieldId)); renderFieldDialog(); });
   fieldSearch.addEventListener("input", event => { state.fieldSearch = event.target.value; renderFieldDialog(); fieldSearch.focus(); });
-  document.addEventListener("keydown", event => { if (event.key === "Escape" && !modal.hidden) closeFieldDialog(); else if (event.key === "Escape") hideChartTooltip(); });
-  document.querySelectorAll("[data-section]").forEach(button => button.addEventListener("click", event => { const section = event.currentTarget.dataset.section; document.querySelectorAll("[data-section]").forEach(item => item.classList.toggle("active", item.dataset.section === section)); document.querySelectorAll("[data-section-panel]").forEach(panel => { panel.hidden = panel.dataset.sectionPanel !== section; }); if (section === "audience") renderAudience(); if (section === "scripts") renderScriptFormula(); hideChartTooltip(); }));
+  highlightGrid.addEventListener("click", event => { const open = event.target.closest("[data-highlight-open]"); if (open) { openHighlightModal(open.dataset.highlightOpen, open); return; } const material = event.target.closest("[data-highlight-material-id]"); if (material) { event.preventDefault(); jumpToMaterial(material.dataset.highlightMaterialId); } });
+  highlightModal.addEventListener("click", event => { if (event.target.closest("[data-highlight-action=close]")) closeHighlightModal(); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && !highlightModal.hidden) closeHighlightModal(); else if (event.key === "Escape" && !modal.hidden) closeFieldDialog(); else if (event.key === "Escape") hideChartTooltip(); });
+  document.querySelectorAll("[data-section]").forEach(button => button.addEventListener("click", event => { const section = event.currentTarget.dataset.section; document.querySelectorAll("[data-section]").forEach(item => item.classList.toggle("active", item.dataset.section === section)); document.querySelectorAll("[data-section-panel]").forEach(panel => { panel.hidden = panel.dataset.sectionPanel !== section; }); if (section === "audience") renderAudience(); if (section === "scripts") renderScriptFormula(); if (section === "highlights") renderHighlights(); hideChartTooltip(); }));
   document.getElementById("script-formula-secondary-back").addEventListener("click", () => { scriptFormulaState.selectedPrimary = null; renderScriptFormula(); });
-  search.addEventListener("input", event => { state.query = event.target.value; state.page = 1; render(); });
+  search.addEventListener("input", event => { state.query = event.target.value; state.exactMaterialId = null; state.page = 1; render(); });
   document.getElementById("field-button").addEventListener("click", openFieldDialog);
   document.getElementById("first").addEventListener("click", () => { state.page = 1; render(); }); document.getElementById("previous").addEventListener("click", () => { state.page = Math.max(1, state.page - 1); render(); }); document.getElementById("next").addEventListener("click", () => { state.page += 1; render(); }); document.getElementById("last").addEventListener("click", () => { state.page = Math.max(1, Math.ceil(matchingRows().length / pageSize)); render(); });
+  document.getElementById("highlight-first").addEventListener("click", () => { highlightState.page = 1; renderHighlights(); }); document.getElementById("highlight-previous").addEventListener("click", () => { highlightState.page = Math.max(1, highlightState.page - 1); renderHighlights(); }); document.getElementById("highlight-next").addEventListener("click", () => { highlightState.page += 1; renderHighlights(); }); document.getElementById("highlight-last").addEventListener("click", () => { highlightState.page = Math.max(1, Math.ceil((highlightOverview.cards || []).length / highlightPageSize)); renderHighlights(); });
   loadVisibleFields(); render();
 })();
 </script>
@@ -645,6 +719,8 @@ def write_overview(run_dir: Path, output_dir: Path, registry_path: Path) -> dict
     run_root = Path(run_dir).resolve()
     output_path = _safe_output_dir(run_root, Path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
+    if model.get("highlightOverview", {}).get("cards"):
+        copy_verified_highlight_assets(run_root, output_path, model["highlightOverview"])
     data_path = output_path / "overview-data.json"
     html_path = output_path / "index.html"
     _write_atomic(data_path, json.dumps(model, ensure_ascii=False, indent=2) + "\n")
