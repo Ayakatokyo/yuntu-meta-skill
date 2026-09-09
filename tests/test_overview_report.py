@@ -271,6 +271,11 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn('aria-controls="single-material-core"', html)
         self.assertIn("position:sticky; top:0", html)
         self.assertIn("scrollIntoView({behavior:\"smooth\", block:\"start\"})", html)
+        section_navigation = html.split('document.querySelectorAll("[data-section]")', 1)[1].split('document.querySelectorAll("[data-material-tab]")', 1)[0]
+        self.assertIn('renderSingleMaterial();', section_navigation)
+        self.assertIn('setSingleMaterialTab("core");', section_navigation)
+        self.assertNotIn('single-material-data-panel', section_navigation)
+        self.assertNotIn('scrollIntoView', section_navigation)
         self.assertNotIn(".single-material-panel[hidden]", html)
         self.assertIn("local_video_artifact_missing", html)
         self.assertIn("singleTrendSpan", html)
