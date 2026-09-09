@@ -201,6 +201,10 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn(".script-formula-svg", html)
         self.assertIn("script-card-header", html)
         self.assertIn("script-formula-donut", html)
+        self.assertIn("function setScriptFormulaSelection", html)
+        self.assertIn("data-script-formula-angle", html)
+        self.assertIn("item.setAttribute(\"aria-pressed\", String(selected))", html)
+        self.assertIn("Math.cos(angle) * distance", html)
         self.assertNotIn("fetch(", html)
 
     def test_rendered_html_has_qianchuan_style_dialog_fixed_title_and_page_size(self):
