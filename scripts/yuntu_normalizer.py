@@ -17,7 +17,10 @@ METRIC_FIELDS = (
     "play_duration_avg",
     "show_cnt",
     "interact_rate",
-    "component_click_rate",
+    "like_rate",
+    "comment_rate",
+    "share_rate",
+    "product_wish_button_buy_cart_rate",
 )
 
 SECOND_TREND_ALIASES = {

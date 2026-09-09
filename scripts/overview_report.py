@@ -24,6 +24,11 @@ try:
         build_highlight_overview,
         copy_verified_highlight_assets,
     )
+    from single_material_overview import (
+        SingleMaterialOverviewError,
+        build_single_material_overview,
+        copy_verified_single_material_assets,
+    )
 except ImportError:
     from .audience_overview import AudienceOverviewError, build_audience_overview
     from .script_formula_overview import ScriptFormulaOverviewError, build_script_formula_overview
@@ -31,6 +36,11 @@ except ImportError:
         HighlightOverviewError,
         build_highlight_overview,
         copy_verified_highlight_assets,
+    )
+    from .single_material_overview import (
+        SingleMaterialOverviewError,
+        build_single_material_overview,
+        copy_verified_single_material_assets,
     )
 
 
@@ -50,10 +60,13 @@ FIELD_GROUPS = {
     "metrics.play_5s_rate": "内容曝光与播放",
     "metrics.play_over_rate": "内容曝光与播放",
     "metrics.ctr": "点击与转化",
-    "metrics.component_click_rate": "点击与转化",
     "metrics.cvr": "点击与转化",
     "metrics.pvr": "点击与转化",
+    "metrics.product_wish_button_buy_cart_rate": "点击与转化",
     "metrics.interact_rate": "互动指标",
+    "metrics.like_rate": "互动指标",
+    "metrics.comment_rate": "互动指标",
+    "metrics.share_rate": "互动指标",
 }
 FIELD_GROUP_ORDER = tuple(dict.fromkeys(FIELD_GROUPS.values()))
 DEFAULT_FIELD_IDS = (
@@ -352,6 +365,18 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
             "cards": [],
             "gaps": [{"code": "highlight_overview_unavailable"}],
         }
+    try:
+        single_material_overview = build_single_material_overview(run_root)
+    except SingleMaterialOverviewError:
+        single_material_overview = {
+            "schemaVersion": 1,
+            "kind": "yuntu_single_material_overview",
+            "status": "unavailable",
+            "materialCount": 0,
+            "source": {"rankingRecordCount": len(rows), "detailRecordCount": 0, "verifiedFrameCount": 0},
+            "materials": [],
+            "gaps": [{"code": "single_material_overview_unavailable"}],
+        }
     return {
         "schemaVersion": SCHEMA_VERSION,
         "kind": OVERVIEW_KIND,
@@ -368,6 +393,7 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
         "audienceOverview": audience_overview,
         "scriptFormulaOverview": script_formula_overview,
         "highlightOverview": highlight_overview,
+        "singleMaterialOverview": single_material_overview,
     }
 
 
@@ -480,6 +506,76 @@ button:disabled { cursor:default; opacity:.45; }
 .highlight-modal-close { align-self:flex-end; min-width:36px; min-height:36px; padding:0; border:0; border-radius:50%; color:var(--muted); font-size:24px; }
 .highlight-modal-image { display:block; max-width:100%; max-height:calc(100vh - 150px); object-fit:contain; border-radius:10px; background:#0f172a; }
 .highlight-modal-caption { margin:12px 0 0; color:var(--muted); font-size:13px; text-align:center; }
+.single-material-shell { display:grid; grid-template-columns:230px minmax(0,1fr); gap:16px; align-items:start; }
+.single-material-selector,.single-material-main { min-width:0; padding:16px; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 24px rgba(34,64,112,.05); }
+.single-material-selector { position:sticky; top:16px; max-height:calc(100vh - 32px); overflow:auto; }
+.single-material-selector h2 { margin:0 0 5px; font-size:18px; }
+.single-material-selector p { margin:0 0 12px; color:var(--muted); font-size:12px; line-height:1.5; }
+.single-material-selector-list { display:grid; gap:6px; }
+.single-material-selector-list button { width:100%; min-height:44px; padding:7px 9px; text-align:left; }
+.single-material-selector-list button.active { border-color:var(--accent); background:var(--accent-soft); color:#1d4ed8; }
+.single-material-selector-list strong { display:block; overflow-wrap:anywhere; word-break:break-word; font-size:12px; line-height:1.4; }
+.single-material-selector-list span { display:block; margin-top:3px; overflow-wrap:anywhere; word-break:break-word; color:var(--muted); font-size:11px; line-height:1.35; }
+.single-material-overview { display:grid; grid-template-columns:minmax(190px,28%) minmax(0,1fr); gap:16px; align-items:stretch; margin-bottom:14px; }
+.single-material-meta { display:flex; min-width:0; align-items:center; }
+.single-material-header { width:100%; }
+.single-material-header h2 { margin:0; font-size:20px; }
+.single-material-header p { margin:5px 0 0; color:var(--muted); font-size:12px; }
+.single-material-tabs { position:sticky; top:0; z-index:10; display:flex; gap:7px; overflow:auto; margin:0 -16px 18px; padding:10px 16px 12px; border-bottom:1px solid var(--line); background:rgba(255,255,255,.96); backdrop-filter:blur(8px); scroll-behavior:smooth; }
+.single-material-tabs button { flex:0 0 auto; min-height:36px; padding:6px 10px; }
+.single-material-tabs button.active { border-color:var(--accent); background:var(--accent); color:#fff; }
+.single-material-panel { scroll-margin-top:74px; padding:16px 0 22px; border-bottom:1px solid var(--line); }
+.single-material-panel:last-child { border-bottom:0; }
+.single-panel-heading { display:flex; align-items:center; min-height:34px; margin:0 0 14px; padding-left:12px; border-left:4px solid var(--accent); }
+.single-panel-heading h2 { margin:0; color:#1f2f49; font-size:18px; line-height:1.35; }
+.single-material-video { display:flex; min-height:132px; aspect-ratio:16 / 9; align-items:center; justify-content:center; border:1px dashed var(--line-strong); border-radius:12px; background:#f8fafc; color:var(--muted); text-align:center; }
+.single-core-toolbar { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.single-core-toolbar h3 { margin:0; font-size:16px; }
+.single-core-toolbar p { margin:4px 0 0; color:var(--muted); font-size:12px; }
+.single-core-toolbar button { min-height:34px; padding:6px 10px; }
+.single-material-metrics,.single-material-tags,.single-formula-labels { display:flex; flex-wrap:wrap; gap:10px; }
+.single-material-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.single-material-metrics .metric-card { min-width:0; min-height:104px; }
+.single-material-tag,.single-formula-chip { min-height:32px; padding:7px 10px; border:1px solid var(--line); border-radius:999px; background:#fbfdff; color:var(--text); }
+.single-formula-chip { cursor:pointer; }
+.single-formula-chip.active,.single-formula-term.active { border-color:var(--accent); background:var(--accent-soft); color:#1d4ed8; }
+.single-formula-secondary { display:block; margin-top:4px; color:var(--muted); font-size:11px; }
+.single-formula-sources { display:grid; gap:12px; margin-top:16px; }
+.single-formula-source { padding:14px; border:1px solid var(--line); border-radius:10px; background:#fbfdff; }
+.single-formula-source h3 { margin:0 0 7px; font-size:14px; }
+.single-formula-source p { margin:0; color:var(--text); line-height:1.7; white-space:pre-wrap; }
+.single-formula-overview { display:grid; gap:12px; margin-bottom:16px; padding:16px; border:1px solid var(--line); border-radius:12px; background:#fbfdff; }
+.single-formula-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.single-formula-toolbar h3 { margin:0; font-size:16px; }
+.single-formula-legend { display:flex; flex-wrap:wrap; gap:12px 20px; color:var(--muted); font-size:12px; }
+.single-formula-legend-item { display:inline-flex; align-items:center; gap:6px; }
+.single-formula-legend-dot { width:9px; height:9px; border-radius:2px; }
+.single-formula-chain { display:flex; flex-wrap:wrap; align-items:center; gap:7px; color:var(--muted); font-size:13px; }
+.single-formula-chain-item { padding:4px 8px; border-radius:5px; font-weight:600; }
+.single-formula-chain-plus { color:#a1aaba; }
+.single-formula-highlight { padding:1px 3px; border-radius:3px; cursor:pointer; }
+.single-formula-highlight.active { outline:2px solid currentColor; outline-offset:1px; }
+.single-formula-source-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:7px; }
+.single-formula-source-header h3 { margin:0; }
+.single-formula-copy { min-height:28px; padding:4px 8px; border:0; color:var(--muted); font-size:12px; }
+.single-formula-term { margin:8px 6px 0 0; padding:4px 7px; border:1px solid var(--line); border-radius:6px; background:var(--surface); cursor:pointer; color:var(--muted); }
+.single-trend-tabs { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:10px; }
+.single-trend-tabs button.active { border-color:var(--accent); background:var(--accent-soft); color:#1d4ed8; }
+.single-trend-chart { width:100%; min-height:230px; margin-top:10px; overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#fbfdff; }
+.single-trend-chart svg { display:block; width:100%; min-width:100%; height:230px; }
+.single-trend-controls { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:10px; align-items:center; width:100%; margin-top:10px; color:var(--muted); font-size:12px; }
+.single-trend-controls input { grid-column:1 / -1; width:100%; accent-color:var(--accent); }
+.single-trend-controls output { font-variant-numeric:tabular-nums; }
+.single-trend-point { fill:#2563eb; cursor:pointer; }
+.single-trend-point:focus { outline:none; stroke:#172033; stroke-width:2; }
+.single-deferred { padding:38px; border:1px dashed var(--line-strong); border-radius:10px; color:var(--muted); text-align:center; }
+.single-portrait-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.single-portrait-grid .overview-card { margin:0; }
+.single-highlight-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; }
+.single-highlight-card { min-width:0; padding:10px; border:1px solid var(--line); border-radius:10px; background:#fbfdff; }
+.single-highlight-open { display:block; width:100%; padding:0; border:0; background:#e9eef6; cursor:pointer; }
+.single-highlight-open img { display:block; width:100%; aspect-ratio:9 / 16; object-fit:contain; }
+.single-highlight-card p { margin:7px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
 .table-wrap { overflow:auto; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 24px rgba(34,64,112,.05); }
 table { width:100%; min-width:980px; border-collapse:separate; border-spacing:0; }
 th,td { padding:14px 16px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; vertical-align:middle; }
@@ -490,7 +586,7 @@ tbody tr:hover td { background:#fbfdff; }
 .material-name-column { position:sticky; left:0; z-index:1; min-width:380px; width:380px; background:var(--surface); box-shadow:8px 0 14px -14px rgba(23,32,51,.65); }
 th.material-name-column { z-index:4; background:#f8fafc; }
 tbody tr:hover .material-name-column { background:#fbfdff; }
-.material-title { max-width:350px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:520; }
+.material-title { max-width:350px; overflow-wrap:anywhere; word-break:break-word; white-space:normal; font-weight:520; line-height:1.45; }
 .material-id { margin-top:5px; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
 mark { padding:0 2px; background:#fff0a8; border-radius:3px; }
 .empty { padding:44px; text-align:center; color:var(--muted); }
@@ -533,14 +629,14 @@ body.modal-open { overflow:hidden; }
 .field-modal-footer-actions { display:flex; gap:8px; }
 .field-modal-footer .primary { border-color:var(--accent); background:var(--accent); color:#fff; }
 @media (max-width:900px) { .field-modal-body { grid-template-columns:160px minmax(0,1fr); } .field-modal-selected { grid-column:2; max-height:190px; border-top:1px solid var(--line); } }
-@media (max-width:900px) { .highlight-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
-@media (max-width:700px) { body { padding:18px 12px; } h1 { font-size:24px; } input[type=search] { min-width:0; } .field-modal { padding:10px; } .field-modal-panel { height:calc(100vh - 20px); } .field-modal-body { display:flex; flex-direction:column; } .field-modal-groups { display:flex; gap:6px; padding:10px; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line); } .field-modal-groups button { flex:0 0 auto; width:auto; margin:0; white-space:nowrap; } .field-modal-selected { max-height:190px; border-top:1px solid var(--line); border-left:0; } .field-option-grid { grid-template-columns:1fr; } .field-modal-footer { align-items:flex-end; flex-direction:column; } .field-modal-footer-actions { width:100%; } .field-modal-footer-actions button { flex:1; } .field-modal-footer p { align-self:flex-start; } .material-name-column { min-width:300px; width:300px; } .chart-grid,.donut-layout,.script-formula-donut { grid-template-columns:1fr; } .donut-layout svg,.script-formula-donut svg { margin:0 auto; } .section-nav { overflow:auto; } .section-nav button { flex:0 0 auto; } .highlight-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .highlight-modal { padding:10px; } .highlight-modal-panel { max-height:calc(100vh - 20px); padding:10px; } }
+@media (max-width:900px) { .highlight-grid,.single-highlight-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .single-material-metrics { grid-template-columns:repeat(3,minmax(0,1fr)); } .single-portrait-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:700px) { body { padding:18px 12px; } h1 { font-size:24px; } input[type=search] { min-width:0; } .field-modal { padding:10px; } .field-modal-panel { height:calc(100vh - 20px); } .field-modal-body { display:flex; flex-direction:column; } .field-modal-groups { display:flex; gap:6px; padding:10px; overflow-x:auto; border-right:0; border-bottom:1px solid var(--line); } .field-modal-groups button { flex:0 0 auto; width:auto; margin:0; white-space:nowrap; } .field-modal-selected { max-height:190px; border-top:1px solid var(--line); border-left:0; } .field-option-grid { grid-template-columns:1fr; } .field-modal-footer { align-items:flex-end; flex-direction:column; } .field-modal-footer-actions { width:100%; } .field-modal-footer-actions button { flex:1; } .field-modal-footer p { align-self:flex-start; } .material-name-column { min-width:300px; width:300px; } .chart-grid,.donut-layout,.script-formula-donut { grid-template-columns:1fr; } .donut-layout svg,.script-formula-donut svg { margin:0 auto; } .section-nav { overflow:auto; } .section-nav button { flex:0 0 auto; } .highlight-grid,.single-highlight-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .single-material-shell { grid-template-columns:1fr; } .single-material-selector { position:static; max-height:none; } .single-material-selector-list { grid-template-columns:repeat(2,minmax(0,1fr)); } .single-material-overview { grid-template-columns:1fr; } .single-material-video { min-height:140px; aspect-ratio:auto; } .single-material-metrics,.single-portrait-grid { grid-template-columns:1fr; } .highlight-modal { padding:10px; } .highlight-modal-panel { max-height:calc(100vh - 20px); padding:10px; } }
 </style>
 </head>
 <body>
 <main>
 <h1>云图素材榜单数据工作台</h1>
-<nav class="section-nav" aria-label="报告部分"><button type="button" data-section="materials" class="active">素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts">脚本内容公式</button><button type="button" data-section="highlights">高光帧数据</button></nav>
+<nav class="section-nav" aria-label="报告部分"><button type="button" data-section="materials" class="active">素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts">脚本内容公式</button><button type="button" data-section="highlights">高光帧数据</button><button type="button" data-section="single-material-data">单素材数据</button></nav>
 <section id="materials-panel" class="report-section" data-section-panel="materials">
 <div class="toolbar"><input id="search" type="search" placeholder="输入素材标题或 ID" aria-label="输入素材标题或 ID"><button id="field-button" type="button">自定义指标</button></div>
 <section id="field-management" class="field-modal" role="dialog" aria-modal="true" aria-labelledby="field-management-title" hidden>
@@ -553,6 +649,29 @@ body.modal-open { overflow:hidden; }
 </section>
 <section id="summary" class="summary"></section><div id="table-container" class="table-wrap"></div>
 <div class="pager"><span id="range"></span><span><button id="first" type="button">首</button><button id="previous" type="button">前</button><span id="pages"></span><button id="next" type="button">后</button><button id="last" type="button">末</button></span></div>
+</section>
+<section id="single-material-data-panel" class="report-section" data-section-panel="single-material-data" hidden>
+  <div class="single-material-shell">
+    <aside class="single-material-selector" aria-label="详情素材选择"><h2>单素材数据</h2><div id="single-material-selector" class="single-material-selector-list"></div></aside>
+    <section class="single-material-main" aria-label="单素材详情">
+      <div class="single-material-overview"><div id="single-material-video" class="single-material-video">本地视频不可用</div><div class="single-material-meta"><header class="single-material-header"><h2 id="single-material-title">单素材详情</h2><p id="single-material-id"></p></header></div></div>
+      <nav id="single-material-tabs" class="single-material-tabs" role="tablist" aria-label="单素材数据锚点"><button id="single-material-tab-core" type="button" data-material-tab="core" aria-controls="single-material-core" role="tab">核心数据</button><button id="single-material-tab-portrait" type="button" data-material-tab="portrait" aria-controls="single-material-portrait" role="tab">人群画像</button><button id="single-material-tab-trends" type="button" data-material-tab="trends" aria-controls="single-material-trends" role="tab">秒级拆解</button><button id="single-material-tab-formula" type="button" data-material-tab="formula" aria-controls="single-material-formula" role="tab">内容公式</button><button id="single-material-tab-creative" type="button" data-material-tab="creative" aria-controls="single-material-creative" role="tab">创意元素拆解</button><button id="single-material-tab-highlights" type="button" data-material-tab="highlights" aria-controls="single-material-highlights" role="tab">高光帧数据</button></nav>
+      <section id="single-material-core" class="single-material-panel" data-material-panel="core" role="tabpanel" aria-labelledby="single-material-tab-core"></section>
+      <section id="single-material-portrait" class="single-material-panel" data-material-panel="portrait" role="tabpanel" aria-labelledby="single-material-tab-portrait"></section>
+      <section id="single-material-trends" class="single-material-panel" data-material-panel="trends" role="tabpanel" aria-labelledby="single-material-tab-trends"></section>
+      <section id="single-material-formula" class="single-material-panel" data-material-panel="formula" role="tabpanel" aria-labelledby="single-material-tab-formula"></section>
+      <section id="single-material-creative" class="single-material-panel" data-material-panel="creative" role="tabpanel" aria-labelledby="single-material-tab-creative"></section>
+      <section id="single-material-highlights" class="single-material-panel" data-material-panel="highlights" role="tabpanel" aria-labelledby="single-material-tab-highlights"></section>
+    </section>
+  </div>
+</section>
+<section id="single-core-field-management" class="field-modal" role="dialog" aria-modal="true" aria-labelledby="single-core-field-management-title" hidden>
+  <div class="field-modal-backdrop" data-single-core-field-action="cancel"></div>
+  <div class="field-modal-panel">
+    <header class="field-modal-header"><div><h2 id="single-core-field-management-title">自定义指标</h2><p>选择后按固定字段分组顺序呈现数据卡片</p></div><button class="field-modal-close" type="button" data-single-core-field-action="cancel" aria-label="关闭核心数据自定义指标">×</button></header>
+    <div class="field-modal-body single-core-field-body"><nav id="single-core-field-groups" class="field-modal-groups" aria-label="核心指标分组"></nav><section class="field-modal-main" aria-label="可选核心指标"><div class="field-modal-search"><input id="single-core-field-search" type="search" placeholder="搜索核心指标" aria-label="搜索核心指标"></div><div id="single-core-field-options" class="field-options"></div></section><aside class="field-modal-selected" aria-label="已选择核心指标"><div class="field-modal-selected-header"><div><strong>已选择</strong> <span id="single-core-selected-count"></span></div><button type="button" data-single-core-field-action="reset">重置</button></div><ol id="single-core-selected-fields" class="field-modal-selected-list"></ol></aside></div>
+    <footer class="field-modal-footer"><p>标题、素材 ID、榜单排名和首投日期固定显示在详情头部</p><div class="field-modal-footer-actions"><button type="button" data-single-core-field-action="cancel">取消</button><button class="primary" type="button" data-single-core-field-action="confirm">确定</button></div></footer>
+  </div>
 </section>
 <section id="audience-panel" class="audience-section" data-section-panel="audience" hidden>
   <div id="audience-unavailable" class="audience-card empty" hidden>人群数据不可用</div>
@@ -581,6 +700,7 @@ body.modal-open { overflow:hidden; }
     <div class="pager"><span id="highlight-range"></span><span><button id="highlight-first" type="button">首</button><button id="highlight-previous" type="button">前</button><span id="highlight-pages"></span><button id="highlight-next" type="button">后</button><button id="highlight-last" type="button">末</button></span></div>
   </div>
 </section>
+<section id="single-highlight-modal" class="highlight-modal" role="dialog" aria-modal="true" aria-labelledby="single-highlight-modal-caption" hidden><div class="highlight-modal-backdrop" data-single-highlight-action="close"></div><div class="highlight-modal-panel"><button id="single-highlight-modal-close" class="highlight-modal-close" type="button" data-single-highlight-action="close" aria-label="关闭单素材高光帧大图">×</button><img id="single-highlight-modal-image" class="highlight-modal-image" alt=""><p id="single-highlight-modal-caption" class="highlight-modal-caption"></p></div></section>
 <section id="highlight-modal" class="highlight-modal" role="dialog" aria-modal="true" aria-labelledby="highlight-modal-caption" hidden>
   <div class="highlight-modal-backdrop" data-highlight-action="close"></div>
   <div class="highlight-modal-panel">
@@ -597,6 +717,7 @@ body.modal-open { overflow:hidden; }
   const model = JSON.parse(document.getElementById("overview-model").textContent);
   const pageSize = 10;
   const highlightPageSize = 12;
+  const singleHighlightPageSize = 8;
   const storageKey = `yuntu-overview:${model.runId}:v${model.schemaVersion}`;
   const fieldGroupOrder = ["素材基础信息", "内容曝光与播放", "点击与转化", "互动指标"];
   const presentationFields = model.fields.filter(field => field.id !== "material_id");
@@ -625,6 +746,47 @@ body.modal-open { overflow:hidden; }
   const audienceState = {donutSelection: {gender: null, age: null}};
   const scriptFormulaState = {selectedPrimary: null, selectedSecondary: null};
   const highlightState = {page: 1, lastFocused: null};
+  const singleMaterialOverview = model.singleMaterialOverview || {status: "unavailable", materials: []};
+  const singleMaterials = Array.isArray(singleMaterialOverview.materials) ? singleMaterialOverview.materials : [];
+  const singleState = {materialId: singleMaterials[0]?.materialId || null, tab: "core", trend: "点赞指数", span: 100, page: 1, formulaId: null, lastFocused: null};
+  const singleCoreStorageKey = `${storageKey}:single-core`;
+  const singleCoreFieldGroupOrder = ["展现指标", "互动/种草指标", "转化指标"];
+  const singleCoreFieldGroupById = {"metrics.show_cnt": "展现指标", "metrics.ctr": "展现指标", "metrics.play_over_rate": "展现指标", "metrics.play_3s_rate": "展现指标", "metrics.play_5s_rate": "展现指标", "metrics.interact_rate": "互动/种草指标", "metrics.like_rate": "互动/种草指标", "metrics.comment_rate": "互动/种草指标", "metrics.share_rate": "互动/种草指标", "metrics.cvr": "转化指标", "metrics.pvr": "转化指标", "metrics.product_wish_button_buy_cart_rate": "转化指标"};
+  const singleCoreFixedFields = [];
+  const singleCoreState = {visibleFieldIds: null, draftFieldIds: null, fieldSearch: "", activeFieldGroup: singleCoreFieldGroupOrder[0]};
+  const singleSelector = document.getElementById("single-material-selector"), singleCoreModal = document.getElementById("single-core-field-management"), singleCoreFieldGroups = document.getElementById("single-core-field-groups"), singleCoreFieldSearch = document.getElementById("single-core-field-search"), singleCoreFieldOptions = document.getElementById("single-core-field-options"), singleCoreSelectedFields = document.getElementById("single-core-selected-fields"), singleCoreSelectedCount = document.getElementById("single-core-selected-count"), singleHighlightModal = document.getElementById("single-highlight-modal"), singleHighlightImage = document.getElementById("single-highlight-modal-image"), singleHighlightCaption = document.getElementById("single-highlight-modal-caption");
+  function currentSingleMaterial() { return singleMaterials.find(item => item.materialId === singleState.materialId) || singleMaterials[0] || null; }
+  function singleText(value) { return escaped(value == null || value === "" ? "—" : value); }
+  function singleDisplay(value, kind) { if (value == null || value === "") return "—"; if (kind === "rate") return `${new Intl.NumberFormat("zh-CN", {maximumFractionDigits:2}).format(Number(value) * 100)}%`; if (["number", "integer"].includes(kind)) return new Intl.NumberFormat("zh-CN", {maximumFractionDigits:2}).format(Number(value)); return singleText(value); }
+  function copyText(value, trigger) { const done = () => { const original = trigger.textContent; trigger.textContent = "已复制"; window.setTimeout(() => { trigger.textContent = original; }, 1200); }; if (navigator.clipboard?.writeText) { navigator.clipboard.writeText(value).then(done).catch(() => {}); return; } const helper = document.createElement("textarea"); helper.value = value; helper.setAttribute("readonly", ""); helper.style.position = "fixed"; helper.style.opacity = "0"; document.body.appendChild(helper); helper.select(); try { if (document.execCommand("copy")) done(); } finally { helper.remove(); } }
+  function renderSingleSelector() { if (!singleSelector) return; if (!singleMaterials.length) { singleSelector.innerHTML = '<div class="empty">详情素材不可用</div>'; return; } singleSelector.innerHTML = singleMaterials.map(item => `<button type="button" data-material-selector="${escaped(item.materialId)}" class="${item.materialId === singleState.materialId ? "active" : ""}" aria-pressed="${item.materialId === singleState.materialId}"><strong>TOP${escaped(item.rank)} · ${singleText(item.title)}</strong><span>素材ID：${escaped(item.materialId)}</span></button>`).join(""); }
+  function singleCoreFields(material) { return (material?.core?.fields || []).filter(field => !["title", "publish_time", "video_duration", "rank"].includes(field.id)); }
+  function singleCoreFieldGroup(field) { return field?.group || singleCoreFieldGroupById[field?.id] || "素材基础信息"; }
+  function singleCoreDialogFields(material) { return [...singleCoreFixedFields, ...singleCoreFields(material)]; }
+  function orderedSingleCoreFieldIds(ids, material) { const selected = new Set(Array.isArray(ids) ? ids : []); return singleCoreFields(material).filter(field => selected.has(field.id)).map(field => field.id); }
+  function loadSingleCoreFields(material) { if (singleCoreState.visibleFieldIds) return; let stored = null; try { stored = JSON.parse(localStorage.getItem(singleCoreStorageKey) || "null"); } catch (_) {} const available = singleCoreFields(material); const defaults = material?.core?.defaultFieldIds || available.map(field => field.id); singleCoreState.visibleFieldIds = orderedSingleCoreFieldIds(Array.isArray(stored) ? stored : defaults, material); }
+  function saveSingleCoreFields() { try { localStorage.setItem(singleCoreStorageKey, JSON.stringify(singleCoreState.visibleFieldIds || [])); } catch (_) {} }
+  function singlePanelHeading(title) { return `<header class="single-panel-heading"><h2>${escaped(title)}</h2></header>`; }
+  function ensureSinglePanelHeadings() { const titles = {"single-material-core":"核心数据", "single-material-portrait":"人群画像", "single-material-trends":"秒级拆解", "single-material-formula":"内容公式", "single-material-creative":"创意元素拆解", "single-material-highlights":"高光帧数据"}; Object.entries(titles).forEach(([id, title]) => { const panel = document.getElementById(id); if (!panel || panel.querySelector(":scope > .single-panel-heading")) return; const heading = document.createElement("header"); heading.className = "single-panel-heading"; const label = document.createElement("h2"); label.textContent = title; heading.append(label); panel.prepend(heading); }); }
+  function renderSingleCore(material) { const content = document.getElementById("single-material-core"), fields = singleCoreFields(material); loadSingleCoreFields(material); const visible = orderedSingleCoreFieldIds(singleCoreState.visibleFieldIds, material).map(id => fields.find(field => field.id === id)).filter(Boolean); content.innerHTML = `${singlePanelHeading("核心数据")}${material?.core?.status !== "available" ? '<div class="empty">核心数据不可用</div>' : `<div class="single-core-toolbar"><div><p>可按需要选择并调整展示的指标</p></div><button id="single-core-field-button" type="button">自定义指标</button></div><div class="single-material-metrics">${visible.map(field => `<article class="metric-card"><span>${escaped(field.label)}</span><strong>${singleDisplay(field.value, field.kind)}</strong></article>`).join("") || '<div class="empty">暂无已选择指标</div>'}</div>`}`; }
+  function renderSingleCoreFieldDialog() { const material = currentSingleMaterial(), fields = singleCoreFields(material), dialogFields = singleCoreDialogFields(material); if (!material || !singleCoreModal) return; singleCoreState.draftFieldIds = orderedSingleCoreFieldIds(singleCoreState.draftFieldIds || singleCoreState.visibleFieldIds, material); const query = normalize(singleCoreState.fieldSearch); singleCoreFieldGroups.innerHTML = singleCoreFieldGroupOrder.map(group => { const count = dialogFields.filter(field => singleCoreFieldGroup(field) === group).length; return `<button type="button" class="${!query && singleCoreState.activeFieldGroup === group ? "active" : ""}" data-single-core-field-group="${escaped(group)}">${escaped(group)}<span>${count}</span></button>`; }).join(""); const available = dialogFields.filter(field => (!query && singleCoreFieldGroup(field) === singleCoreState.activeFieldGroup) || (query && (normalize(field.label).includes(query) || normalize(field.id).includes(query)))); const grouped = {}; available.forEach(field => (grouped[singleCoreFieldGroup(field)] ||= []).push(field)); singleCoreFieldOptions.innerHTML = Object.entries(grouped).map(([group, groupFields]) => `<section class="field-option-section"><h3>${escaped(group)}</h3><div class="field-option-grid">${groupFields.map(field => { const fixed = field.id.startsWith("fixed."); return `<label class="field-option"><input type="checkbox" data-single-core-field-id="${escaped(field.id)}"${fixed ? " disabled" : ""}${fixed && field.checked || !fixed && singleCoreState.draftFieldIds.includes(field.id) ? " checked" : ""}><span>${escaped(field.label)}</span>${fixed && field.checked ? '<span class="field-required">固定</span>' : ""}</label>`; }).join("")}</div></section>`).join("") || '<div class="empty">没有匹配指标</div>'; const selected = singleCoreState.draftFieldIds.map(id => fields.find(field => field.id === id)).filter(Boolean); singleCoreSelectedCount.textContent = `（${selected.length}）`; singleCoreSelectedFields.innerHTML = selected.map(field => `<li class="field-modal-selected-item"><span class="field-drag-handle">☷</span><span>${escaped(field.label)}</span><button type="button" data-single-core-remove-field-id="${escaped(field.id)}" aria-label="移除${escaped(field.label)}">×</button></li>`).join("") || '<li class="empty">暂无已选择指标</li>'; }
+  function openSingleCoreFieldDialog() { const material = currentSingleMaterial(); if (!material || !singleCoreModal) return; loadSingleCoreFields(material); singleCoreState.draftFieldIds = [...(singleCoreState.visibleFieldIds || [])]; singleCoreState.fieldSearch = ""; singleCoreState.activeFieldGroup = singleCoreFieldGroupOrder.find(group => singleCoreDialogFields(material).some(field => singleCoreFieldGroup(field) === group)) || singleCoreFieldGroupOrder[0]; singleCoreFieldSearch.value = ""; singleCoreModal.hidden = false; document.body.classList.add("modal-open"); renderSingleCoreFieldDialog(); singleCoreFieldSearch.focus(); }
+  function closeSingleCoreFieldDialog() { if (!singleCoreModal) return; singleCoreModal.hidden = true; singleCoreState.draftFieldIds = null; singleCoreState.fieldSearch = ""; document.body.classList.remove("modal-open"); }
+  function confirmSingleCoreFieldDialog() { const material = currentSingleMaterial(); singleCoreState.visibleFieldIds = orderedSingleCoreFieldIds(singleCoreState.draftFieldIds, material); saveSingleCoreFields(); closeSingleCoreFieldDialog(); renderSingleMaterial(); }
+  function renderSinglePortrait(material) { const content = document.getElementById("single-material-portrait"), portrait = material?.portrait; if (!portrait || portrait.status !== "available") { content.innerHTML = `${singlePanelHeading("人群画像")}<div class="empty">人群画像不可用：${singleText(portrait?.reason)}</div>`; return; } const groups = [["八大人群", portrait.eightCrowds], ["年龄", portrait.ageFeatures], ["性别", portrait.genderFeatures]]; content.innerHTML = `${singlePanelHeading("人群画像")}<div class="single-portrait-grid">${groups.map(([label, values]) => `<div class="overview-card"><h3>${label}</h3><div class="single-material-tags">${(values || []).length ? values.map(value => `<span class="single-material-tag">${singleText(value)}</span>`).join("") : '<span class="empty">暂无该类标签</span>'}</div></div>`).join("")}</div>`; }
+  function renderSingleTrendChart(metric) { const container = document.getElementById("single-trend-chart"); const series = metric?.series || []; if (!series.length) { container.innerHTML = `<div class="empty">${singleText(metric?.reason || "暂无可验证的趋势数据")}</div>`; return; } const endIndex = Math.max(0, Math.ceil((series.length - 1) * singleState.span / 100)), visible = series.slice(0, endIndex + 1), width = 640, height = 230, left = 8, right = 8, top = 18, bottom = 34, max = Math.max(...visible.map(item => Number(item.value)), 1), x = index => left + (visible.length === 1 ? 0 : index * (width - left - right) / (visible.length - 1)), y = value => height - bottom - Number(value) / max * (height - top - bottom), path = visible.map((item, index) => `${index ? "L" : "M"} ${x(index).toFixed(2)} ${y(item.value).toFixed(2)}`).join(" "); const points = visible.map((item, index) => `<circle class="single-trend-point" data-single-trend-second="${escaped(item.second)}" data-single-trend-value="${escaped(item.value)}" cx="${x(index).toFixed(2)}" cy="${y(item.value).toFixed(2)}" r="4" tabindex="0" role="img" aria-label="${escaped(item.second)}秒 ${escaped(item.value)}"></circle>`).join(""); container.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${escaped(metric.label)}秒级趋势"><line class="chart-axis" x1="${left}" y1="${height-bottom}" x2="${width-right}" y2="${height-bottom}"></line><path d="${path}" fill="none" stroke="#2563eb" stroke-width="2"></path>${points}<text class="chart-label" x="${left}" y="${height-10}">${escaped(visible[0].second)}s</text><text class="chart-label" x="${width-right}" y="${height-10}" text-anchor="end">${escaped(visible[visible.length-1].second)}s</text></svg>`; container.querySelectorAll(".single-trend-point").forEach(point => { const show = () => { chartTooltip.textContent = `${metric.label} · ${point.dataset.singleTrendSecond}s · ${point.dataset.singleTrendValue}`; chartTooltip.hidden = false; const rect = point.getBoundingClientRect(); chartTooltip.style.left = `${Math.min(window.innerWidth - 220, rect.right + 8)}px`; chartTooltip.style.top = `${Math.max(12, rect.top - 34)}px`; }; point.addEventListener("pointerenter", show); point.addEventListener("focus", show); point.addEventListener("pointerleave", hideChartTooltip); point.addEventListener("blur", hideChartTooltip); }); }
+  function renderSingleTrends(material) { const content = document.getElementById("single-material-trends"), metrics = material?.trends?.metrics || [], metric = metrics.find(item => item.id === singleState.trend) || metrics[0]; if (!metric) { content.innerHTML = `${singlePanelHeading("秒级拆解")}<div class="empty">秒级趋势不可用</div>`; return; } singleState.trend = metric.id; content.innerHTML = `${singlePanelHeading("秒级拆解")}<div class="single-trend-tabs">${metrics.map(item => `<button type="button" data-single-trend="${escaped(item.id)}" class="${item.id === singleState.trend ? "active" : ""}" aria-pressed="${item.id === singleState.trend}">${escaped(item.label)}</button>`).join("")}</div><div id="single-trend-chart" class="single-trend-chart"></div><div class="single-trend-controls"><div>图表展示比例</div><output id="singleTrendSpanValue" for="singleTrendSpan">${singleState.span}%</output><input id="singleTrendSpan" data-single-range="span" type="range" min="20" max="100" value="${singleState.span}" aria-label="图表展示比例"></div>`; renderSingleTrendChart(metric); }
+  function setFormulaSelection(id) { singleState.formulaId = singleState.formulaId === id ? null : id; document.querySelectorAll("[data-formula-id]").forEach(item => { const active = singleState.formulaId != null && item.dataset.formulaId === singleState.formulaId; item.classList.toggle("active", active); item.setAttribute("aria-pressed", String(active)); }); }
+  const formulaColors = ["#ef6a6a", "#8b5cf6", "#22b573", "#f59e0b", "#64748b"];
+  function formulaColor(formula, id) { const index = (formula.labels || []).findIndex(item => item.id === id || (item.secondary || []).some(child => child.id === id)); return formulaColors[(index < 0 ? 0 : index) % formulaColors.length]; }
+  function formulaSourceText(source, formula) { const raw = typeof source?.text === "string" ? source.text : ""; if (!raw) return singleText(null); const matches = []; (source.terms || []).forEach(term => (term.texts || []).forEach(text => { if (typeof text !== "string" || !text) return; let from = 0; while (from < raw.length) { const start = raw.indexOf(text, from); if (start < 0) break; matches.push({start, end: start + text.length, text, id: term.id}); from = start + text.length; } })); matches.sort((left, right) => left.start - right.start || right.end - left.end); let cursor = 0, output = ""; matches.forEach(match => { if (match.start < cursor) return; output += escaped(raw.slice(cursor, match.start)); output += `<mark class="single-formula-highlight" data-formula-id="${escaped(match.id)}" style="background:${formulaColor(formula, match.id)}33;color:${formulaColor(formula, match.id)}" title="点击联动公式标签">${escaped(match.text)}</mark>`; cursor = match.end; }); return output + escaped(raw.slice(cursor)); }
+  function renderSingleFormula(material) { const content = document.getElementById("single-material-formula"), formula = material?.formula; if (!formula || formula.status !== "available") { content.innerHTML = `<div class="empty">内容公式不可用：${singleText(formula?.reason)}</div>`; return; } const labels = formula.labels || [], sources = formula.sources || {}, chain = labels.flatMap(item => (item.secondary || []).length ? item.secondary : [item]); content.innerHTML = `<div class="single-formula-toolbar"><h3>本视频内容公式</h3><button type="button" class="single-formula-copy" data-copy-formula>复制内容公式</button></div><div class="single-formula-overview"><div class="single-formula-legend">${labels.map((item, index) => `<span class="single-formula-legend-item"><i class="single-formula-legend-dot" style="background:${formulaColors[index % formulaColors.length]}"></i>${escaped(item.label)}</span>`).join("") || '<span class="empty">暂无公式标签</span>'}</div><div class="single-formula-chain" aria-label="内容公式联动链路">${chain.map((item, index) => `${index ? '<span class="single-formula-chain-plus">＋</span>' : ""}<button type="button" class="single-formula-chain-item" data-formula-id="${escaped(item.id)}" aria-pressed="false" style="background:${formulaColor(formula, item.id)}22;color:${formulaColor(formula, item.id)}">${escaped(item.label)}</button>`).join("")}</div></div><div class="single-formula-sources">${[["title","视频标题"],["visual","视频画面"],["script","视频脚本"]].map(([key,label]) => { const source = sources[key]; return `<article class="single-formula-source"><div class="single-formula-source-header"><h3>${label}</h3><button type="button" class="single-formula-copy" data-copy-text="${escaped(source?.text || "")}">复制文本</button></div><p>${formulaSourceText(source, formula)}</p>${(source?.terms || []).map(term => `<button type="button" class="single-formula-term" data-formula-id="${escaped(term.id)}" aria-pressed="false" style="border-color:${formulaColor(formula, term.id)}66;color:${formulaColor(formula, term.id)}">${escaped((term.texts || []).join("、"))}</button>`).join("")}</article>`; }).join("")}</div>`; if (singleState.formulaId) setFormulaSelection(singleState.formulaId); }
+  function renderSingleCreative(material) { document.getElementById("single-material-creative").innerHTML = `<div class="single-deferred"><strong>${singleText(material?.creative?.message || "本阶段暂未设计")}</strong><p>本板块不渲染推断、评分或占位数据。</p></div>`; }
+  function openSingleHighlight(frame, trigger) { singleState.lastFocused = trigger || document.activeElement; singleHighlightImage.src = frame.assetPath; singleHighlightImage.alt = `${frame.second}s ${frame.role}`; singleHighlightCaption.textContent = `${frame.second}s · ${frame.role}`; singleHighlightModal.hidden = false; document.body.classList.add("modal-open"); document.getElementById("single-highlight-modal-close").focus(); }
+  function closeSingleHighlight() { singleHighlightModal.hidden = true; singleHighlightImage.removeAttribute("src"); document.body.classList.remove("modal-open"); if (singleState.lastFocused?.focus) singleState.lastFocused.focus(); singleState.lastFocused = null; }
+  function renderSingleHighlights(material) { const content = document.getElementById("single-material-highlights"), frames = material?.highlights?.frames || []; if (!frames.length) { content.innerHTML = `<div class="empty">高光帧数据不可用：${singleText(material?.highlights?.reason)}</div>`; return; } const pageCount = Math.max(1, Math.ceil(frames.length / singleHighlightPageSize)); singleState.page = Math.min(singleState.page, pageCount); const start = (singleState.page - 1) * singleHighlightPageSize, pageFrames = frames.slice(start, start + singleHighlightPageSize); content.innerHTML = `<div class="single-highlight-grid">${pageFrames.map(frame => `<article class="single-highlight-card"><button type="button" class="single-highlight-open" data-single-highlight-id="${escaped(frame.id)}" aria-label="查看${escaped(frame.second)}秒高光帧"><img src="${escaped(frame.assetPath)}" alt="${escaped(frame.second)}秒 ${escaped(frame.role)}"></button><p>${escaped(frame.second)}s · ${escaped(frame.role)}<br>${(frame.reasons || []).map(reason => escaped(reason.type === "cover" ? "封面画面" : `${reason.trendName}Top${reason.rank}`)).join(" · ")}</p></article>`).join("")}</div><div class="pager"><span>显示 ${start + 1}-${Math.min(start + singleHighlightPageSize, frames.length)} / ${frames.length}</span><span><button type="button" data-single-highlight-page="first" ${singleState.page <= 1 ? "disabled" : ""}>首</button><button type="button" data-single-highlight-page="previous" ${singleState.page <= 1 ? "disabled" : ""}>前</button><span>${singleState.page} / ${pageCount}</span><button type="button" data-single-highlight-page="next" ${singleState.page >= pageCount ? "disabled" : ""}>后</button><button type="button" data-single-highlight-page="last" ${singleState.page >= pageCount ? "disabled" : ""}>末</button></span></div>`; }
+  function setSingleMaterialTab(tabId) { singleState.tab = tabId; document.querySelectorAll("[data-material-tab]").forEach(tab => { const active = tab.dataset.materialTab === tabId; tab.classList.toggle("active", active); tab.setAttribute("aria-selected", String(active)); }); }
+  function renderSingleMaterial() { const material = currentSingleMaterial(); renderSingleSelector(); const title = document.getElementById("single-material-title"), id = document.getElementById("single-material-id"), video = document.getElementById("single-material-video"); if (!material) { title.textContent = "单素材详情不可用"; id.textContent = ""; video.textContent = "无已验证详情素材"; ["core","portrait","trends","formula","creative","highlights"].forEach(tab => { document.getElementById(`single-material-${tab}`).innerHTML = '<div class="empty">暂无可验证数据</div>'; }); ensureSinglePanelHeadings(); return; } title.textContent = material.title || "单素材详情"; id.textContent = `素材ID：${material.materialId} · 榜单排名：${material.rank} · 首投日期：${material.publishTime || "—"}`; video.textContent = material.video?.available ? "本地视频已验证" : `视频不可用：${material.video?.reason || "local_video_artifact_missing"}`; renderSingleCore(material); renderSinglePortrait(material); renderSingleTrends(material); renderSingleFormula(material); renderSingleCreative(material); renderSingleHighlights(material); ensureSinglePanelHeadings(); setSingleMaterialTab(singleState.tab); }
   function hideChartTooltip() { chartTooltip.hidden = true; }
   function showChartTooltip(event, bucket, level, total) { const source = event.currentTarget || event.target; const rect = source && source.getBoundingClientRect ? source.getBoundingClientRect() : null; chartTooltip.innerHTML = `<div>${escaped(level)}：${escaped(bucket.label)}</div><div>覆盖素材数：${escaped(bucket.value)}</div><div>占比：${escaped(new Intl.NumberFormat("zh-CN", {style:"percent", maximumFractionDigits:2}).format(bucket.share))}</div><div>当前维度标签覆盖总和：${escaped(total)}</div>`; chartTooltip.hidden = false; chartTooltip.style.left = `${Math.min(Math.max(12, rect ? rect.right + 8 : 16), Math.max(12, window.innerWidth - chartTooltip.offsetWidth - 12))}px`; chartTooltip.style.top = `${Math.min(Math.max(12, rect ? rect.top : 16), Math.max(12, window.innerHeight - chartTooltip.offsetHeight - 12))}px`; }
   function attachChartInteractions(container, buckets, level, total, dimension) { container.querySelectorAll("[data-chart-index]").forEach(element => { const bucket = buckets[Number(element.dataset.chartIndex)]; element.addEventListener("pointerenter", event => showChartTooltip(event, bucket, level, total)); element.addEventListener("pointerleave", hideChartTooltip); element.addEventListener("focus", event => showChartTooltip(event, bucket, level, total)); element.addEventListener("blur", hideChartTooltip); if (dimension) element.addEventListener("click", event => toggleDonutSelection(dimension, event.currentTarget.dataset.chartIndex)); }); }
@@ -667,14 +829,22 @@ body.modal-open { overflow:hidden; }
   fieldSearch.addEventListener("input", event => { state.fieldSearch = event.target.value; renderFieldDialog(); fieldSearch.focus(); });
   highlightGrid.addEventListener("click", event => { const open = event.target.closest("[data-highlight-open]"); if (open) { openHighlightModal(open.dataset.highlightOpen, open); return; } const material = event.target.closest("[data-highlight-material-id]"); if (material) { event.preventDefault(); jumpToMaterial(material.dataset.highlightMaterialId); } });
   highlightModal.addEventListener("click", event => { if (event.target.closest("[data-highlight-action=close]")) closeHighlightModal(); });
-  document.addEventListener("keydown", event => { if (event.key === "Escape" && !highlightModal.hidden) closeHighlightModal(); else if (event.key === "Escape" && !modal.hidden) closeFieldDialog(); else if (event.key === "Escape") hideChartTooltip(); });
-  document.querySelectorAll("[data-section]").forEach(button => button.addEventListener("click", event => { const section = event.currentTarget.dataset.section; document.querySelectorAll("[data-section]").forEach(item => item.classList.toggle("active", item.dataset.section === section)); document.querySelectorAll("[data-section-panel]").forEach(panel => { panel.hidden = panel.dataset.sectionPanel !== section; }); if (section === "audience") renderAudience(); if (section === "scripts") renderScriptFormula(); if (section === "highlights") renderHighlights(); hideChartTooltip(); }));
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && !singleHighlightModal.hidden) closeSingleHighlight(); else if (event.key === "Escape" && !highlightModal.hidden) closeHighlightModal(); else if (event.key === "Escape" && !singleCoreModal.hidden) closeSingleCoreFieldDialog(); else if (event.key === "Escape" && !modal.hidden) closeFieldDialog(); else if (event.key === "Escape") hideChartTooltip(); });
+  document.querySelectorAll("[data-section]").forEach(button => button.addEventListener("click", event => { const section = event.currentTarget.dataset.section; document.querySelectorAll("[data-section]").forEach(item => item.classList.toggle("active", item.dataset.section === section)); document.querySelectorAll("[data-section-panel]").forEach(panel => { panel.hidden = panel.dataset.sectionPanel !== section; }); if (section === "single-material-data") { renderSingleMaterial(); document.getElementById("single-material-data-panel")?.scrollIntoView({behavior:"auto", block:"start"}); setSingleMaterialTab("core"); } if (section === "audience") renderAudience(); if (section === "scripts") renderScriptFormula(); if (section === "highlights") renderHighlights(); hideChartTooltip(); }));
+  document.querySelectorAll("[data-material-tab]").forEach(button => button.addEventListener("click", event => { const tabId = event.currentTarget.dataset.materialTab; setSingleMaterialTab(tabId); document.getElementById(`single-material-${tabId}`)?.scrollIntoView({behavior:"smooth", block:"start"}); }));
+  if (singleSelector) singleSelector.addEventListener("click", event => { const button = event.target.closest("[data-material-selector]"); if (!button) return; singleState.materialId = button.dataset.materialSelector; singleState.tab = "core"; singleState.page = 1; renderSingleMaterial(); document.querySelector(".single-material-main")?.scrollIntoView({behavior:"auto", block:"start"}); });
+  document.addEventListener("input", event => { const range = event.target.closest("[data-single-range]"); if (!range || range.dataset.singleRange !== "span") return; singleState.span = Math.max(20, Math.min(100, Number(range.value))); const value = document.getElementById("singleTrendSpanValue"), material = currentSingleMaterial(), metric = (material?.trends?.metrics || []).find(item => item.id === singleState.trend); if (value) value.textContent = `${singleState.span}%`; if (metric) renderSingleTrendChart(metric); });
+  document.addEventListener("click", event => { const coreAction = event.target.closest("[data-single-core-field-action]")?.dataset.singleCoreFieldAction; if (event.target.closest("#single-core-field-button")) { openSingleCoreFieldDialog(); return; } if (coreAction === "cancel") { closeSingleCoreFieldDialog(); return; } if (coreAction === "confirm") { confirmSingleCoreFieldDialog(); return; } if (coreAction === "reset") { singleCoreState.draftFieldIds = [...(currentSingleMaterial()?.core?.defaultFieldIds || [])]; singleCoreState.activeFieldGroup = singleCoreFieldGroupOrder[0]; renderSingleCoreFieldDialog(); return; } const group = event.target.closest("[data-single-core-field-group]")?.dataset.singleCoreFieldGroup; if (group) { singleCoreState.activeFieldGroup = group; singleCoreState.fieldSearch = ""; singleCoreFieldSearch.value = ""; renderSingleCoreFieldDialog(); return; } const removeCoreId = event.target.closest("[data-single-core-remove-field-id]")?.dataset.singleCoreRemoveFieldId; if (removeCoreId) { singleCoreState.draftFieldIds = singleCoreState.draftFieldIds.filter(id => id !== removeCoreId); renderSingleCoreFieldDialog(); return; } const trend = event.target.closest("[data-single-trend]"); if (trend) { singleState.trend = trend.dataset.singleTrend; renderSingleMaterial(); return; } const formula = event.target.closest("[data-formula-id]"); if (formula) { setFormulaSelection(formula.dataset.formulaId); return; } const copyFormula = event.target.closest("[data-copy-formula]"); if (copyFormula) { const formula = currentSingleMaterial()?.formula; const text = (formula?.labels || []).flatMap(item => (item.secondary || []).map(child => child.label)).join(" + "); copyText(text || "暂无内容公式", copyFormula); return; } const copySource = event.target.closest("[data-copy-text]"); if (copySource) { copyText(copySource.dataset.copyText || "", copySource); return; } const open = event.target.closest("[data-single-highlight-id]"); if (open) { const material = currentSingleMaterial(), frame = material?.highlights?.frames?.find(item => item.id === open.dataset.singleHighlightId); if (frame) openSingleHighlight(frame, open); return; } const page = event.target.closest("[data-single-highlight-page]"); if (page) { const frames = currentSingleMaterial()?.highlights?.frames || [], pageCount = Math.max(1, Math.ceil(frames.length / singleHighlightPageSize)); if (page.dataset.singleHighlightPage === "first") singleState.page = 1; if (page.dataset.singleHighlightPage === "previous") singleState.page = Math.max(1, singleState.page - 1); if (page.dataset.singleHighlightPage === "next") singleState.page = Math.min(pageCount, singleState.page + 1); if (page.dataset.singleHighlightPage === "last") singleState.page = pageCount; renderSingleMaterial(); } });
+  singleCoreModal.addEventListener("change", event => { const input = event.target.closest("input[data-single-core-field-id]"); if (!input) return; singleCoreState.draftFieldIds = orderedSingleCoreFieldIds(input.checked ? [...singleCoreState.draftFieldIds, input.dataset.singleCoreFieldId] : singleCoreState.draftFieldIds.filter(id => id !== input.dataset.singleCoreFieldId), currentSingleMaterial()); renderSingleCoreFieldDialog(); });
+  singleCoreFieldSearch.addEventListener("input", event => { singleCoreState.fieldSearch = event.target.value; renderSingleCoreFieldDialog(); singleCoreFieldSearch.focus(); });
+  singleHighlightModal.addEventListener("click", event => { if (event.target.closest("[data-single-highlight-action=close]")) closeSingleHighlight(); });
+  window.addEventListener("yuntu:highlight-material", event => { if (!singleMaterials.some(item => item.materialId === event.detail?.materialId)) return; singleState.materialId = event.detail.materialId; singleState.tab = "core"; renderSingleMaterial(); document.querySelector('[data-section="single-material-data"]').click(); });
   document.getElementById("script-formula-secondary-back").addEventListener("click", () => { scriptFormulaState.selectedPrimary = null; renderScriptFormula(); });
   search.addEventListener("input", event => { state.query = event.target.value; state.exactMaterialId = null; state.page = 1; render(); });
   document.getElementById("field-button").addEventListener("click", openFieldDialog);
   document.getElementById("first").addEventListener("click", () => { state.page = 1; render(); }); document.getElementById("previous").addEventListener("click", () => { state.page = Math.max(1, state.page - 1); render(); }); document.getElementById("next").addEventListener("click", () => { state.page += 1; render(); }); document.getElementById("last").addEventListener("click", () => { state.page = Math.max(1, Math.ceil(matchingRows().length / pageSize)); render(); });
   document.getElementById("highlight-first").addEventListener("click", () => { highlightState.page = 1; renderHighlights(); }); document.getElementById("highlight-previous").addEventListener("click", () => { highlightState.page = Math.max(1, highlightState.page - 1); renderHighlights(); }); document.getElementById("highlight-next").addEventListener("click", () => { highlightState.page += 1; renderHighlights(); }); document.getElementById("highlight-last").addEventListener("click", () => { highlightState.page = Math.max(1, Math.ceil((highlightOverview.cards || []).length / highlightPageSize)); renderHighlights(); });
-  loadVisibleFields(); render();
+  loadVisibleFields(); renderSingleMaterial(); render();
 })();
 </script>
 </body>
@@ -721,6 +891,8 @@ def write_overview(run_dir: Path, output_dir: Path, registry_path: Path) -> dict
     output_path.mkdir(parents=True, exist_ok=True)
     if model.get("highlightOverview", {}).get("cards"):
         copy_verified_highlight_assets(run_root, output_path, model["highlightOverview"])
+    if model.get("singleMaterialOverview", {}).get("materials"):
+        copy_verified_single_material_assets(run_root, output_path, model["singleMaterialOverview"])
     data_path = output_path / "overview-data.json"
     html_path = output_path / "index.html"
     _write_atomic(data_path, json.dumps(model, ensure_ascii=False, indent=2) + "\n")

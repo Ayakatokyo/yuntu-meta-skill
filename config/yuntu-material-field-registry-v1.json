@@ -147,13 +147,40 @@
       "labelEvidence": "PVR（曝光转化率）"
     },
     {
-      "id": "metrics.component_click_rate",
-      "label": "组件点击率",
+      "id": "metrics.like_rate",
+      "label": "点赞率",
       "kind": "rate",
-      "path": ["metrics", "component_click_rate"],
+      "path": ["metrics", "like_rate"],
       "filterOperators": ["eq", "gt", "gte", "lt", "lte"],
       "sortable": true,
-      "labelEvidence": "运行返回字段；不声称CSV表头"
+      "labelEvidence": "运行返回 like_rate"
+    },
+    {
+      "id": "metrics.comment_rate",
+      "label": "评论率",
+      "kind": "rate",
+      "path": ["metrics", "comment_rate"],
+      "filterOperators": ["eq", "gt", "gte", "lt", "lte"],
+      "sortable": true,
+      "labelEvidence": "运行返回 comment_rate"
+    },
+    {
+      "id": "metrics.share_rate",
+      "label": "转发率",
+      "kind": "rate",
+      "path": ["metrics", "share_rate"],
+      "filterOperators": ["eq", "gt", "gte", "lt", "lte"],
+      "sortable": true,
+      "labelEvidence": "运行返回 share_rate"
+    },
+    {
+      "id": "metrics.product_wish_button_buy_cart_rate",
+      "label": "商品收藏加购率",
+      "kind": "rate",
+      "path": ["metrics", "product_wish_button_buy_cart_rate"],
+      "filterOperators": ["eq", "gt", "gte", "lt", "lte"],
+      "sortable": true,
+      "labelEvidence": "运行返回 product_wish_button_buy_cart_rate"
     }
   ]
 }

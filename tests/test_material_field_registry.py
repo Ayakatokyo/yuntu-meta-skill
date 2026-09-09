@@ -22,6 +22,16 @@ class MaterialFieldRegistryTests(unittest.TestCase):
         self.assertEqual(registry.resolve("3S 完播率").id, "metrics.play_3s_rate")
         self.assertEqual(registry.resolve("metrics.ctr").label, "CTR（点击率）")
 
+    def test_registry_exposes_detail_rate_metrics_without_component_click_rate(self):
+        registry = MaterialFieldRegistry.from_path(REGISTRY)
+
+        self.assertEqual(registry.resolve("点赞率").id, "metrics.like_rate")
+        self.assertEqual(registry.resolve("评论率").id, "metrics.comment_rate")
+        self.assertEqual(registry.resolve("转发率").id, "metrics.share_rate")
+        self.assertEqual(registry.resolve("商品收藏加购率").id, "metrics.product_wish_button_buy_cart_rate")
+        with self.assertRaisesRegex(MaterialFieldRegistryError, "unknown"):
+            registry.resolve("组件点击率")
+
     def test_registry_reads_only_declared_record_paths(self):
         registry = MaterialFieldRegistry.from_path(REGISTRY)
         record = {"metrics": {"show_cnt": 123}, "title": "燕窝"}

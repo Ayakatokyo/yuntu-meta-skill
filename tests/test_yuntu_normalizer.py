@@ -95,6 +95,26 @@ class YuntuNormalizerTests(unittest.TestCase):
             },
         )
 
+    def test_normalize_list_records_preserves_detail_rate_metrics(self):
+        normalizer = load_module()
+        records = normalizer.normalize_list_records([
+            {
+                "material_id": "101",
+                "title": "素材",
+                "like_rate": 0.01,
+                "comment_rate": 0.02,
+                "share_rate": 0.03,
+                "product_wish_button_buy_cart_rate": 0.04,
+            }
+        ], source_path="fixture/list.json")
+
+        self.assertEqual(records[0]["metrics"], {
+            "like_rate": 0.01,
+            "comment_rate": 0.02,
+            "share_rate": 0.03,
+            "product_wish_button_buy_cart_rate": 0.04,
+        })
+
     def test_normalize_list_records_preserves_requested_top1000_metrics_only(self):
         normalizer = load_module()
         record = normalizer.normalize_list_records(
@@ -114,7 +134,13 @@ class YuntuNormalizerTests(unittest.TestCase):
 
         self.assertEqual(
             record["metrics"],
-            {"show_cnt": 1000, "ctr": 0.1, "cvr": 0.2, "play_3s_rate": 0.3},
+            {
+                "show_cnt": 1000,
+                "ctr": 0.1,
+                "cvr": 0.2,
+                "play_3s_rate": 0.3,
+                "like_rate": 0.01,
+            },
         )
 
     def test_normalize_list_records_marks_unparsed_nested_values_unavailable(self):
