@@ -1,18 +1,18 @@
 ---
 name: yuntu-meta-skill
-description: 采集巨量云图行业素材及可用源事实，并可在第一阶段按规则生成高光帧资产；第二阶段基于已落盘证据完成商业分析。
+description: 采集巨量云图行业素材及可用源事实，并在第一阶段生成可审计的离线素材榜单报告；第二阶段基于已落盘证据完成商业分析。
 metadata:
   argument_hint: 输入行业、时间范围、榜单类型、品牌和人群筛选、素材列表本地筛选及详情素材数。高光帧默认不生成；仅在第一阶段明确需要时补充现有规则。
-  pre_input: 请采集云图行业素材及相关数据。行业是 ____（必填）；时间范围是 ____（默认近7天，自定义时填写起止日期）；榜单类型是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）；品牌范围是 ____（默认全行业，或指定3至10个品牌）；需要获取详情的素材数是 ____（默认10）；年龄、性别、八大人群筛选是 ____（可选，留空不过滤）；素材列表本地筛选/排序是 ____（可选，例如先落盘完整TOP1000后按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）。是否同时生成高光帧图片：____（可选，默认否）。仅选择是时，填写封面设置，以及需要的高光指标、提取策略和帧数。请在第一阶段完成取数和已选择的图片提取，整理实际可用数据后停止，等待我输入商业分析思路。
+  pre_input: 请采集云图行业素材及相关数据。行业是 ____（必填）；时间范围是 ____（默认近7天，自定义时填写起止日期）；榜单类型是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）；品牌范围是 ____（默认全行业，或指定3至10个品牌）；需要获取详情的素材数是 ____（默认10）；年龄、性别、八大人群筛选是 ____（可选，留空不过滤）；素材列表本地筛选/排序是 ____（可选，例如先落盘完整TOP1000后按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）。是否同时生成高光帧图片：____（可选，默认否）。仅选择是时，填写封面设置，以及需要的高光指标、提取策略和帧数。请在第一阶段完成取数、详情、已选择的图片提取，并生成第一阶段离线报告；整理实际可用数据后停止，等待我输入商业分析思路或商业问题。
 ---
 
 # 可配置云图采集与商业分析工作流
 
-该技能负责榜单、详情和高光帧资产，并通过同一入口分两阶段运行：首次调用只采集并准备事实资产，停在 `ready_for_analysis`；阶段一明确停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二次调用才进入商业分析编排。采集和事实包阶段不生成未经引用的商业洞察。新详情采集固定使用 `rpa.conn.juliang.yt.industry.content.rankings.details`、`date_type` 和异步 fetch task/status；历史批次仍可读取旧详情格式，但不作为新批次回退路径。
+该技能负责榜单、详情、高光帧资产和第一阶段离线报告，并通过同一入口分两阶段运行：阶段一先采集并准备事实资产，确认 `ready_for_analysis` 后调用 `render-overview` 生成可审计的数据工作台报告；报告完成后停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二阶段才进入商业分析编排。第一阶段报告只展示已采集事实、确定性统计和已验证本地图片，不生成未经引用的商业洞察。新详情采集固定使用 `rpa.conn.juliang.yt.industry.content.rankings.details`、`date_type` 和异步 fetch task/status；历史批次仍可读取旧详情格式，但不作为新批次回退路径。
 
 ## 输入
 
-阶段一生成 `QuerySpec`（行业、周期、筛选、榜单指标、详情素材数），高光帧默认关闭。只有明确请求图片时才校验并生成既有 `HighlightSpec`；请求却缺规则、规则非法，或明确关闭却同时给规则时均在外部取数前报错。成功后落盘源事实和可选图片资产，停在 `ready_for_analysis`，不读取商业问题、不调用分析 Prompt、不渲染报告。
+阶段一生成 `QuerySpec`（行业、周期、筛选、榜单指标、详情素材数），高光帧默认关闭。只有明确请求图片时才校验并生成既有 `HighlightSpec`；请求却缺规则、规则非法，或明确关闭却同时给规则时均在外部取数前报错。采集成功后先落盘源事实和可选图片资产并进入 `ready_for_analysis`，再对同一运行目录执行 `render-overview` 生成第一阶段报告；在报告生成前后均不读取商业问题、不调用分析 Prompt、不生成商业洞察。报告生成成功后才向用户交付阶段一产物并停止。
 
 `QuerySpec` 支持行业、近 7 天、近 30 天或自定义日期、年龄、性别、八大人群、品牌范围、四类榜单指标、详情目标素材数和可选的 `material_list`。周期默认 `LAST_7_DAYS`；自定义日期是闭区间，起止日期均必填并遵循云图可用日期与跨度限制。年龄、性别、八大人群可留空表示不过滤；品牌范围默认为 `ALL_INDUSTRY`，指定品牌时填写 3 至 10 个品牌。详情目标数默认 10，必须为不超过 1000 的正整数。列表候选池由实现固定为 1000，不作为用户输入字段。
 
@@ -49,7 +49,11 @@ python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs
 python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
 python scripts/collector.py retry-highlights --output-dir runs/example
 python scripts/collector.py build-facts --run-dir runs/example
-# 阶段一返回 ready_for_analysis 后，使用同一个 yuntu-meta-skill 进入两轮阶段二工作流
+# 阶段一采集/事实门禁通过后，生成离线第一阶段数据报告；默认写入 runs/example/overview/
+python scripts/collector.py render-overview --run-dir runs/example
+# 需要显式指定报告目录时，目录必须位于运行目录内
+python scripts/collector.py render-overview --run-dir runs/example --output-dir runs/example/overview-preview
+# render-overview 成功后停止，等待用户输入商业分析思路或商业问题；收到问题后才进入阶段二
 python scripts/collector.py workflow --run-dir runs/example \
   --business-question "找出曝光高但转化差的素材" --output runs/example/analysis/workflow.md
 # 当前对话模型返回 FactSelectionSpec JSON 后回放本地事实选择
@@ -96,9 +100,17 @@ python scripts/collector.py --runtime-config-stdin --expected-gateway https://ga
 
 `collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 
+### 第一阶段报告与停止点
+
+当 `status` 返回 `status=ready_for_analysis` 且 `facts_status=complete` 后，必须对同一 `run_dir` 执行 `render-overview`。该命令只读取已落盘运行数据和注册表，不重新取数、不重新规范化、不重新分类、不启动商业分析；它会校验 `run-summary.json` 中榜单源文件的声明路径、文件大小、SHA-256 和记录数，并将已验证的高光帧/详情图片复制到报告目录。
+
+报告默认生成在 `runs/example/overview/`，核心产物为 `runs/example/overview/overview-data.json` 和 `runs/example/overview/index.html`，必要时附带 `assets/` 下的本地图片。`overview-data.json` 是带来源引用、哈希、可用性和缺口信息的事实投影；`index.html` 是离线数据工作台，展示素材榜单、人群数据、脚本/内容公式、高光帧和已执行详情范围。报告仅展示事实与确定性统计，不得加入 AI 分析、商业结论、行动建议或猜测字段含义。
+
+如果报告生成失败，保留运行目录和失败证据，先修复事实包或源文件校验问题；不得绕过校验进入阶段二。报告生成成功后，阶段一即完成，交付报告路径、事实包路径和数据缺口，并等待用户输入商业分析思路或商业问题。`render-overview` 不会改变 `ready_for_analysis` 状态；只有收到有效分析问题后才进入 `workflow` 或兼容的 `analyze`。
+
 事实包生成时会从本轮 `list_context.brands`（或其 `pre_input.brands`）建立严格的运行时品牌候选范围，不会扩展默认品牌表。标题分类仅对候选品牌执行 Unicode NFKC、`casefold()` 和连续字符串匹配；规范名中的 `/` 表示别名，支持多品牌同时命中，并在 `brand_classification` 中保留 `matchedBrands` 与 `match_tokens` 审计证据。未命中或候选范围缺失时归为 `未知品牌`；`九阳豆浆` 仅支持显式受控的“九阳…豆浆”变体，单独“九阳”不命中。分类不依据品类、功效、标签或画面推断，四类事实包按 `material_id` 传播同一快照。
 
-通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较采集器、事实包和分析编排模块的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
+通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较采集器、事实包、第一阶段报告和分析编排模块的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts` 与 `render-overview`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
 
 ## 商业分析编排
 
