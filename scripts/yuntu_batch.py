@@ -20,6 +20,7 @@ if __package__:
         generate_standard_highlights_for_detail,
         generate_highlights_for_detail,
         generate_missing_highlights_for_detail,
+        persist_video_for_detail,
         load_highlights_manifest,
         write_highlights_manifest,
     )
@@ -41,6 +42,7 @@ else:
         generate_standard_highlights_for_detail,
         generate_highlights_for_detail,
         generate_missing_highlights_for_detail,
+        persist_video_for_detail,
         load_highlights_manifest,
         write_highlights_manifest,
     )
@@ -881,6 +883,28 @@ def _generate_highlight_result(detail, root, highlight_spec=None):
         }
 
 
+def _generate_video_result(detail, root):
+    """Persist a report video when no optional highlight frames were requested."""
+    started = time.monotonic()
+    try:
+        persist_video_for_detail(detail, root)
+        return {
+            "material_id": detail["material_id"],
+            "frames": [],
+            "duration": _elapsed(started),
+            "error": None,
+            "video_only": True,
+        }
+    except Exception as exc:
+        return {
+            "material_id": detail["material_id"],
+            "frames": [],
+            "duration": _elapsed(started),
+            "error": exc,
+            "video_only": True,
+        }
+
+
 def _generate_missing_highlight_result(detail, root, highlight_spec):
     """Run a highlighter-only retry without touching usable local frame assets."""
     started = time.monotonic()
@@ -1004,6 +1028,15 @@ def _record_highlight_result(manifest, frames_by_material, result):
     if entry is None:
         return
     entry["postprocessTimingsSec"] = {"highlightSec": result["duration"]}
+    if result.get("video_only"):
+        if result["error"] is None:
+            entry["videoStatus"] = "available"
+            entry.pop("videoError", None)
+        else:
+            entry["videoStatus"] = "failed"
+            entry["videoError"] = str(result["error"])
+        entry["postprocessStatus"] = "not_requested"
+        return
     if result["frames"]:
         frames_by_material[material_id] = result["frames"]
     if result["error"] is None and all(
@@ -1204,7 +1237,8 @@ def fetch_batch(
         entry = _selected_entry(manifest, material_id)
         if entry is not None:
             entry["postprocessStatus"] = "running"
-        future = executor.submit(_generate_highlight_result, detail, root, highlight_spec)
+        worker = _generate_highlight_result if highlight_spec is not None else _generate_video_result
+        future = executor.submit(worker, detail, root, highlight_spec) if highlight_spec is not None else executor.submit(worker, detail, root)
         pending_highlights[future] = material_id
 
     # Resume never repeats a persisted detail. Missing frames are a separate job.
@@ -1237,7 +1271,7 @@ def fetch_batch(
                 )
                 pending_details[future] = item["material_id"]
 
-        missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else []
+        missing_details = details_missing_highlights_by_spec(restored_details, root, highlight_spec) if highlight_spec is not None else restored_details
         missing_highlight_ids = {
             detail["material_id"] for detail in missing_details
         }
@@ -1425,8 +1459,7 @@ def fetch_batch(
                         selected_ids.add(material_id)
                         _remove_material_from_bucket(manifest, "unresolvedMaterials", material_id)
                         unresolved_ids.discard(material_id)
-                        if highlight_spec is not None:
-                            submit_highlight(highlight_executor, detail_record)
+                        submit_highlight(highlight_executor, detail_record)
                     except Exception as exc:
                         rejected_ids.add(material_id)
                         if task_attempt is not None:

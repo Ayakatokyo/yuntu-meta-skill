@@ -18,6 +18,7 @@ except ImportError:
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_VIDEO_EXTENSION = ".mp4"
 _TREND_NAMES = ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数")
 _CORE_METRIC_PREFIX = "metrics."
 _TAXONOMY_PATH = Path(__file__).resolve().parents[1] / "config/yuntu-content-formula-taxonomy-v1.json"
@@ -406,6 +407,20 @@ def _project_highlights(root: Path, facts: Mapping[str, Any], manifest: Mapping[
     return {"status": "available" if frames else "unavailable", "reason": "" if frames else "verified_frame_missing", "frames": frames}, assets
 
 
+def _project_video(root: Path, material_id: str) -> tuple[dict, Path | None]:
+    path = root / "videos" / material_id / "source-video.mp4"
+    if not path.is_file() or path.stat().st_size == 0:
+        return {"available": False, "reason": "local_video_artifact_missing"}, None
+    content = path.read_bytes()
+    digest = hashlib.sha256(content).hexdigest()
+    return {
+        "available": True,
+        "assetPath": f"assets/single-material/videos/{material_id}{_VIDEO_EXTENSION}",
+        "assetSha256": digest,
+        "assetSizeBytes": len(content),
+    }, path
+
+
 def build_single_material_overview(run_dir: Path) -> dict:
     root = Path(run_dir).resolve()
     if not root.is_dir():
@@ -418,6 +433,7 @@ def build_single_material_overview(run_dir: Path) -> dict:
         ranking_record = _merge_detail_rate_metrics(root, material_id, ranking[material_id])
         script_record = script[material_id]
         highlight_model, _ = _project_highlights(root, highlights[material_id], highlight_manifest[material_id], material_id)
+        video_model, _ = _project_video(root, material_id)
         materials.append({
             "materialId": material_id,
             "rank": ranking_record.get("rank"),
@@ -428,7 +444,7 @@ def build_single_material_overview(run_dir: Path) -> dict:
             "trends": _project_trends(interaction[material_id]),
             "formula": _project_formula(script_record),
             "creative": {"status": "deferred", "message": "本阶段暂未设计"},
-            "video": {"available": False, "reason": "local_video_artifact_missing"},
+            "video": video_model,
             "highlights": highlight_model,
         })
     return {
@@ -461,6 +477,16 @@ def copy_verified_single_material_assets(run_dir: Path, output_dir: Path, model:
         source_by_id.update({frame["id"]: path for frame, path in assets})
     copied = 0
     for material in model.get("materials", []):
+        video = material.get("video", {})
+        if video.get("available"):
+            source = root / "videos" / material["materialId"] / "source-video.mp4"
+            destination = output / video["assetPath"]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, destination)
+            content = destination.read_bytes()
+            if len(content) != video["assetSizeBytes"] or hashlib.sha256(content).hexdigest() != video["assetSha256"]:
+                raise SingleMaterialOverviewError(f"copied video failed verification: {material['materialId']}")
+            copied += 1
         for frame in material.get("highlights", {}).get("frames", []):
             source = source_by_id.get(frame["id"])
             if source is None:

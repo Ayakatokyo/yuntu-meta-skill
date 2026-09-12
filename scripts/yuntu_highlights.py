@@ -323,6 +323,22 @@ def download_video(
             response.close()
 
 
+def persist_video_for_detail(detail, output_dir, *, downloader=download_video):
+    """Persist one detail video's local report asset without extracting frames."""
+    material_id = str(detail.get("material_id") or "")
+    video_url = detail.get("video_url")
+    if not material_id or not isinstance(video_url, str) or not video_url.strip():
+        raise HighlightFrameError("missing_video_url")
+    target = Path(output_dir) / "videos" / material_id / "source-video.mp4"
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    downloader(video_url, target)
+    if not target.is_file() or target.stat().st_size == 0:
+        raise HighlightFrameError("video download produced no local artifact")
+    return target
+
+
 def _resolve_ffmpeg(ffmpeg_bin=None, *, environ=None, imageio_resolver=None, which=None):
     environment = os.environ if environ is None else environ
     path_resolver = shutil.which if which is None else which
@@ -688,41 +704,39 @@ def _material_frames(
 
     material_root = root / "highlights" / material_id
     try:
-        with tempfile.TemporaryDirectory(prefix="yuntu-highlight-") as temporary_directory:
-            video_path = Path(temporary_directory) / "source-video"
-            downloader(video_url, video_path)
-            material_root.mkdir(parents=True, exist_ok=True)
-            requests = [
-                {
-                    "second": candidate["second"],
-                    "destination": material_root / _highlight_filename(index, candidate),
-                }
-                for index, candidate in zip(indexes, candidates)
-            ]
-            try:
-                (batch_extractor or extract_frames_batch)(
-                    video_path, requests, ffmpeg_bin=ffmpeg_bin
-                )
-            except Exception:
-                return _extract_frames_individually(
-                    video_path,
-                    candidates,
-                    root,
-                    material_id,
-                    material_root,
-                    frame_extractor,
-                    ffmpeg_bin,
-                    indexes,
-                )
-            return [
-                _frame_record(
-                    candidate,
-                    material_id=material_id,
-                    available=True,
-                    relative_path=str(request["destination"].relative_to(root)),
-                )
-                for candidate, request in zip(candidates, requests)
-            ]
+        video_path = persist_video_for_detail(detail, root, downloader=downloader)
+        material_root.mkdir(parents=True, exist_ok=True)
+        requests = [
+            {
+                "second": candidate["second"],
+                "destination": material_root / _highlight_filename(index, candidate),
+            }
+            for index, candidate in zip(indexes, candidates)
+        ]
+        try:
+            (batch_extractor or extract_frames_batch)(
+                video_path, requests, ffmpeg_bin=ffmpeg_bin
+            )
+        except Exception:
+            return _extract_frames_individually(
+                video_path,
+                candidates,
+                root,
+                material_id,
+                material_root,
+                frame_extractor,
+                ffmpeg_bin,
+                indexes,
+            )
+        return [
+            _frame_record(
+                candidate,
+                material_id=material_id,
+                available=True,
+                relative_path=str(request["destination"].relative_to(root)),
+            )
+            for candidate, request in zip(candidates, requests)
+        ]
     except Exception as error:
         return _failed_frames_with_local_reuse(
             candidates,

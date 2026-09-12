@@ -1,5 +1,6 @@
 import hashlib
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -179,6 +180,31 @@ class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
 
 
 class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
+    def test_overview_copies_verified_local_video_and_renders_a_9_by_16_player(self):
+        source_run = ROOT / "runs/food-drink-exposure-20260820-27-top10"
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory) / "run"
+            shutil.copytree(source_run, run_dir)
+            material_id = "7668663443726172214"
+            source_video = run_dir / "videos" / material_id / "source-video.mp4"
+            source_video.parent.mkdir(parents=True)
+            source_video.write_bytes(b"verified local video")
+
+            model = build_overview_data(run_dir, REGISTRY)
+            material = next(item for item in model["singleMaterialOverview"]["materials"] if item["materialId"] == material_id)
+            html = render_overview_html(model)
+            result = write_overview(run_dir, run_dir / "overview-with-video", REGISTRY)
+
+            self.assertTrue(material["video"]["available"])
+            self.assertEqual(material["video"]["assetPath"], "assets/single-material/videos/7668663443726172214.mp4")
+            self.assertEqual((run_dir / "overview-with-video" / material["video"]["assetPath"]).read_bytes(), b"verified local video")
+            self.assertIn("<video", html)
+            self.assertIn("aspect-ratio:9 / 16", html)
+            self.assertIn(".single-material-video { display:flex; width:min(100%,140px);", html)
+            self.assertIn('<video controls preload="metadata"', html)
+            self.assertNotIn(".single-material-video { min-height:140px; aspect-ratio:auto; }", html)
+            self.assertIn("overview-with-video/index.html", result["outputPaths"])
+
     def test_real_overview_contains_audience_and_formula_sections(self):
         run_dir = ROOT / "runs/food-drink-exposure-20260820-27-top10"
         model = build_overview_data(run_dir, REGISTRY)
@@ -266,7 +292,7 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn('data-material-tab="portrait"', html)
         self.assertIn('data-material-tab="trends"', html)
         self.assertIn('data-material-tab="formula"', html)
-        self.assertIn('data-material-tab="creative"', html)
+        self.assertNotIn('data-material-tab="creative"', html)
         self.assertIn('data-material-tab="highlights"', html)
         self.assertIn('aria-controls="single-material-core"', html)
         self.assertIn("position:sticky; top:0", html)
@@ -299,14 +325,16 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("publishTime", json.dumps(single, ensure_ascii=False))
         self.assertIn("single-portrait-grid", html)
         self.assertIn("ensureSinglePanelHeadings", html)
-        for panel_title in ("核心数据", "人群画像", "秒级拆解", "内容公式", "创意元素拆解", "高光帧数据"):
+        for panel_title in ("核心数据", "人群画像", "秒级拆解", "内容公式", "高光帧数据"):
             self.assertIn(panel_title, html)
+        self.assertNotIn('id="single-material-creative"', html)
+        self.assertNotIn("创意元素拆解", html)
         self.assertIn("single-formula-chain", html)
         self.assertIn("formulaSourceText", html)
         self.assertIn("singleHighlightPageSize = 8", html)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", html)
         self.assertIn("single-material-overview", html)
-        self.assertIn("grid-template-columns:minmax(190px,28%) minmax(0,1fr)", html)
+        self.assertIn("grid-template-columns:minmax(140px,18%) minmax(0,1fr)", html)
         self.assertIn('document.querySelector(".single-material-main")?.scrollIntoView({behavior:"auto", block:"start"})', html)
         self.assertIn(".single-trend-chart { width:100%", html)
         self.assertIn(".single-trend-chart svg { display:block; width:100%; min-width:100%; height:230px; }", html)

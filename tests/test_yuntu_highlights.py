@@ -25,6 +25,23 @@ def detail_with_trends(*trends, high_points=None):
 
 
 class YuntuHighlightTests(unittest.TestCase):
+    def test_persist_video_for_detail_keeps_a_local_mp4_without_frame_extraction(self):
+        highlights = load_module()
+        detail = {
+            "material_id": "101",
+            "video_url": "https://video.example/101.mp4",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = highlights.persist_video_for_detail(
+                detail,
+                directory,
+                downloader=lambda _url, destination: Path(destination).write_bytes(b"video"),
+            )
+
+            self.assertEqual(path, Path(directory) / "videos" / "101" / "source-video.mp4")
+            self.assertEqual(path.read_bytes(), b"video")
+
     def test_configured_candidates_support_local_peaks_and_top_values(self):
         highlights = load_module()
         detail = detail_with_trends(
@@ -728,9 +745,13 @@ class YuntuHighlightTests(unittest.TestCase):
             }],
         }
         with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
             frames = highlights.generate_standard_highlights_for_detail(
-                detail, directory, downloader=downloader, batch_extractor=batch_extractor
+                detail, root, downloader=downloader, batch_extractor=batch_extractor
             )
+
+            persisted_video = root / "videos" / "101" / "source-video.mp4"
+            self.assertEqual(persisted_video.read_bytes(), b"video")
 
         self.assertEqual(len(calls), 1)
         self.assertEqual([request["second"] for request in calls[0]], [0, 1, 3, 5, 7, 9])
