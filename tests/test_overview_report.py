@@ -284,10 +284,33 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertEqual(single["source"]["verifiedFrameCount"], 56)
         self.assertEqual(len(single["materials"][0]["trends"]["metrics"]), 5)
         self.assertEqual(len(single["materials"][0]["highlights"]["frames"]), 6)
+        self.assertEqual(model["highlightFilterContext"], [
+            {"label": "封面帧", "value": "包含"},
+            {"label": "点赞指数", "value": "数值 Top，2 帧"},
+            {"label": "流失指数", "value": "局部峰值，2 帧"},
+            {"label": "点击指数", "value": "数值 Top，2 帧"},
+        ])
+        self.assertIn('data-section="filters"', html)
+        self.assertLess(html.index('data-section="filters"'), html.index('data-section="materials"'))
+        self.assertIn('id="filters-panel"', html)
+        self.assertIn('id="filter-config"', html)
+        self.assertIn("renderFilterConfig", html)
+        self.assertIn("filter-config-layout", html)
+        self.assertIn("filter-config-shell", html)
+        self.assertIn("素材列表筛选条件", html)
+        self.assertIn("高光帧筛选标准", html)
+        self.assertIn("highlightFilterContext", html)
+        self.assertIn("filterConfigHasValue", html)
+        self.assertIn("曝光量 Top1000", html)
+        self.assertIn("近7天", html)
+        self.assertIn("指定品牌", html)
+        self.assertNotIn('data-section="single-material-data" class="active"', html)
         self.assertIn('data-section="single-material-data"', html)
         self.assertLess(html.index('data-section="highlights"'), html.index('data-section="single-material-data"'))
         self.assertIn('id="single-material-data-panel"', html)
         self.assertIn('data-material-selector', html)
+        self.assertNotIn('data-material-tab="filters"', html)
+        self.assertNotIn('aria-controls="single-material-filters"', html)
         self.assertIn('data-material-tab="core"', html)
         self.assertIn('data-material-tab="portrait"', html)
         self.assertIn('data-material-tab="trends"', html)
@@ -300,6 +323,7 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         section_navigation = html.split('document.querySelectorAll("[data-section]")', 1)[1].split('document.querySelectorAll("[data-material-tab]")', 1)[0]
         self.assertIn('renderSingleMaterial();', section_navigation)
         self.assertIn('setSingleMaterialTab("core");', section_navigation)
+        self.assertIn('renderFilterConfig();', section_navigation)
         self.assertNotIn('single-material-data-panel', section_navigation)
         self.assertNotIn('scrollIntoView', section_navigation)
         self.assertNotIn(".single-material-panel[hidden]", html)
@@ -325,12 +349,18 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("publishTime", json.dumps(single, ensure_ascii=False))
         self.assertIn("single-portrait-grid", html)
         self.assertIn("ensureSinglePanelHeadings", html)
-        for panel_title in ("核心数据", "人群画像", "秒级拆解", "内容公式", "高光帧数据"):
+        for panel_title in ("素材筛选条件", "核心数据", "人群画像", "秒级拆解", "内容公式", "高光帧数据"):
             self.assertIn(panel_title, html)
         self.assertNotIn('id="single-material-creative"', html)
         self.assertNotIn("创意元素拆解", html)
-        self.assertIn("single-formula-chain", html)
+        self.assertIn("single-formula-flow", html)
+        self.assertIn("single-formula-primary", html)
+        self.assertIn("single-formula-secondary-list", html)
         self.assertIn("formulaSourceText", html)
+        self.assertIn("本视频脚本文案", html)
+        self.assertIn("single-script-highlight", html)
+        self.assertIn("点击内容公式或下方脚本文案，可双向定位", html)
+        self.assertNotIn("最多 2 帧", html)
         self.assertIn("singleHighlightPageSize = 8", html)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", html)
         self.assertIn("single-material-overview", html)
@@ -345,6 +375,10 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertLess(html.index('id=\"single-trend-chart\"'), html.index('id=\"singleTrendSpan\"'))
         self.assertIn("本阶段暂未设计", html)
         self.assertNotIn("video_url", html)
+        for label in ("首页", "上一页", "下一页", "尾页"):
+            self.assertIn(f">{label}<", html)
+        for label in (">首<", ">前<", ">后<", ">末<"):
+            self.assertNotIn(label, html)
 
     def test_rendered_html_has_qianchuan_style_dialog_fixed_title_and_page_size(self):
         with tempfile.TemporaryDirectory() as directory:
