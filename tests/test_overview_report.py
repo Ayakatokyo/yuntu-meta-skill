@@ -332,6 +332,12 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("marketingSellingPointOverview", html)
         self.assertIn("一级营销卖点", html)
         self.assertIn("二级营销卖点分布", html)
+        self.assertIn("marketing-selling-point-svg", html)
+        self.assertIn("Math.max(760, primaryBuckets.length * 170)", html)
+        self.assertIn("topSecondaryBuckets = secondaryBuckets.slice(0, 10)", html)
+        self.assertIn('label: "长尾"', html)
+        self.assertIn("#marketing-selling-point-secondary-legend { height:360px; max-height:360px; overflow-y:auto", html)
+        self.assertIn("可上下滚动查看全部", html)
         self.assertNotIn("fetch(", html)
 
     def test_real_overview_contains_detail_scoped_single_material_workbench(self):
