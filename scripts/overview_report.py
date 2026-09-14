@@ -17,6 +17,11 @@ except ImportError:
     from .material_field_registry import MaterialFieldRegistry, MaterialFieldRegistryError
 
 try:
+    from brand_dimension import BrandDimensionError, build_brand_dimension
+except ImportError:
+    from .brand_dimension import BrandDimensionError, build_brand_dimension
+
+try:
     from audience_overview import AudienceOverviewError, build_audience_overview
     from marketing_selling_point_overview import (
         MarketingSellingPointOverviewError,
@@ -337,6 +342,19 @@ def _value_type(kind: str) -> str:
     return "text"
 
 
+def _filter_highlight_overview(model: dict, material_ids: set[str]) -> dict:
+    cards = [card for card in model.get("cards", []) if str(card.get("materialId")) in material_ids]
+    filtered = dict(model)
+    filtered["status"] = "available" if cards else "unavailable"
+    filtered["source"] = {
+        **(model.get("source") if isinstance(model.get("source"), dict) else {}),
+        "materialCount": len({str(card.get("materialId")) for card in cards}),
+        "verifiedFrameCount": len(cards),
+    }
+    filtered["cards"] = cards
+    return filtered
+
+
 def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
     run_root = Path(run_dir).resolve()
     summary, source_path, relative_path, source_rows = _validate_run_and_source(run_root)
@@ -421,6 +439,51 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
             "materials": [],
             "gaps": [{"code": "single_material_overview_unavailable"}],
         }
+    try:
+        brand_overview = build_brand_dimension(run_root)
+    except BrandDimensionError:
+        brand_overview = {
+            "schemaVersion": 1,
+            "status": "unavailable",
+            "tabs": [],
+            "materialIdsByTab": {},
+            "views": {},
+            "gaps": [{"code": "brand_dimension_unavailable"}],
+        }
+    if brand_overview.get("status") == "available":
+        brand_views = {}
+        for tab in brand_overview.get("tabs", []):
+            tab_id = tab["id"]
+            material_ids = set(brand_overview["materialIdsByTab"].get(tab_id, []))
+            if tab_id == "all":
+                brand_views[tab_id] = {
+                    "materialCount": len(material_ids),
+                    "audienceOverview": audience_overview,
+                    "scriptFormulaOverview": script_formula_overview,
+                    "marketingSellingPointOverview": marketing_selling_point_overview,
+                    "highlightOverview": highlight_overview,
+                }
+                continue
+            try:
+                scoped_audience = build_audience_overview(run_root, material_ids)
+            except AudienceOverviewError:
+                scoped_audience = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "audience_overview_unavailable"}]}
+            try:
+                scoped_script = build_script_formula_overview(run_root, material_ids)
+            except ScriptFormulaOverviewError:
+                scoped_script = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "script_formula_overview_unavailable"}]}
+            try:
+                scoped_marketing = build_marketing_selling_point_overview(run_root, material_ids)
+            except MarketingSellingPointOverviewError:
+                scoped_marketing = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "marketing_selling_point_overview_unavailable"}]}
+            brand_views[tab_id] = {
+                "materialCount": len(material_ids),
+                "audienceOverview": scoped_audience,
+                "scriptFormulaOverview": scoped_script,
+                "marketingSellingPointOverview": scoped_marketing,
+                "highlightOverview": _filter_highlight_overview(highlight_overview, material_ids),
+            }
+        brand_overview["views"] = brand_views
     return {
         "schemaVersion": SCHEMA_VERSION,
         "kind": OVERVIEW_KIND,
@@ -440,6 +503,7 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
         "marketingSellingPointOverview": marketing_selling_point_overview,
         "highlightOverview": highlight_overview,
         "singleMaterialOverview": single_material_overview,
+        "brandOverview": brand_overview,
     }
 
 
@@ -496,6 +560,10 @@ button:disabled { cursor:default; opacity:.45; }
 .tooltip { position:fixed; z-index:30; max-width:320px; padding:8px 10px; border-radius:8px; background:#172033; color:#fff; font-size:12px; pointer-events:none; box-shadow:0 8px 22px rgba(15,23,42,.2); }
 .section-nav { display:flex; gap:8px; margin:0 0 16px; }
 .section-nav button.active { border-color:var(--accent); background:var(--accent); color:#fff; }
+.brand-tabs { display:flex; gap:8px; margin:0 0 16px; padding:5px; overflow-x:auto; background:var(--surface); border:1px solid var(--line); border-radius:12px; }
+.brand-tabs button { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; min-height:36px; padding:6px 12px; border-color:transparent; white-space:nowrap; }
+.brand-tabs button.active { border-color:var(--accent); background:var(--accent-soft); color:#1d4ed8; font-weight:650; }
+.brand-tabs-count { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
 [data-section-panel][hidden] { display:none; }
 .audience-section { display:grid; gap:16px; }
 .audience-card { width:100%; min-width:0; overflow:hidden; padding:18px; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 24px rgba(34,64,112,.06); }
@@ -723,6 +791,7 @@ body.modal-open { overflow:hidden; }
 <nav class="section-nav" aria-label="报告部分"><button type="button" data-section="filters" class="active">素材筛选条件</button><button type="button" data-section="materials">素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts">脚本内容公式</button><button type="button" data-section="marketing-selling-points">营销卖点</button><button type="button" data-section="highlights">高光帧数据</button><button type="button" data-section="single-material-data">单素材数据</button></nav>
 <section id="filters-panel" class="report-section" data-section-panel="filters"><div class="filter-config-shell"><h2>素材筛选条件</h2><div id="filter-config"></div></div></section>
 <section id="materials-panel" class="report-section" data-section-panel="materials" hidden>
+<div class="brand-tabs" data-brand-tabs="materials" role="tablist" aria-label="素材榜单品牌筛选"></div>
 <div class="toolbar"><input id="search" type="search" placeholder="输入素材标题或 ID" aria-label="输入素材标题或 ID"><button id="field-button" type="button">自定义指标</button></div>
 <section id="field-management" class="field-modal" role="dialog" aria-modal="true" aria-labelledby="field-management-title" hidden>
   <div class="field-modal-backdrop" data-field-action="cancel"></div>
@@ -758,6 +827,7 @@ body.modal-open { overflow:hidden; }
   </div>
 </section>
 <section id="audience-panel" class="audience-section" data-section-panel="audience" hidden>
+  <div class="brand-tabs" data-brand-tabs="audience" role="tablist" aria-label="人群数据品牌筛选"></div>
   <div id="audience-unavailable" class="audience-card empty" hidden>人群数据不可用</div>
   <div id="audience-content">
     <div class="audience-card chart-card"><h3>八大人群分布</h3><div id="audience-eight-groups" class="chart-box"></div></div>
@@ -768,6 +838,7 @@ body.modal-open { overflow:hidden; }
   </div>
 </section>
 <section id="scripts-panel" class="script-section" data-section-panel="scripts" hidden>
+  <div class="brand-tabs" data-brand-tabs="scripts" role="tablist" aria-label="脚本内容公式品牌筛选"></div>
   <div class="audience-card chart-card" data-script-formula-card>
     <div class="script-card-header"><h3 id="script-formula-title">一级内容公式</h3><div class="script-card-actions"><span id="script-formula-hint" class="script-card-hint">点击一级内容公式柱状图可以显示二级内容公式分布</span></div></div>
     <div id="script-formula-chart" class="chart-box"></div>
@@ -778,6 +849,7 @@ body.modal-open { overflow:hidden; }
   </div>
 </section>
 <section id="marketing-selling-points-panel" class="script-section" data-section-panel="marketing-selling-points" hidden>
+  <div class="brand-tabs" data-brand-tabs="marketing-selling-points" role="tablist" aria-label="营销卖点品牌筛选"></div>
   <div class="audience-card chart-card" data-marketing-selling-point-card>
     <div class="script-card-header"><h3 id="marketing-selling-point-title">一级营销卖点</h3><div class="script-card-actions"><span id="marketing-selling-point-hint" class="script-card-hint">点击一级营销卖点柱状图可以显示二级营销卖点分布</span></div></div>
     <div id="marketing-selling-point-chart" class="chart-box"></div>
@@ -788,6 +860,7 @@ body.modal-open { overflow:hidden; }
   </div>
 </section>
 <section id="highlights-panel" class="highlight-section" data-section-panel="highlights" hidden>
+  <div class="brand-tabs" data-brand-tabs="highlights" role="tablist" aria-label="高光帧数据品牌筛选"></div>
   <div id="highlight-unavailable" class="audience-card empty" hidden>高光帧数据不可用</div>
   <div id="highlight-content">
     <div id="highlight-grid" class="highlight-grid"></div>
@@ -833,10 +906,12 @@ body.modal-open { overflow:hidden; }
   function saveVisibleFields() { try { localStorage.setItem(storageKey, JSON.stringify(state.visibleFieldIds)); } catch (_) {} }
   function escaped(value) { return String(value == null ? "" : value).replace(/[&<>"']/g, char => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;"}[char])); }
   const chartTooltip = document.getElementById("chart-tooltip");
-  const audience = model.audienceOverview || {status: "unavailable"};
-  const scriptFormula = model.scriptFormulaOverview || {status: "unavailable"};
-  const marketingSellingPointOverview = model.marketingSellingPointOverview || {status: "unavailable"};
-  const highlightOverview = model.highlightOverview || {status: "unavailable", cards: []};
+  let audience = model.audienceOverview || {status: "unavailable"};
+  let scriptFormula = model.scriptFormulaOverview || {status: "unavailable"};
+  let marketingSellingPointOverview = model.marketingSellingPointOverview || {status: "unavailable"};
+  let highlightOverview = model.highlightOverview || {status: "unavailable", cards: []};
+  const brandOverview = model.brandOverview || {status: "unavailable", tabs: [], materialIdsByTab: {}, views: {}};
+  const brandState = {selected: brandOverview.status === "available" && brandOverview.tabs.some(tab => tab.id === "all") ? "all" : null};
   const colors = ["#2563eb", "#60a5fa", "#14b8a6", "#f59e0b", "#ef6a6a", "#8b5cf6", "#64748b", "#22c55e"];
   const audienceState = {donutSelection: {gender: null, age: null}};
   const scriptFormulaState = {selectedPrimary: null, selectedSecondary: null};
@@ -850,6 +925,11 @@ body.modal-open { overflow:hidden; }
   const singleCoreFieldGroupById = {"metrics.show_cnt": "展现指标", "metrics.ctr": "展现指标", "metrics.play_over_rate": "展现指标", "metrics.play_3s_rate": "展现指标", "metrics.play_5s_rate": "展现指标", "metrics.interact_rate": "互动/种草指标", "metrics.like_rate": "互动/种草指标", "metrics.comment_rate": "互动/种草指标", "metrics.share_rate": "互动/种草指标", "metrics.cvr": "转化指标", "metrics.pvr": "转化指标", "metrics.product_wish_button_buy_cart_rate": "转化指标"};
   const singleCoreFixedFields = [];
   const singleCoreState = {visibleFieldIds: null, draftFieldIds: null, fieldSearch: "", activeFieldGroup: singleCoreFieldGroupOrder[0]};
+  function activeBrandTab() { return (brandOverview.tabs || []).find(tab => tab.id === brandState.selected) || (brandOverview.tabs || []).find(tab => tab.id === "all") || null; }
+  function updateBrandTabButtons() { document.querySelectorAll("[data-brand-tab-id]").forEach(button => { const active = button.dataset.brandTabId === brandState.selected; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); }); }
+  function renderBrandTabs() { document.querySelectorAll("[data-brand-tabs]").forEach(container => { const tabs = brandOverview.status === "available" ? (brandOverview.tabs || []) : []; container.innerHTML = tabs.map(tab => `<button type="button" role="tab" data-brand-tab-id="${escaped(tab.id)}" aria-selected="${tab.id === brandState.selected}">${escaped(tab.label)}<span class="brand-tabs-count">${escaped(tab.count)}</span></button>`).join(""); }); updateBrandTabButtons(); }
+  function applyBrandView() { const view = brandOverview.views?.[brandState.selected] || {}; audience = view.audienceOverview || model.audienceOverview || {status: "unavailable"}; scriptFormula = view.scriptFormulaOverview || model.scriptFormulaOverview || {status: "unavailable"}; marketingSellingPointOverview = view.marketingSellingPointOverview || model.marketingSellingPointOverview || {status: "unavailable"}; highlightOverview = view.highlightOverview || model.highlightOverview || {status: "unavailable", cards: []}; }
+  function setBrandSelection(tabId) { if (!brandOverview.tabs.some(tab => tab.id === tabId)) return; brandState.selected = tabId; applyBrandView(); state.page = 1; state.exactMaterialId = null; scriptFormulaState.selectedPrimary = null; scriptFormulaState.selectedSecondary = null; marketingSellingPointState.selectedPrimary = null; marketingSellingPointState.selectedSecondary = null; highlightState.page = 1; updateBrandTabButtons(); render(); renderAudience(); renderScriptFormula(); renderMarketingSellingPoints(); renderHighlights(); }
   const singleSelector = document.getElementById("single-material-selector"), singleCoreModal = document.getElementById("single-core-field-management"), singleCoreFieldGroups = document.getElementById("single-core-field-groups"), singleCoreFieldSearch = document.getElementById("single-core-field-search"), singleCoreFieldOptions = document.getElementById("single-core-field-options"), singleCoreSelectedFields = document.getElementById("single-core-selected-fields"), singleCoreSelectedCount = document.getElementById("single-core-selected-count"), singleHighlightModal = document.getElementById("single-highlight-modal"), singleHighlightImage = document.getElementById("single-highlight-modal-image"), singleHighlightCaption = document.getElementById("single-highlight-modal-caption");
   function currentSingleMaterial() { return singleMaterials.find(item => item.materialId === singleState.materialId) || singleMaterials[0] || null; }
   function singleText(value) { return escaped(value == null || value === "" ? "—" : value); }
@@ -945,8 +1025,8 @@ body.modal-open { overflow:hidden; }
     const primaryBuckets = Array.isArray(marketingSellingPointOverview.primaryBuckets) ? marketingSellingPointOverview.primaryBuckets : [];
     hint.hidden = false;
     if (!primaryBuckets.length) { chart.innerHTML = '<div class="empty">暂无可展示的一级营销卖点</div>'; secondaryCard.hidden = true; return; }
-    const total = marketingSellingPointOverview.coverage?.marketingSellingPointMaterialCount || 0, width = Math.max(760, primaryBuckets.length * 170), height = 290, left = 42, bottom = 72, plotHeight = height - bottom - 20, max = Math.max(...primaryBuckets.map(bucket => Number(bucket.value)), 1), band = (width - left - 18) / primaryBuckets.length;
-    const bars = primaryBuckets.map((bucket, index) => { const barHeight = Math.max(2, Number(bucket.value) / max * plotHeight), barWidth = band * .52, x = left + index * band + (band - barWidth) / 2, y = height - bottom - barHeight, center = x + barWidth / 2, shortLabel = bucket.label.length > 8 ? `${bucket.label.slice(0,8)}…` : bucket.label; return `<rect class="marketing-selling-point-bar" data-marketing-selling-point-index="${index}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="5" tabindex="0" role="button" aria-label="${escaped(bucket.label)}，覆盖${escaped(bucket.value)}个素材，占比${escaped(formulaShare(bucket))}" data-marketing-selling-point-primary="${escaped(bucket.label)}"></rect><text class="chart-value" x="${center.toFixed(2)}" y="${Math.max(14,y-6).toFixed(2)}" text-anchor="middle">${escaped(bucket.value)}</text><text class="chart-label" x="${center.toFixed(2)}" y="${height-42}" text-anchor="middle">${escaped(shortLabel)}</text>`; }).join("");
+    const total = marketingSellingPointOverview.coverage?.marketingSellingPointMaterialCount || 0, height = 290, left = 42, bottom = 72, plotHeight = height - bottom - 20, max = Math.max(...primaryBuckets.map(bucket => Number(bucket.value)), 1), layoutWidth = Math.max(680, primaryBuckets.length * 145), baseBand = (layoutWidth - left - 18) / primaryBuckets.length, barWidth = baseBand * .42, barGap = baseBand * .45, step = barWidth + barGap, width = Math.max(680, left + barWidth + step * (primaryBuckets.length - 1) + 18);
+    const bars = primaryBuckets.map((bucket, index) => { const barHeight = Math.max(2, Number(bucket.value) / max * plotHeight), x = left + index * step, y = height - bottom - barHeight, center = x + barWidth / 2, shortLabel = bucket.label.length > 8 ? `${bucket.label.slice(0,8)}…` : bucket.label; return `<rect class="marketing-selling-point-bar" data-marketing-selling-point-index="${index}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barWidth.toFixed(2)}" height="${barHeight.toFixed(2)}" rx="5" tabindex="0" role="button" aria-label="${escaped(bucket.label)}，覆盖${escaped(bucket.value)}个素材，占比${escaped(formulaShare(bucket))}" data-marketing-selling-point-primary="${escaped(bucket.label)}"></rect><text class="chart-value" x="${center.toFixed(2)}" y="${Math.max(14,y-6).toFixed(2)}" text-anchor="middle">${escaped(bucket.value)}</text><text class="chart-label" x="${center.toFixed(2)}" y="${height-42}" text-anchor="middle">${escaped(shortLabel)}</text>`; }).join("");
     chart.innerHTML = `<svg class="script-formula-svg marketing-selling-point-svg" style="width:${width}px;height:${height}px" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="group" aria-label="一级营销卖点柱状图"><line class="chart-axis" x1="${left}" y1="${height-bottom}" x2="${width-12}" y2="${height-bottom}"></line>${bars}</svg>`;
     attachMarketingSellingPointInteractions(chart, primaryBuckets, "一级营销卖点", total);
     chart.querySelectorAll("[data-marketing-selling-point-primary]").forEach(element => { const select = () => { marketingSellingPointState.selectedPrimary = element.dataset.marketingSellingPointPrimary; renderMarketingSellingPointsDense(); }; element.addEventListener("click", select); element.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); select(); } }); });
@@ -1008,7 +1088,9 @@ body.modal-open { overflow:hidden; }
   document.getElementById("field-button").addEventListener("click", openFieldDialog);
   document.getElementById("first").addEventListener("click", () => { state.page = 1; render(); }); document.getElementById("previous").addEventListener("click", () => { state.page = Math.max(1, state.page - 1); render(); }); document.getElementById("next").addEventListener("click", () => { state.page += 1; render(); }); document.getElementById("last").addEventListener("click", () => { state.page = Math.max(1, Math.ceil(matchingRows().length / pageSize)); render(); });
   document.getElementById("highlight-first").addEventListener("click", () => { highlightState.page = 1; renderHighlights(); }); document.getElementById("highlight-previous").addEventListener("click", () => { highlightState.page = Math.max(1, highlightState.page - 1); renderHighlights(); }); document.getElementById("highlight-next").addEventListener("click", () => { highlightState.page += 1; renderHighlights(); }); document.getElementById("highlight-last").addEventListener("click", () => { highlightState.page = Math.max(1, Math.ceil((highlightOverview.cards || []).length / highlightPageSize)); renderHighlights(); });
-  renderFilterConfig(); loadVisibleFields(); renderSingleMaterial(); render();
+  function matchingRows() { const query = normalize(state.query), selectedIds = brandOverview.status === "available" ? new Set(brandOverview.materialIdsByTab?.[brandState.selected] || []) : null, matchesBrand = row => !selectedIds || selectedIds.has(row.materialId); const rows = state.exactMaterialId ? model.rows.filter(row => row.materialId === state.exactMaterialId && matchesBrand(row)) : model.rows.filter(row => matchesBrand(row) && (!query || normalize(row.materialId).includes(query) || normalize(row.values.title).includes(query))); if (state.sort.field && state.sort.direction !== "none" && fieldMap[state.sort.field] && fieldMap[state.sort.field].sortable) rows.sort(compareRows); return rows; }
+  document.addEventListener("click", event => { const tab = event.target.closest("[data-brand-tab-id]"); if (tab) setBrandSelection(tab.dataset.brandTabId); });
+  renderBrandTabs(); applyBrandView(); renderFilterConfig(); loadVisibleFields(); renderSingleMaterial(); render();
 })();
 </script>
 </body>

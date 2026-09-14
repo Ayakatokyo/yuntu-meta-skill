@@ -35,7 +35,7 @@ def _bucket_sort(item: tuple[str, set[str]]) -> tuple[int, str]:
     return (-len(materials), label)
 
 
-def build_marketing_selling_point_overview(run_dir: Path) -> dict:
+def build_marketing_selling_point_overview(run_dir: Path, material_ids: set[str] | None = None) -> dict:
     """Aggregate platform content tags into material-coverage buckets.
 
     Tags with an underscore use the text before the first underscore as the
@@ -80,6 +80,9 @@ def build_marketing_selling_point_overview(run_dir: Path) -> dict:
         _verify_list_source(root, summary, expected_count)
     except AudienceOverviewError as exc:
         raise MarketingSellingPointOverviewError(str(exc)) from exc
+
+    if material_ids is not None:
+        records = [record for record in records if str(record.get("material_id")) in material_ids]
 
     primary_materials: dict[str, set[str]] = {}
     secondary_materials: dict[str, dict[str, set[str]]] = {}

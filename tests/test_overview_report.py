@@ -169,6 +169,22 @@ class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
         )
         self.assertNotIn("未细分", overview["secondaryBucketsByPrimary"])
 
+    def test_real_overview_projects_persisted_brand_dimension_and_scoped_views(self):
+        run_dir = ROOT / "runs/food-beverage-20260914"
+        model = build_overview_data(run_dir, REGISTRY)
+
+        brand = model["brandOverview"]
+        self.assertEqual(brand["status"], "available")
+        self.assertEqual(
+            [(tab["label"], tab["count"]) for tab in brand["tabs"]],
+            [("全部素材", 1000), ("小仙炖", 90), ("燕之屋", 70), ("五个女博士", 250), ("WONDERLAB/万益蓝", 326), ("未分类品牌", 264)],
+        )
+        self.assertEqual(set(brand["views"]), {tab["id"] for tab in brand["tabs"]})
+        self.assertEqual(brand["views"]["all"]["materialCount"], 1000)
+        self.assertEqual(brand["views"]["brand:小仙炖"]["materialCount"], 90)
+        self.assertEqual(brand["views"]["unknown"]["materialCount"], 264)
+        self.assertEqual(len(brand["materialIdsByTab"]["all"]), 1000)
+
     def test_build_overview_projects_all_verified_list_rows_and_yuntu_labels(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self.make_run(directory)
@@ -332,8 +348,16 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("marketingSellingPointOverview", html)
         self.assertIn("一级营销卖点", html)
         self.assertIn("二级营销卖点分布", html)
+        self.assertIn("brandOverview", html)
+        self.assertIn("brand-tabs", html)
+        self.assertIn("data-brand-tab-id", html)
+        self.assertIn("renderBrandTabs", html)
+        self.assertIn("setBrandSelection", html)
+        self.assertIn("materialIdsByTab", html)
         self.assertIn("marketing-selling-point-svg", html)
-        self.assertIn("Math.max(760, primaryBuckets.length * 170)", html)
+        self.assertIn("Math.max(680, primaryBuckets.length * 145)", html)
+        self.assertIn("barWidth = baseBand * .42", html)
+        self.assertIn("barGap = baseBand * .45", html)
         self.assertIn("topSecondaryBuckets = secondaryBuckets.slice(0, 10)", html)
         self.assertIn('label: "长尾"', html)
         self.assertIn("#marketing-selling-point-secondary-legend { height:360px; max-height:360px; overflow-y:auto", html)

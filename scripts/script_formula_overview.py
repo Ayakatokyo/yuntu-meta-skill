@@ -79,7 +79,7 @@ def _resolve_formula_ref(value: object, taxonomy: dict[str, object], level: str)
     return None, None, ["formula_hierarchy_unavailable"]
 
 
-def build_script_formula_overview(run_dir: Path) -> dict:
+def build_script_formula_overview(run_dir: Path, material_ids: set[str] | None = None) -> dict:
     root = Path(run_dir).resolve()
     try:
         _, summary, package = _load_manifest_package(root, "script")
@@ -100,6 +100,8 @@ def build_script_formula_overview(run_dir: Path) -> dict:
         _verify_detail_sources(root, summary, records)
     except AudienceOverviewError as exc:
         raise ScriptFormulaOverviewError(str(exc)) from exc
+    if material_ids is not None:
+        records = [record for record in records if str(record.get("material_id")) in material_ids]
     taxonomy = _load_taxonomy()
     primary_ids: dict[str, set[str]] = {}
     secondary_ids: dict[str, dict[str, set[str]]] = {}

@@ -117,9 +117,11 @@ def _bucket_sort(item: tuple[str, int]) -> tuple[Any, ...]:
     return (-value, 1, label)
 
 
-def build_audience_overview(run_dir: Path) -> dict:
+def build_audience_overview(run_dir: Path, material_ids: set[str] | None = None) -> dict:
     root = Path(run_dir).resolve()
     _, _, records = _package_records(root, "audience")
+    if material_ids is not None:
+        records = [record for record in records if str(record.get("material_id")) in material_ids]
     counts: dict[str, dict[str, set[str]]] = {dimension: {} for dimension in _DIMENSIONS}
     gaps: dict[str, int] = {}
     for record in records:
