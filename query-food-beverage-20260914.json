@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "source": "juliang_yuntu_industry_content_rankings",
+  "industry": "食品饮料",
+  "period": {"type": "LAST_7_DAYS"},
+  "filters": {
+    "ages": [],
+    "genders": [],
+    "crowd_groups": [],
+    "brand_scope": {
+      "type": "SPECIFIED_BRANDS",
+      "brands": ["小仙炖", "燕之屋", "五个女博士", "WONDERLAB/万益蓝"]
+    }
+  },
+  "ranking": {"metric": "EXPOSURE_TOP1000"},
+  "collection": {"target_top_n": 10, "candidate_top_n": 1000},
+  "material_list": {"filters": [], "sort": {"field": "rank", "direction": "asc"}}
+}

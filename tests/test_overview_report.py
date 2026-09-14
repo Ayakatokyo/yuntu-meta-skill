@@ -116,6 +116,59 @@ class OverviewFixtureMixin:
 
 
 class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
+    def install_content_tags_package(self, run_dir, records):
+        package_path = run_dir / "facts/content-tags.json"
+        package_path.write_text(json.dumps({"schema_version": 1, "records": records}, ensure_ascii=False), encoding="utf-8")
+        manifest_path = run_dir / "facts/manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["packages"] = {
+            "content_tags": {
+                "path": "facts/content-tags.json",
+                "record_count": len(records),
+                "material_ids": [str(record["material_id"]) for record in records],
+                "source_paths": ["normalized/list-records.json", "raw-csv/list.csv"],
+                "sha256": hashlib.sha256(package_path.read_bytes()).hexdigest(),
+            }
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+
+    def test_build_overview_includes_material_coverage_marketing_selling_points(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = self.make_run(directory)
+            self.install_content_tags_package(run_dir, [
+                {
+                    "material_id": "101",
+                    "platform_content_tags": ["成分配方原料_燕窝", "功效功能_滋补", "真人有语音商品展示"],
+                    "data_availability": {"material_tags": {"available": True, "missing_reason": ""}},
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                },
+                {
+                    "material_id": "102",
+                    "platform_content_tags": ["成分配方原料_燕窝", "使用场景_送礼"],
+                    "data_availability": {"material_tags": {"available": True, "missing_reason": ""}},
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                },
+                {
+                    "material_id": "103",
+                    "platform_content_tags": [],
+                    "data_availability": {"material_tags": {"available": False, "missing_reason": "source_empty"}},
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                },
+            ])
+            model = build_overview_data(run_dir, REGISTRY)
+
+        overview = model["marketingSellingPointOverview"]
+        self.assertEqual(overview["status"], "available")
+        self.assertEqual(overview["coverage"]["marketingSellingPointMaterialCount"], 2)
+        primary = {item["label"]: item for item in overview["primaryBuckets"]}
+        self.assertEqual(primary["成分配方原料"]["value"], 2)
+        self.assertNotIn("真人有语音商品展示", primary)
+        self.assertEqual(
+            {item["label"]: item["value"] for item in overview["secondaryBucketsByPrimary"]["成分配方原料"]},
+            {"燕窝": 2},
+        )
+        self.assertNotIn("未细分", overview["secondaryBucketsByPrimary"])
+
     def test_build_overview_projects_all_verified_list_rows_and_yuntu_labels(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = self.make_run(directory)
@@ -211,6 +264,8 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         html = render_overview_html(model)
         self.assertEqual(model["scriptFormulaOverview"]["coverage"]["formulaMaterialCount"], 2)
         self.assertEqual(model["scriptFormulaOverview"]["source"]["taxonomyVersion"], "yuntu-content-formula-taxonomy-v1")
+        self.assertEqual(model["marketingSellingPointOverview"]["status"], "available")
+        self.assertGreater(model["marketingSellingPointOverview"]["coverage"]["marketingSellingPointMaterialCount"], 0)
         self.assertNotIn('"41"', json.dumps(model["scriptFormulaOverview"], ensure_ascii=False))
         self.assertEqual(model["highlightOverview"]["status"], "available")
         self.assertEqual(model["highlightOverview"]["source"]["verifiedFrameCount"], 56)
@@ -218,10 +273,12 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertNotIn("normalized/detail-records", json.dumps(model["highlightOverview"], ensure_ascii=False))
         self.assertIn('data-section="audience"', html)
         self.assertIn('data-section="scripts"', html)
+        self.assertIn('data-section="marketing-selling-points"', html)
         self.assertIn('data-section="highlights"', html)
         self.assertIn('id="highlights-panel"', html)
         self.assertIn("renderAudience", html)
         self.assertIn("renderScriptFormula", html)
+        self.assertIn("renderMarketingSellingPoints", html)
         self.assertIn("renderHighlights", html)
         self.assertIn("const highlightPageSize = 12;", html)
         self.assertNotIn('id="highlight-summary"', html)
@@ -272,6 +329,9 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("data-script-formula-angle", html)
         self.assertIn("item.setAttribute(\"aria-pressed\", String(selected))", html)
         self.assertIn("Math.cos(angle) * distance", html)
+        self.assertIn("marketingSellingPointOverview", html)
+        self.assertIn("一级营销卖点", html)
+        self.assertIn("二级营销卖点分布", html)
         self.assertNotIn("fetch(", html)
 
     def test_real_overview_contains_detail_scoped_single_material_workbench(self):
