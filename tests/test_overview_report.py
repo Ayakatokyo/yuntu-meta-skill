@@ -328,6 +328,10 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("state.pendingMaterialId", html)
         self.assertIn('new CustomEvent("yuntu:highlight-material"', html)
         self.assertIn("event.preventDefault()", html)
+        highlight_jump = html.split('window.addEventListener("yuntu:highlight-material"', 1)[1].split('document.getElementById("script-formula-secondary-back")', 1)[0]
+        self.assertIn("singleState.materialId = event.detail.materialId", highlight_jump)
+        self.assertIn("document.querySelector('[data-section=\"single-material-data\"]').click()", highlight_jump)
+        self.assertNotIn("scrollIntoView", highlight_jump)
         self.assertNotIn('document.querySelector(\'[data-section="materials"]\').click()', html)
         self.assertIn("highlight-modal", html)
         self.assertIn("secondaryBucketsByPrimary", html)
