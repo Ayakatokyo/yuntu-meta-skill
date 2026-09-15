@@ -12,8 +12,10 @@ from typing import Any, Mapping
 
 try:
     from material_field_registry import MaterialFieldRegistry
+    from content_formula_labels import formula_detail_labels, resolve_formula_ref
 except ImportError:
     from .material_field_registry import MaterialFieldRegistry
+    from .content_formula_labels import formula_detail_labels, resolve_formula_ref
 
 
 _SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -21,7 +23,9 @@ _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 _VIDEO_EXTENSION = ".mp4"
 _TREND_NAMES = ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数")
 _CORE_METRIC_PREFIX = "metrics."
-_TAXONOMY_PATH = Path(__file__).resolve().parents[1] / "config/yuntu-content-formula-taxonomy-v1.json"
+# Average playback duration is being added to the leaderboard first. Keep it
+# out of the detail selector until the detail-metric expansion is approved.
+_DETAIL_CORE_DEFERRED_FIELDS = {"metrics.play_duration_avg"}
 _DETAIL_RATE_METRIC_ALIASES = {
     "likeRate": "like_rate",
     "like_rate": "like_rate",
@@ -241,17 +245,10 @@ def _availability(record: Mapping[str, Any], key: str) -> tuple[bool, str]:
     return False, reason or "source_empty"
 
 
-def _taxonomy() -> dict[str, dict[str, str]]:
-    payload = _read_json(_TAXONOMY_PATH, "formula taxonomy", dict)
-    if payload.get("schemaVersion") != 1 or not isinstance(payload.get("primary"), dict) or not isinstance(payload.get("secondary"), dict):
-        raise SingleMaterialOverviewError("formula taxonomy is invalid")
-    return {level: {str(key): value for key, value in payload[level].items() if isinstance(value, str)} for level in ("primary", "secondary")}
-
-
 def _project_core(ranking: Mapping[str, Any], registry: MaterialFieldRegistry) -> dict:
     fields = []
     for definition in registry.definitions():
-        if not definition.id.startswith(_CORE_METRIC_PREFIX):
+        if not definition.id.startswith(_CORE_METRIC_PREFIX) or definition.id in _DETAIL_CORE_DEFERRED_FIELDS:
             continue
         fields.append({"id": definition.id, "label": definition.label, "kind": definition.kind, "value": _safe_value(registry.value(ranking, definition.id))})
     return {"status": "available", "fields": fields, "defaultFieldIds": [
@@ -318,7 +315,7 @@ def _project_formula(script: Mapping[str, Any]) -> dict:
     formula = script.get("content_formula") if available else None
     if not isinstance(formula, Mapping) or not isinstance(formula.get("labels"), list) or formula.get("labels") == []:
         return {"status": "unavailable", "reason": reason or "source_empty", "labels": [], "sources": {}, "links": []}
-    taxonomy = _taxonomy()
+    detail_labels = formula_detail_labels(formula)
     labels = []
     ids: set[str] = set()
     unknown_id = False
@@ -326,8 +323,8 @@ def _project_formula(script: Mapping[str, Any]) -> dict:
         if not isinstance(item, Mapping):
             unknown_id = True
             continue
-        primary_id = str(item.get("level_1_label")) if type(item.get("level_1_label")) is int else None
-        if primary_id is None or primary_id not in taxonomy["primary"]:
+        primary_id, primary_label = resolve_formula_ref(item.get("level_1_label"), "primary", detail_labels)
+        if primary_id is None or primary_label is None:
             unknown_id = True
             continue
         ids.add(primary_id)
@@ -336,15 +333,15 @@ def _project_formula(script: Mapping[str, Any]) -> dict:
             if type(raw_id) is not int:
                 unknown_id = True
                 continue
-            secondary_id = str(raw_id)
-            if secondary_id in taxonomy["secondary"]:
-                ids.add(secondary_id)
-                secondary.append({"id": secondary_id, "label": taxonomy["secondary"][secondary_id]})
-            else:
+            resolved_id, resolved_label = resolve_formula_ref(raw_id, "secondary", detail_labels)
+            if resolved_id is None or resolved_label is None:
                 unknown_id = True
-        labels.append({"id": primary_id, "label": taxonomy["primary"][primary_id], "secondary": secondary})
+                continue
+            ids.add(resolved_id)
+            secondary.append({"id": resolved_id, "label": resolved_label})
+        labels.append({"id": primary_id, "label": primary_label, "secondary": secondary})
     if unknown_id or not labels:
-        return {"status": "unavailable", "reason": "formula_taxonomy_id_unknown", "labels": [], "sources": {}, "links": []}
+        return {"status": "unavailable", "reason": "formula_hierarchy_unavailable", "labels": [], "sources": {}, "links": []}
     sources = {}
     links = []
     raw_sources = formula.get("sources")

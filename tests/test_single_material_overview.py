@@ -131,6 +131,7 @@ class SingleMaterialOverviewTests(unittest.TestCase):
         fields = build_single_material_overview(root / "runs/food-drink-exposure-20260820-27-top10")["materials"][0]["core"]["fields"]
         field_ids = {field["id"] for field in fields}
 
+        self.assertNotIn("metrics.play_duration_avg", field_ids)
         self.assertTrue({
             "metrics.like_rate",
             "metrics.comment_rate",
@@ -190,12 +191,24 @@ class SingleMaterialOverviewTests(unittest.TestCase):
         self.assertEqual(material["trends"]["status"], "available")
         self.assertEqual(material["creative"]["status"], "deferred")
 
-    def test_unknown_formula_taxonomy_ids_are_unavailable(self):
+    def test_unknown_formula_ids_are_projected_dynamically(self):
         script = {
-            "content_formula": {"labels": [{"level_1_label": 999999, "level_2_labels": []}]},
+            "script_text": "原始脚本文案",
+            "content_formula": {
+                "labels": [{"level_1_label": 9, "level_2_labels": [888888]}],
+                "sources": {"script": {"text": "原始脚本文案", "detail": {"888888": ["动态词项"]}}},
+            },
             "data_availability": {"content_formula": {"available": True, "missing_reason": ""}},
         }
-        self.assertEqual(_project_formula(script)["reason"], "formula_taxonomy_id_unknown")
+        projected = _project_formula(script)
+        self.assertEqual(projected["status"], "available")
+        self.assertEqual(projected["labels"], [{
+            "id": "9",
+            "label": "商品卖点",
+            "secondary": [{"id": "888888", "label": "动态词项"}],
+        }])
+        self.assertEqual(projected["sources"]["script"]["text"], "原始脚本文案")
+        self.assertEqual(projected["links"][0]["id"], "888888")
 
     def test_copy_verified_assets_is_hash_bound_and_writes_only_preview_assets(self):
         with tempfile.TemporaryDirectory() as directory:

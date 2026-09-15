@@ -3,14 +3,9 @@ import json
 import shutil
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
 
-from scripts.script_formula_overview import (
-    ScriptFormulaOverviewError,
-    _load_taxonomy,
-    build_script_formula_overview,
-)
+from scripts.script_formula_overview import build_script_formula_overview
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +62,24 @@ class ScriptFormulaOverviewTests(unittest.TestCase):
         self.assertEqual({item["label"] for item in model["secondaryBucketsByPrimary"]["新增一级"]}, {"新增二级"})
         self.assertNotIn("formula_taxonomy_unmapped", {item["code"] for item in model["gaps"]})
 
-    def test_source_label_wins_over_stale_taxonomy_and_records_conflict(self):
+    def test_numeric_formula_ids_are_rendered_without_fixed_taxonomy(self):
+        labels = [[{"level_1_label": 999, "level_2_labels": [1999]}]] + [[] for _ in range(9)]
+        temp_dir, run_dir, _ = self.make_script_run(labels)
+        try:
+            model = build_script_formula_overview(run_dir)
+        finally:
+            temp_dir.cleanup()
+        self.assertEqual(model["primaryBuckets"], [])
+        self.assertIn("formula_hierarchy_unavailable", {item["code"] for item in model["gaps"]})
+
+    def test_real_run_uses_dynamic_detail_name_for_unknown_secondary_id(self):
+        model = build_script_formula_overview(ROOT / "runs/food-beverage-20260914")
+        self.assertEqual(
+            {item["label"] for item in model["secondaryBucketsByPrimary"]["商品卖点"]},
+            {"功效功能", "成分配方原料", "使用感受和服务体验", "礼盒", "原产地", "荔枝味", "工艺科技"},
+        )
+
+    def test_source_label_is_used_without_a_fixed_taxonomy(self):
         labels = [[{"level_1_label": {"id": 9, "label": "接口新名称"}, "level_2_labels": []}]] + [[] for _ in range(9)]
         temp_dir, run_dir, _ = self.make_script_run(labels)
         try:
@@ -75,9 +87,9 @@ class ScriptFormulaOverviewTests(unittest.TestCase):
         finally:
             temp_dir.cleanup()
         self.assertEqual({item["label"] for item in model["primaryBuckets"]}, {"接口新名称"})
-        self.assertIn("formula_taxonomy_label_conflict", {item["code"] for item in model["gaps"]})
+        self.assertNotIn("formula_taxonomy_label_conflict", {item["code"] for item in model["gaps"]})
 
-    def test_conflicting_explicit_names_for_one_id_are_excluded_from_aggregation(self):
+    def test_different_source_labels_remain_dynamic_content(self):
         labels = [
             [{"level_1_label": {"id": 99, "label": "名称甲"}, "level_2_labels": []}],
             [{"level_1_label": {"id": 99, "label": "名称乙"}, "level_2_labels": []}],
@@ -87,33 +99,8 @@ class ScriptFormulaOverviewTests(unittest.TestCase):
             model = build_script_formula_overview(run_dir)
         finally:
             temp_dir.cleanup()
-        self.assertEqual(model["coverage"]["formulaMaterialCount"], 0)
-        self.assertEqual(model["primaryBuckets"], [])
-        self.assertIn("formula_source_label_conflict", {item["code"] for item in model["gaps"]})
-
-    def test_taxonomy_accepts_a_new_nonempty_catalog_version(self):
-        payload = {"schemaVersion": 1, "version": "official-catalog-2026-10", "primary": {"9": "商品卖点"}, "secondary": {}}
-        temp_dir, _, taxonomy_path = self.make_script_run([[] for _ in range(10)], payload)
-        try:
-            with mock.patch("scripts.script_formula_overview._TAXONOMY_PATH", taxonomy_path):
-                self.assertEqual(_load_taxonomy()["version"], "official-catalog-2026-10")
-        finally:
-            temp_dir.cleanup()
-
-    def test_taxonomy_rejects_invalid_schema_or_non_string_mapping(self):
-        invalid = [
-            {"schemaVersion": 2, "version": "x", "primary": {}, "secondary": {}},
-            {"schemaVersion": 1, "version": "x", "primary": {"9": 9}, "secondary": {}},
-            {"schemaVersion": 1, "version": "x", "primary": {}, "secondary": {"34": ""}},
-        ]
-        for payload in invalid:
-            temp_dir, _, taxonomy_path = self.make_script_run([[] for _ in range(10)], payload)
-            try:
-                with mock.patch("scripts.script_formula_overview._TAXONOMY_PATH", taxonomy_path):
-                    with self.assertRaises(ScriptFormulaOverviewError):
-                        _load_taxonomy()
-            finally:
-                temp_dir.cleanup()
+        self.assertEqual(model["coverage"]["formulaMaterialCount"], 2)
+        self.assertEqual({item["label"] for item in model["primaryBuckets"]}, {"名称甲", "名称乙"})
 
 
 if __name__ == "__main__":

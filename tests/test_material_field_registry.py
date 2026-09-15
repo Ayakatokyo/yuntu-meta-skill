@@ -21,6 +21,7 @@ class MaterialFieldRegistryTests(unittest.TestCase):
         self.assertEqual(registry.resolve("  3S完播率 ").id, "metrics.play_3s_rate")
         self.assertEqual(registry.resolve("3S 完播率").id, "metrics.play_3s_rate")
         self.assertEqual(registry.resolve("metrics.ctr").label, "CTR（点击率）")
+        self.assertEqual(registry.resolve("平均播放时长").id, "metrics.play_duration_avg")
 
     def test_registry_exposes_detail_rate_metrics_without_component_click_rate(self):
         registry = MaterialFieldRegistry.from_path(REGISTRY)

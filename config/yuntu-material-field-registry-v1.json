@@ -92,6 +92,15 @@
       "labelEvidence": "完播率"
     },
     {
+      "id": "metrics.play_duration_avg",
+      "label": "平均播放时长",
+      "kind": "number",
+      "path": ["metrics", "play_duration_avg"],
+      "filterOperators": ["eq", "gt", "gte", "lt", "lte"],
+      "sortable": true,
+      "labelEvidence": "平均播放时长"
+    },
+    {
       "id": "metrics.play_3s_rate",
       "label": "3S完播率",
       "aliases": ["3S 完播率"],

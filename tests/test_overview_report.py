@@ -195,14 +195,16 @@ class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertEqual(model["source"]["recordCount"], 3)
         self.assertEqual(len(model["rows"]), 3)
         self.assertEqual(model["rows"][0]["values"]["metrics.show_cnt"], 30)
+        self.assertEqual(model["rows"][0]["values"]["metrics.play_duration_avg"], 99)
         self.assertEqual(model["rows"][0]["values"]["metrics.play_over_rate"], 0.1)
         self.assertEqual(model["rows"][0]["values"]["people_tags"], ["精致妈妈", "女"])
         self.assertEqual(next(field for field in model["fields"] if field["id"] == "metrics.show_cnt")["label"], "曝光量")
         self.assertEqual(next(field for field in model["fields"] if field["id"] == "metrics.play_over_rate")["label"], "完播率")
+        self.assertEqual(next(field for field in model["fields"] if field["id"] == "metrics.play_duration_avg")["label"], "平均播放时长")
         self.assertNotIn("material_id", {field["id"] for field in model["fields"]})
         self.assertEqual(model["defaultFieldIds"], [
             "title", "publish_time", "metrics.show_cnt", "metrics.play_3s_rate",
-            "metrics.play_over_rate", "metrics.ctr", "metrics.cvr", "metrics.pvr",
+            "metrics.play_over_rate", "metrics.play_duration_avg", "metrics.ctr", "metrics.cvr", "metrics.pvr",
             "metrics.interact_rate",
         ])
         self.assertNotIn("account_id", json.dumps(model, ensure_ascii=False))
@@ -279,7 +281,7 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         model = build_overview_data(run_dir, REGISTRY)
         html = render_overview_html(model)
         self.assertEqual(model["scriptFormulaOverview"]["coverage"]["formulaMaterialCount"], 2)
-        self.assertEqual(model["scriptFormulaOverview"]["source"]["taxonomyVersion"], "yuntu-content-formula-taxonomy-v1")
+        self.assertEqual(model["scriptFormulaOverview"]["source"]["mappingMode"], "dynamic-content")
         self.assertEqual(model["marketingSellingPointOverview"]["status"], "available")
         self.assertGreater(model["marketingSellingPointOverview"]["coverage"]["marketingSellingPointMaterialCount"], 0)
         self.assertNotIn('"41"', json.dumps(model["scriptFormulaOverview"], ensure_ascii=False))
@@ -452,8 +454,12 @@ class OverviewHtmlTests(OverviewFixtureMixin, unittest.TestCase):
         self.assertIn("single-formula-secondary-list", html)
         self.assertIn("formulaSourceText", html)
         self.assertIn("本视频脚本文案", html)
+        self.assertIn('["script","本视频脚本文案"]', html)
+        self.assertIn("single-formula-source-header", html)
+        self.assertIn("data-copy-text=", html)
         self.assertIn("single-script-highlight", html)
-        self.assertIn("点击内容公式或下方脚本文案，可双向定位", html)
+        self.assertNotIn("点击内容公式或下方脚本文案，可双向定位", html)
+        self.assertNotIn("彩色片段对应已解析的内容公式", html)
         self.assertNotIn("最多 2 帧", html)
         self.assertIn("singleHighlightPageSize = 8", html)
         self.assertIn("grid-template-columns:repeat(4,minmax(0,1fr))", html)
