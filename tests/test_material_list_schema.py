@@ -4,11 +4,14 @@ from scripts import collector
 
 
 class MaterialListSchemaTests(unittest.TestCase):
-    def test_schema_exposes_material_list_and_keeps_it_out_of_rpa_fields(self):
-        self.assertIn("material_list", collector.BUSINESS_PARAMS_SCHEMA["query_spec"])
-        self.assertNotIn("material_list", collector.LIST_FIELDS)
-        self.assertNotIn("material_list", collector.BUSINESS_PARAMS_SCHEMA["list_fields"])
-        self.assertFalse(collector.BUSINESS_PARAMS_SCHEMA["query_spec"]["material_list"]["remote_api"])
+    def test_material_list_cannot_be_forwarded_as_rpa_business_params(self):
+        with self.assertRaisesRegex(
+            collector.RpaConnectorError,
+            "unexpected list business parameters: material_list",
+        ):
+            collector.validate_list_business_params({
+                "material_list": {"filters": [], "sort": None},
+            })
 
 
 if __name__ == "__main__":

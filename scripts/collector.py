@@ -24,6 +24,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import rpa_dynamic_client as list_dynamic_rpa
+import rpa_dynamic_detail_client as detail_dynamic_rpa
+
 try:
     from yuntu_batch import (
         ConnectorInvoker,
@@ -144,10 +147,6 @@ except ImportError:
     )
 
 
-LIST_FUNCTION_CODE = "rpa.conn.juliang.yt.industry.content.rankings.list"
-DETAIL_FUNCTION_CODE = "rpa.conn.juliang.yt.industry.content.rankings.details"
-PLATFORM = "RPA_JULIANG_YT_ACCOUNT_PASSWORD"
-DATA_SOURCE_TYPE = "rpa"
 HEADERS = {"Content-Type": "application/json"}
 HTTP_REQUEST_TIMEOUT_SECONDS = 30
 RPA_REQUEST_TIMEOUT_SECONDS = 300
@@ -209,34 +208,6 @@ DETAIL_FIELDS = {
     "custom_end_date",
 }
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
-
-BUSINESS_PARAMS_SCHEMA = {
-    "schema_type": "reference_metadata",
-    "title": "云图行业内容榜单分析",
-    "list_fields": sorted(LIST_FIELDS),
-    "detail_date_fields": [
-        "date_type",
-        "custom_start_date",
-        "custom_end_date",
-    ],
-    "top_n": {"type": "positive integer", "default": 10},
-    "query_spec": {
-        "material_list": {
-            "description": "完整TOP1000落盘并规范化后执行的本地素材筛选与单列排序",
-            "filters": "AND; field可用云图展示名或注册表英文字段ID",
-            "sort": "单个已注册可排序字段，direction为asc或desc",
-            "example": {
-                "filters": [
-                    {"field": "曝光量", "operator": "gte", "value": 1000000},
-                    {"field": "视频标题", "operator": "contains", "value": "燕窝"},
-                ],
-                "sort": {"field": "互动率", "direction": "desc"},
-            },
-            "remote_api": False,
-        }
-    },
-}
-
 
 class RpaConnectorError(RuntimeError):
     """Raised when the connector cannot safely complete an operation."""
@@ -564,15 +535,65 @@ def _gateway_result(response, action, gateway):
     )
 
 
+def _operation_client(operation):
+    if operation == "list":
+        return list_dynamic_rpa
+    if operation == "detail":
+        return detail_dynamic_rpa
+    raise RpaConnectorError("operation must be list or detail")
+
+
+def fetch_connector_detail(operation, *, environ=None, session=None):
+    client = _operation_client(operation)
+    session = _default_session() if session is None else session
+    api_base, _authorization, _session_id, cookies = runtime_config(environ)
+    try:
+        response = session.post(
+            f"{api_base}{client.DETAIL_PATH}",
+            json={"connectorCode": client.CONNECTOR_CODE},
+            headers={"Content-Type": "application/json;charset=UTF-8"},
+            cookies=cookies,
+            timeout=HTTP_REQUEST_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        raise RpaConnectorError(
+            f"unable to fetch RPA {operation} connector detail: transport request failed"
+        ) from exc
+    body = _gateway_result(response, f"fetch RPA {operation} connector detail", api_base)
+    data = body.get("data")
+    if not isinstance(data, list):
+        raise RpaConnectorError(f"RPA {operation} connector detail data must be a list")
+    matches = [
+        item for item in data
+        if isinstance(item, dict) and item.get("connectorCode") == client.CONNECTOR_CODE
+    ]
+    if not matches:
+        raise RpaConnectorError(
+            f"RPA {operation} connector is unavailable, offline, or unsupported for BIZ_EXPERT"
+        )
+    if len(matches) != 1:
+        raise RpaConnectorError(f"RPA {operation} connector detail is ambiguous")
+    try:
+        client.normalized_detail(matches[0])
+    except client.ContractError as exc:
+        raise RpaConnectorError(str(exc)) from exc
+    return matches[0]
+
+
 def list_accounts(environ=None, session=None):
     session = _default_session() if session is None else session
     api_base, authorization, _session_id, cookies = runtime_config(environ)
+    detail = fetch_connector_detail("list", environ=environ, session=session)
+    try:
+        platform = list_dynamic_rpa.resolve_platform(detail)
+    except list_dynamic_rpa.ContractError as exc:
+        raise RpaConnectorError(str(exc)) from exc
     try:
         response = session.post(
             f"{api_base}/adg/v1/agent/rpa/authorizations/query",
             json={
                 "authorization": authorization,
-                "platform": "RPA_JULIANG_YT_ACCOUNT_PASSWORD",
+                "platform": platform,
             },
             headers=HEADERS,
             cookies=cookies,
@@ -586,11 +607,7 @@ def list_accounts(environ=None, session=None):
 
 
 def _operation_function_code(operation):
-    if operation == "list":
-        return LIST_FUNCTION_CODE
-    if operation == "detail":
-        return DETAIL_FUNCTION_CODE
-    raise RpaConnectorError("operation must be list or detail")
+    return _operation_client(operation).CONNECTOR_CODE
 
 
 def _response_data(response, action, gateway):
@@ -602,19 +619,26 @@ def _response_data(response, action, gateway):
 
 
 def submit_fetch_task(operation, shop_id, business_params, *, environ=None, session=None):
-    function_code = _operation_function_code(operation)
+    client = _operation_client(operation)
+    function_code = client.CONNECTOR_CODE
     if not isinstance(shop_id, str) or not shop_id.strip():
         raise RpaConnectorError("shop_id is required")
     session = _default_session() if session is None else session
     api_base, authorization, session_id, cookies = runtime_config(environ)
+    detail = fetch_connector_detail(operation, environ=environ, session=session)
+    try:
+        client.validate_business_params(detail, business_params)
+        platform = client.resolve_platform(detail)
+    except client.ContractError as exc:
+        raise RpaConnectorError(str(exc)) from exc
     try:
         response = session.post(
             f"{api_base}/adg/v1/agent/fetch/tasks",
             json={
                 "authorization": authorization,
                 "agent_session_id": session_id,
-                "data_source_type": "rpa",
-                "platform": "RPA_JULIANG_YT_ACCOUNT_PASSWORD",
+                "data_source_type": client.DATA_SOURCE_TYPE,
+                "platform": platform,
                 "function_code": function_code,
                 "business_params": business_params,
                 "shop_id": shop_id.strip(),
@@ -685,32 +709,14 @@ def wait_fetch_task(
             raise RpaConnectorError(f"RPA task returned unknown status {status!r}: {task_group_id}")
 
 
-def _invoke_list_sync(shop_id, business_params, environ=None, session=None):
-    if not isinstance(shop_id, str) or not shop_id.strip():
-        raise RpaConnectorError("shop_id is required")
-    session = _default_session() if session is None else session
-    api_base, authorization, session_id, cookies = runtime_config(environ)
-    try:
-        response = session.post(
-            f"{api_base}/adg/v1/agent/invoke",
-            json={
-                "authorization": authorization,
-                "agent_session_id": session_id,
-                "data_source_type": DATA_SOURCE_TYPE,
-                "platform": PLATFORM,
-                "function_code": LIST_FUNCTION_CODE,
-                "business_params": business_params,
-                "shop_id": shop_id.strip(),
-            },
-            headers=HEADERS,
-            cookies=cookies,
-            timeout=RPA_REQUEST_TIMEOUT_SECONDS,
-        )
-    except Exception as exc:
-        raise RpaConnectorError(
-            "unable to fetch RPA list: transport request failed"
-        ) from exc
-    return _gateway_result(response, "fetch RPA list", api_base)
+def _invoke_list_async(shop_id, business_params, environ=None, session=None):
+    task_group_id = submit_fetch_task(
+        "list", shop_id, validate_list_business_params(business_params),
+        environ=environ, session=session,
+    )
+    return wait_fetch_task(
+        task_group_id, environ=environ, session=session
+    )
 
 
 def _invoke_detail_async(shop_id, business_params, environ=None, session=None):
@@ -722,7 +728,7 @@ def _invoke_detail_async(shop_id, business_params, environ=None, session=None):
 
 
 def invoke_list(shop_id, business_params, environ=None, session=None):
-    return _invoke_list_sync(
+    return _invoke_list_async(
         shop_id, business_params, environ=environ, session=session
     )
 
@@ -825,12 +831,6 @@ def _parser():
 
 
 def _cmd_self_test():
-    if LIST_FUNCTION_CODE != "rpa.conn.juliang.yt.industry.content.rankings.list":
-        raise RpaConnectorError("unexpected list function code")
-    if DETAIL_FUNCTION_CODE != "rpa.conn.juliang.yt.industry.content.rankings.details":
-        raise RpaConnectorError("unexpected detail function code")
-    if PLATFORM != "RPA_JULIANG_YT_ACCOUNT_PASSWORD" or DATA_SOURCE_TYPE != "rpa":
-        raise RpaConnectorError("unexpected fixed gateway metadata")
     validate_list_business_params({})
     validate_detail_business_params(
         {"material_id": "1", "date_type": "LAST_7_DAYS"}
@@ -1137,7 +1137,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         environment = None
-        if args.command in {"runtime-check", "list-accounts", "collect", "retry-failed", "retry-unresolved"}:
+        if args.command in {"runtime-check", "list-accounts", "schema", "collect", "retry-failed", "retry-unresolved"}:
             environment, receipt = _cli_runtime(args)
             if args.command == "runtime-check":
                 print(json.dumps(receipt, ensure_ascii=False, indent=2))
@@ -1158,7 +1158,13 @@ def main(argv=None):
             print(json.dumps(list_accounts(environ=environment), ensure_ascii=False, indent=2))
             return 0
         if args.command == "schema":
-            print(json.dumps(BUSINESS_PARAMS_SCHEMA, ensure_ascii=False, indent=2))
+            details = {
+                operation: _operation_client(operation).normalized_detail(
+                    fetch_connector_detail(operation, environ=environment)
+                )
+                for operation in ("list", "detail")
+            }
+            print(json.dumps(details, ensure_ascii=False, indent=2))
             return 0
         if args.command == "self-test":
             _cmd_self_test()

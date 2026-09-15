@@ -1,16 +1,16 @@
 # 云图-行业灵感-行业内容榜列表
 
-## 固定元数据
+## 唯一静态身份
 
 - `function_code`: `rpa.conn.juliang.yt.industry.content.rankings.list`
-- `platform`: `RPA_JULIANG_YT_ACCOUNT_PASSWORD`
-- `data_source_type`: `rpa`
+
+`platformCode`、输入 schema/list 契约和输出字段必须在运行时由连接器详情接口读取。本文字段只保留业务语义参考，不是实际传参的权威定义。
 
 ## 适用场景
 
 采集巨量云图行业灵感页行业内容榜视频列表，支持按行业、时间、品牌范围、品牌、年龄、性别、八大人群和榜单限制筛选。
 
-## 入参说明
+## 历史业务语义参考
 
 - `industry`
 - `time_range_type`

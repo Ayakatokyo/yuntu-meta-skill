@@ -10,7 +10,7 @@
 
 ## 说明
 
-- 平台固定为 `RPA_JULIANG_YT_ACCOUNT_PASSWORD`
+- connector code 是唯一静态身份；平台必须从详情接口的 `platformCode` 读取并原样透传
 - 不允许外部覆盖 `function_code`
-- 新详情采集固定使用 `rpa.conn.juliang.yt.industry.content.rankings.details`、`date_type` 和异步 fetch task/status；旧详情页只服务历史批次读取
+- 列表和新详情分别先读取实时详情与 schema，再校验完整业务 JSON，并统一使用异步 fetch task/status；旧详情页只服务历史批次读取
 - 当前技能在两个连接器结果之上增加了完整 Top1000 列表持久化、全局 Top N 详情选择、规范化和五指标截帧资产；前 N 条详情失败不会由排名更低的素材补位

@@ -26,14 +26,44 @@ class RuntimeAuthTests(unittest.TestCase):
         "YCSESSIONID": "new-cookie",
     }
 
+    @staticmethod
+    def response(payload):
+        response = requests.Response()
+        response.status_code = 200
+        response._content = json.dumps(payload).encode()
+        return response
+
+    @classmethod
+    def connector_detail(cls, operation):
+        code = {
+            "list": "rpa.conn.juliang.yt.industry.content.rankings.list",
+            "detail": "rpa.conn.juliang.yt.industry.content.rankings.details",
+        }[operation]
+        params = [] if operation == "list" else [
+            {"param": "material_id", "isRequired": True, "dataTypeEnum": "STRING"},
+            {"param": "date_type", "isRequired": True, "dataTypeEnum": "STRING"},
+        ]
+        return cls.response({
+            "success": True,
+            "data": [{
+                "connectorCode": code,
+                "platformCode": "YT_DYNAMIC_PLATFORM",
+                "inParamJsonSchemaText": None,
+                "inParamList": params,
+                "outParamList": [],
+            }],
+        })
+
     def run_cli(self, args, payload=None, response=None):
         stdout, stderr = io.StringIO(), io.StringIO()
         session = mock.Mock()
         if response is None:
-            response = requests.Response()
-            response.status_code = 200
-            response._content = b'{"success":true,"code":"200","data":[]}'
-        session.post.return_value = response
+            session.post.side_effect = [
+                self.connector_detail("list"),
+                self.response({"success": True, "code": "200", "data": []}),
+            ]
+        else:
+            session.post.return_value = response
         with mock.patch.dict(os.environ, self.inherited, clear=True), \
                 mock.patch.object(collector.sys, "stdin", io.StringIO(json.dumps(payload) + "\n")), \
                 mock.patch.object(collector, "_default_session", return_value=session), \
@@ -51,10 +81,13 @@ class RuntimeAuthTests(unittest.TestCase):
         )
         self.assertEqual(status, 0, err)
         self.assertTrue(json.loads(out)["success"])
-        self.assertEqual(session.post.call_args.args[0],
+        self.assertEqual(session.post.call_args_list[0].args[0],
+                         "https://requested.example/api/dcConnector/v3/listByConnectorCode")
+        self.assertEqual(session.post.call_args_list[1].args[0],
                          "https://requested.example/api/adg/v1/agent/rpa/authorizations/query")
-        self.assertEqual(session.post.call_args.kwargs["json"]["authorization"], "new-auth")
-        self.assertEqual(session.post.call_args.kwargs["cookies"], {"YCSESSIONID": "new-cookie"})
+        self.assertEqual(session.post.call_args_list[1].kwargs["json"]["authorization"], "new-auth")
+        for call in session.post.call_args_list:
+            self.assertEqual(call.kwargs["cookies"], {"YCSESSIONID": "new-cookie"})
         self.assertIn("stdin", err)
         self.assertIn("https://requested.example/api", err)
         for secret in ("new-auth", "new-cookie", "old-session", "old-auth", "old-cookie"):
@@ -126,10 +159,14 @@ class RuntimeAuthTests(unittest.TestCase):
 
     def test_batch_submission_and_poll_use_same_explicit_config(self):
         session = mock.Mock()
-        response = requests.Response()
-        response.status_code = 200
-        response._content = b'{"success":true,"data":{"task_group_id":"tg-1","status":"completed"}}'
-        session.post.return_value = response
+        session.post.side_effect = [
+            self.connector_detail("list"),
+            self.response({"success": True, "data": {"task_group_id": "tg-list"}}),
+            self.response({"success": True, "data": {"status": "completed"}}),
+            self.connector_detail("detail"),
+            self.response({"success": True, "data": {"task_group_id": "tg-detail"}}),
+            self.response({"success": True, "data": {"status": "completed"}}),
+        ]
         with mock.patch.dict(os.environ, self.inherited, clear=True), \
                 mock.patch.object(collector, "_default_session", return_value=session), \
                 mock.patch.object(collector.time, "sleep"):
@@ -137,12 +174,14 @@ class RuntimeAuthTests(unittest.TestCase):
             invoker.invoke_list("shop-1", {})
             task = invoker.submit_detail("shop-1", {"material_id": "101", "date_type": "LAST_7_DAYS"})
             invoker.wait_detail(task)
-        self.assertEqual(len(session.post.call_args_list), 3)
+        self.assertEqual(len(session.post.call_args_list), 6)
         for call in session.post.call_args_list:
             self.assertTrue(call.args[0].startswith("https://requested.example/api/"))
             self.assertEqual(call.kwargs["cookies"], {"YCSESSIONID": "new-cookie"})
-            self.assertEqual(call.kwargs["json"]["authorization"], "new-auth")
+        for index in (1, 2, 4, 5):
+            self.assertEqual(session.post.call_args_list[index].kwargs["json"]["authorization"], "new-auth")
         self.assertEqual(session.post.call_args_list[1].kwargs["json"]["agent_session_id"], "new-cookie")
+        self.assertEqual(session.post.call_args_list[4].kwargs["json"]["agent_session_id"], "new-cookie")
 
 
 if __name__ == "__main__":

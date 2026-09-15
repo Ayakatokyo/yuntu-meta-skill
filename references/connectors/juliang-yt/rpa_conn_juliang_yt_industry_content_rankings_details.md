@@ -1,18 +1,18 @@
 # 云图-行业内容榜-素材详情异步任务
 
-## 固定元数据
+## 唯一静态身份
 
 - `function_code`: `rpa.conn.juliang.yt.industry.content.rankings.details`
-- `platform`: `RPA_JULIANG_YT_ACCOUNT_PASSWORD`
-- `data_source_type`: `rpa`
-- 详情参数：`material_id`、`date_type`、`custom_start_date`、`custom_end_date`
+
+`platformCode`、输入 schema/list 契约和输出字段必须在运行时由连接器详情接口读取。`material_id`、`date_type`、`custom_start_date`、`custom_end_date` 仅作为历史业务语义参考，不能替代实时契约。
 
 ## 调用协议
 
-1. `POST /adg/v1/agent/fetch/tasks` 提交任务，响应必须为 `success=true` 且 `data.task_group_id` 非空。
-2. `POST /adg/v1/agent/fetch/tasks/status` 使用 `task_group_id` 轮询。
-3. `pending`/`running` 继续轮询；`completed`/`partial_success` 只表示远端完成，仍需下载或解包、写入 raw/normalized 并校验身份和周期；`failed` 或未知状态拒绝。
-4. 恢复同一输出目录时只轮询 manifest `taskRuns` 已登记的 task id，不重新提交。
+1. 先调用 `/dcConnector/v3/listByConnectorCode` 读取详情并按实时契约校验完整业务 JSON。
+2. `POST /adg/v1/agent/fetch/tasks` 提交任务，响应必须为 `success=true` 且 `data.task_group_id` 非空。
+3. `POST /adg/v1/agent/fetch/tasks/status` 使用 `task_group_id` 轮询。
+4. `pending`/`running` 继续轮询；`completed`/`partial_success` 只表示远端完成，仍需下载或解包、写入 raw/normalized 并校验身份和周期；`failed` 或未知状态拒绝。
+5. 恢复同一输出目录时只轮询 manifest `taskRuns` 已登记的 task id，不重新提交。
 
 ## 结果格式
 

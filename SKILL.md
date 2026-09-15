@@ -24,7 +24,7 @@ metadata:
 
 # 可配置云图采集与商业分析工作流
 
-该技能负责榜单、详情、高光帧资产和第一阶段离线报告，并通过同一入口分两阶段运行：阶段一先采集并准备事实资产，确认 `ready_for_analysis` 后调用 `render-overview` 生成可审计的数据工作台报告；报告完成后停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二阶段才进入商业分析编排。第一阶段报告只展示已采集事实、确定性统计和已验证本地图片，不生成未经引用的商业洞察。新详情采集固定使用 `rpa.conn.juliang.yt.industry.content.rankings.details`、`date_type` 和异步 fetch task/status；历史批次仍可读取旧详情格式，但不作为新批次回退路径。
+该技能负责榜单、详情、高光帧资产和第一阶段离线报告，并通过同一入口分两阶段运行：阶段一先采集并准备事实资产，确认 `ready_for_analysis` 后调用 `render-overview` 生成可审计的数据工作台报告；报告完成后停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二阶段才进入商业分析编排。第一阶段报告只展示已采集事实、确定性统计和已验证本地图片，不生成未经引用的商业洞察。列表与新详情分别只静态保存 connector code，平台、输入契约和输出字段全部在运行时读取；历史批次仍可读取旧详情格式，但不作为新批次回退路径。
 
 ## 输入
 
@@ -76,43 +76,64 @@ metadata:
 
 ## 执行
 
+列表客户端为 `scripts/rpa_dynamic_client.py`，详情客户端为 `scripts/rpa_dynamic_detail_client.py`。每次取数都先 `detail`/`schema` 获取实时 `platformCode`、`inParamJsonSchemaText` 或 `inParamList`，再把业务参数作为一个完整 JSON 用 `validate` 校验；`fetch` 会二次反查和校验，然后统一走异步 task/status、下载并解析 CSV。schema text 非空时不得读取 `inParamList`；平台值原样透传，不补 `_ACCOUNT_PASSWORD`。外层工具执行真实 `fetch` 时显式设置 3600 秒超时。
+
+```bash
+# 榜单连接器
+python scripts/rpa_dynamic_client.py detail
+python scripts/rpa_dynamic_client.py schema
+python scripts/rpa_dynamic_client.py list-accounts
+python scripts/rpa_dynamic_client.py validate --params-file config/rpa-list-params.json
+python scripts/rpa_dynamic_client.py fetch --shop-id "<shop_id>" \
+  --params-file config/rpa-list-params.json \
+  --output-dir 云图数据资源/example/rpa-list
+
+# 详情连接器
+python scripts/rpa_dynamic_detail_client.py detail
+python scripts/rpa_dynamic_detail_client.py schema
+python scripts/rpa_dynamic_detail_client.py validate --params-file config/rpa-detail-params.json
+python scripts/rpa_dynamic_detail_client.py fetch --shop-id "<shop_id>" \
+  --params-file config/rpa-detail-params.json \
+  --output-dir 云图数据资源/example/rpa-details
+```
+
 ```bash
 # 未显式提供配置时，先核对继承环境的目标网关（不发网络请求）
 python scripts/collector.py runtime-check
 python scripts/collector.py list-accounts
 python scripts/collector.py validate --query-spec query.json
-python scripts/collector.py collect --shop-id "<shop_id>" --query-spec query.json --output-dir runs/example
+python scripts/collector.py collect --shop-id "<shop_id>" --query-spec query.json --output-dir 云图数据资源/example
 # 请求图片时才提供 --highlight-spec；--highlight-mode off 与规则同时出现会被拒绝
-python scripts/collector.py collect --shop-id "<shop_id>" --query-spec query.json --highlight-mode on --highlight-spec highlights.json --output-dir runs/example
-python scripts/collector.py status --output-dir runs/example
-python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir runs/example
-python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir runs/example
-python scripts/collector.py retry-highlights --output-dir runs/example
-python scripts/collector.py build-facts --run-dir runs/example
-# 阶段一采集/事实门禁通过后，生成离线第一阶段数据报告；默认写入 runs/example/overview/
-python scripts/collector.py render-overview --run-dir runs/example
+python scripts/collector.py collect --shop-id "<shop_id>" --query-spec query.json --highlight-mode on --highlight-spec highlights.json --output-dir 云图数据资源/example
+python scripts/collector.py status --output-dir 云图数据资源/example
+python scripts/collector.py retry-failed --shop-id "<shop_id>" --output-dir 云图数据资源/example
+python scripts/collector.py retry-unresolved --shop-id "<shop_id>" --output-dir 云图数据资源/example
+python scripts/collector.py retry-highlights --output-dir 云图数据资源/example
+python scripts/collector.py build-facts --run-dir 云图数据资源/example
+# 阶段一采集/事实门禁通过后，生成离线第一阶段数据报告；默认写入 云图数据资源/example/overview/
+python scripts/collector.py render-overview --run-dir 云图数据资源/example
 # 需要显式指定报告目录时，目录必须位于运行目录内
-python scripts/collector.py render-overview --run-dir runs/example --output-dir runs/example/overview-preview
+python scripts/collector.py render-overview --run-dir 云图数据资源/example --output-dir 云图数据资源/example/overview-preview
 # render-overview 成功后停止，等待用户输入商业分析思路或商业问题；收到问题后才进入阶段二
-python scripts/collector.py workflow --run-dir runs/example \
-  --business-question "找出曝光高但转化差的素材" --output runs/example/analysis/workflow.md
+python scripts/collector.py workflow --run-dir 云图数据资源/example \
+  --business-question "找出曝光高但转化差的素材" --output 云图数据资源/example/analysis/workflow.md
 # 当前对话模型返回 FactSelectionSpec JSON 后回放本地事实选择
-python scripts/collector.py workflow --run-dir runs/example \
+python scripts/collector.py workflow --run-dir 云图数据资源/example \
   --business-question "找出曝光高但转化差的素材" \
-  --fact-selection-result runs/example/selection-result.json \
-  --output runs/example/analysis/workflow.md
+  --fact-selection-result 云图数据资源/example/selection-result.json \
+  --output 云图数据资源/example/analysis/workflow.md
 # 当前对话模型返回 AnalysisResult JSON 后生成最终报告
-python scripts/collector.py workflow --run-dir runs/example \
+python scripts/collector.py workflow --run-dir 云图数据资源/example \
   --business-question "找出曝光高但转化差的素材" \
-  --analysis-result runs/example/analysis-result.json \
-  --output runs/example/analysis/workflow.md
+  --analysis-result 云图数据资源/example/analysis-result.json \
+  --output 云图数据资源/example/analysis/workflow.md
 # 历史运行仍可使用旧 AnalysisInput 入口
-python scripts/collector.py analyze --run-dir runs/example --input analysis-input.json --output runs/example/analysis.md
+python scripts/collector.py analyze --run-dir 云图数据资源/example --input analysis-input.json --output 云图数据资源/example/analysis.md
 # 历史运行仍可使用旧 AnalysisSpec 入口
-python scripts/collector.py analyze --run-dir runs/example --spec analysis-spec.json --output runs/example/analysis.md
+python scripts/collector.py analyze --run-dir 云图数据资源/example --spec analysis-spec.json --output 云图数据资源/example/analysis.md
 # analyze 未传 --analysis-result 时只生成宿主交接包，不生成报告；当前对话模型返回 JSON 后回放
-python scripts/collector.py analyze --run-dir runs/example --input analysis-input.json \
-  --analysis-result runs/example/model-result.json --output runs/example/analysis.md
+python scripts/collector.py analyze --run-dir 云图数据资源/example --input analysis-input.json \
+  --analysis-result 云图数据资源/example/model-result.json --output 云图数据资源/example/analysis.md
 python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-skill
 ```
 
@@ -125,7 +146,7 @@ python scripts/check_runtime_sync.py --target .system/skills/custom/yuntu-meta-s
 ```bash
 # 全局参数放在子命令前；URL 换成用户明确指定的网关，命令中不放凭证
 python scripts/collector.py --runtime-config-stdin --expected-gateway https://gateway.example/api list-accounts
-python scripts/collector.py --runtime-config-stdin --expected-gateway https://gateway.example/api collect --shop-id "<shop_id>" --query-spec query.json --output-dir runs/example
+python scripts/collector.py --runtime-config-stdin --expected-gateway https://gateway.example/api collect --shop-id "<shop_id>" --query-spec query.json --output-dir 云图数据资源/example
 ```
 
 终端交互模式会关闭输入回显，宿主通过终端标准输入发送 JSON 行；管道模式从标准输入读取一行。不要用含真实凭证的 `echo`、heredoc、命令参数或落盘文件构造输入。每次新的 CLI 调用都需要重新传入同一组任务配置（包括 collect、retry-failed、retry-unresolved）；一次调用不会修改全局环境或自动配置后续调用。同一次采集的榜单、详情提交和轮询会共享该配置。
@@ -136,7 +157,7 @@ python scripts/collector.py --runtime-config-stdin --expected-gateway https://ga
 
 ## 产物与恢复
 
-运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；恢复只轮询已登记任务，临时网络异常保留为可恢复 unresolved。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
+未来运行统一写入技能根目录下的 `云图数据资源/`；两个动态客户端未传 `--output-dir` 时也会以该目录为默认根。原有 `runs/` 或 `RPA数据汇总/` 只作为历史运行兼容目录，不搬动、不覆盖。每个运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；恢复只轮询已登记任务，临时网络异常保留为可恢复 unresolved。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
 
 `collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 
@@ -144,13 +165,13 @@ python scripts/collector.py --runtime-config-stdin --expected-gateway https://ga
 
 当 `status` 返回 `status=ready_for_analysis` 且 `facts_status=complete` 后，必须对同一 `run_dir` 执行 `render-overview`。该命令只读取已落盘运行数据和注册表，不重新取数、不重新规范化、不重新分类、不启动商业分析；它会校验 `run-summary.json` 中榜单源文件的声明路径、文件大小、SHA-256 和记录数，并将已验证的高光帧/详情图片复制到报告目录。
 
-报告默认生成在 `runs/example/overview/`，核心产物为 `runs/example/overview/overview-data.json` 和 `runs/example/overview/index.html`，必要时附带 `assets/` 下的本地图片。`overview-data.json` 是带来源引用、哈希、可用性和缺口信息的事实投影；`index.html` 是离线数据工作台，展示素材榜单、人群数据、脚本/内容公式、高光帧和已执行详情范围。报告仅展示事实与确定性统计，不得加入 AI 分析、商业结论、行动建议或猜测字段含义。
+报告默认生成在 `云图数据资源/example/overview/`，核心产物为 `云图数据资源/example/overview/overview-data.json` 和 `云图数据资源/example/overview/index.html`，必要时附带 `assets/` 下的本地图片。`overview-data.json` 是带来源引用、哈希、可用性和缺口信息的事实投影；`index.html` 是离线数据工作台，展示素材榜单、人群数据、脚本/内容公式、高光帧和已执行详情范围。报告仅展示事实与确定性统计，不得加入 AI 分析、商业结论、行动建议或猜测字段含义。
 
 如果报告生成失败，保留运行目录和失败证据，先修复事实包或源文件校验问题；不得绕过校验进入阶段二。报告生成成功后，阶段一即完成，交付报告路径、事实包路径和数据缺口，并等待用户输入商业分析思路或商业问题。`render-overview` 不会改变 `ready_for_analysis` 状态；只有收到有效分析问题后才进入 `workflow` 或兼容的 `analyze`。
 
 事实包生成时会从本轮 `list_context.brands`（或其 `pre_input.brands`）建立严格的运行时品牌候选范围，不会扩展默认品牌表。标题分类仅对候选品牌执行 Unicode NFKC、`casefold()` 和连续字符串匹配；规范名中的 `/` 表示别名，支持多品牌同时命中，并在 `brand_classification` 中保留 `matchedBrands` 与 `match_tokens` 审计证据。未命中或候选范围缺失时归为 `未知品牌`；`九阳豆浆` 仅支持显式受控的“九阳…豆浆”变体，单独“九阳”不命中。分类不依据品类、功效、标签或画面推断，四类事实包按 `material_id` 传播同一快照。
 
-通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较采集器、事实包、第一阶段报告和分析编排模块的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts` 与 `render-overview`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、`runs/`、`.system/sessions/` 或报告数据。
+通过 `.system/skills/custom/yuntu-meta-skill` 执行前，必须运行 `check_runtime_sync.py` 校验运行副本。校验会比较采集器、两个动态 RPA 客户端、事实包、第一阶段报告和分析编排模块的 SHA-256，并确认目标 `collector.py --help` 包含 `build-facts` 与 `render-overview`；校验失败时先同步源码脚本再执行。同步只允许写入技能源码和直接依赖，不得复制凭证、历史 `runs/`、`云图数据资源/`、`.system/sessions/` 或报告数据。
 
 ## 商业分析编排
 

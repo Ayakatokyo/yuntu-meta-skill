@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
 runs/
+云图数据资源/
 .system/
 docs/

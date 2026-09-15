@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 
 if __package__:
+    from . import rpa_dynamic_detail_client as detail_dynamic_rpa
     from .rpa_io import (
         download_file,
         parse_csv_records,
@@ -29,6 +30,7 @@ if __package__:
     from .material_field_registry import default_material_field_registry
     from .material_list_selection import select_materials, MaterialListSelectionError
 else:
+    import rpa_dynamic_detail_client as detail_dynamic_rpa
     from rpa_io import (
         download_file,
         parse_csv_records,
@@ -412,8 +414,8 @@ def _task_run(manifest, item, detail_date_params):
             "material_id": material_id,
             "selection_group": item.get("selectionGroup", {}),
             "operation": "detail",
-            "function_code": "rpa.conn.juliang.yt.industry.content.rankings.details",
-            "functionCode": "rpa.conn.juliang.yt.industry.content.rankings.details",
+            "function_code": detail_dynamic_rpa.CONNECTOR_CODE,
+            "functionCode": detail_dynamic_rpa.CONNECTOR_CODE,
             "business_params": {"material_id": material_id, **detail_date_params},
             "businessParams": {"material_id": material_id, **detail_date_params},
             "task_group_id": None,

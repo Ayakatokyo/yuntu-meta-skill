@@ -2,11 +2,11 @@
 
 > 本页仅描述历史批次的旧 `detail` function code、`date_range_type` 和旧结果格式。新采集必须使用 [details 异步连接器](rpa_conn_juliang_yt_industry_content_rankings_details.md)，不会自动回退到本页协议。
 
-## 固定元数据
+## 历史标识
 
 - `function_code`: `rpa.conn.juliang.yt.industry.content.rankings.detail`（仅历史）
-- `platform`: `RPA_JULIANG_YT_ACCOUNT_PASSWORD`
-- `data_source_type`: `rpa`
+
+旧批次中记录的平台和参数只用于解释既有文件，不能作为新采集配置。新采集的平台、输入契约和输出字段全部从连接器详情实时读取。
 
 ## 适用场景
 

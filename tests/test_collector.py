@@ -72,16 +72,37 @@ class CollectorTests(unittest.TestCase):
                 "msg": "鉴权失败：用户未登录",
             })
 
-    def test_detail_connector_uses_fixed_async_submit_contract(self):
+    def test_detail_connector_uses_live_async_submit_contract(self):
         class Response:
+            def __init__(self, payload):
+                self.payload = payload
+                self.status_code = 200
+
             def raise_for_status(self):
                 return None
 
             def json(self):
-                return {"success": True, "data": {"task_group_id": "tg-101"}}
+                return self.payload
 
         session = mock.Mock()
-        session.post.return_value = Response()
+        session.post.side_effect = [
+            Response({
+                "success": True,
+                "data": [{
+                    "connectorCode": "rpa.conn.juliang.yt.industry.content.rankings.details",
+                    "platformCode": "YT_DYNAMIC_PLATFORM",
+                    "inParamJsonSchemaText": None,
+                    "inParamList": [
+                        {"param": "material_id", "isRequired": True, "dataTypeEnum": "STRING"},
+                        {"param": "date_type", "isRequired": True, "dataTypeEnum": "STRING"},
+                        {"param": "custom_start_date", "isRequired": False, "dataTypeEnum": "STRING"},
+                        {"param": "custom_end_date", "isRequired": False, "dataTypeEnum": "STRING"},
+                    ],
+                    "outParamList": [],
+                }],
+            }),
+            Response({"success": True, "data": {"task_group_id": "tg-101"}}),
+        ]
         environment = {
             "ENV_BACKEND_HOST": "https://gateway.example/",
             "YUCE_AUTHORIZATION": "auth",
@@ -103,6 +124,7 @@ class CollectorTests(unittest.TestCase):
         )
         self.assertEqual(kwargs["json"]["business_params"]["date_type"], "LAST_7_DAYS")
         self.assertNotIn("date_range_type", kwargs["json"]["business_params"])
+        self.assertEqual(kwargs["json"]["platform"], "YT_DYNAMIC_PLATFORM")
 
     def test_wait_fetch_task_polls_until_completed_and_rejects_old_date_key(self):
         class Response:
@@ -135,31 +157,65 @@ class CollectorTests(unittest.TestCase):
                 {"material_id": "101", "date_range_type": "LAST_7_DAYS"}
             )
 
-    def test_list_connector_keeps_synchronous_invoke_contract(self):
+    def test_list_connector_reads_live_contract_and_uses_async_tasks(self):
         class Response:
+            def __init__(self, payload):
+                self.payload = payload
+                self.status_code = 200
+
             def raise_for_status(self):
                 return None
 
             def json(self):
-                return {"success": True, "data": [{"material_id": "101"}]}
+                return self.payload
 
         session = mock.Mock()
-        session.post.return_value = Response()
+        session.post.side_effect = [
+            Response({
+                "success": True,
+                "data": [{
+                    "connectorCode": "rpa.conn.juliang.yt.industry.content.rankings.list",
+                    "platformCode": "YT_DYNAMIC_PLATFORM",
+                    "inParamJsonSchemaText": json.dumps({
+                        "$schema": "https://json-schema.org/draft/2020-12/schema",
+                        "type": "object",
+                        "properties": {"industry": {"type": "string"}},
+                        "required": ["industry"],
+                        "additionalProperties": False,
+                    }),
+                    "inParamList": [{"param": "must_not_be_used"}],
+                    "outParamList": [],
+                }],
+            }),
+            Response({"success": True, "data": {"task_group_id": "tg-list"}}),
+            Response({
+                "success": True,
+                "data": {"status": "completed", "payload": [{"material_id": "101"}]},
+            }),
+        ]
         environment = {
             "ENV_BACKEND_HOST": "https://gateway.example/",
             "YUCE_AUTHORIZATION": "auth",
             "YUCE_SESSION_ID": "session",
         }
 
-        result = collector.invoke_list(
-            "shop-1", {"industry": "食品饮料"}, environ=environment, session=session
-        )
+        with mock.patch.object(collector.time, "sleep"):
+            result = collector.invoke_list(
+                "shop-1", {"industry": "食品饮料"}, environ=environment, session=session
+            )
 
-        self.assertEqual(result["data"][0]["material_id"], "101")
-        self.assertTrue(session.post.call_args.args[0].endswith("/adg/v1/agent/invoke"))
+        self.assertEqual(result["payload"][0]["material_id"], "101")
+        urls = [call.args[0] for call in session.post.call_args_list]
+        self.assertTrue(urls[0].endswith("/dcConnector/v3/listByConnectorCode"))
+        self.assertTrue(urls[1].endswith("/adg/v1/agent/fetch/tasks"))
+        self.assertTrue(urls[2].endswith("/adg/v1/agent/fetch/tasks/status"))
         self.assertEqual(
-            session.post.call_args.kwargs["json"]["function_code"],
+            session.post.call_args_list[1].kwargs["json"]["function_code"],
             "rpa.conn.juliang.yt.industry.content.rankings.list",
+        )
+        self.assertEqual(
+            session.post.call_args_list[1].kwargs["json"]["platform"],
+            "YT_DYNAMIC_PLATFORM",
         )
 
     def test_wait_fetch_task_rejects_unknown_remote_status(self):
