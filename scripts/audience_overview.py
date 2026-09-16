@@ -8,6 +8,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+try:
+    from command_io import CommandFileCache
+except ImportError:  # pragma: no cover
+    from .command_io import CommandFileCache
+
 
 class AudienceOverviewError(ValueError):
     """Raised when audience facts cannot be verified safely."""
@@ -21,9 +26,9 @@ _DIMENSIONS = {
 }
 
 
-def _read_json(path: Path, label: str, expected: type) -> Any:
+def _read_json(path: Path, label: str, expected: type, io_cache=None) -> Any:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = io_cache.read_json(path) if io_cache is not None else json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise AudienceOverviewError(f"{label} is missing or unreadable") from exc
     if not isinstance(value, expected):
@@ -45,50 +50,76 @@ def _safe_path(root: Path, raw: Any, label: str) -> Path:
     return resolved
 
 
-def _verify_file(path: Path, metadata: dict, label: str) -> None:
+def _verify_file(path: Path, metadata: dict, label: str, io_cache=None) -> None:
     if not path.is_file():
         raise AudienceOverviewError(f"{label} is missing")
     expected_hash = metadata.get("sha256")
     if not isinstance(expected_hash, str) or not _SHA256.fullmatch(expected_hash):
         raise AudienceOverviewError(f"{label} sha256 is invalid")
-    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    try:
+        if io_cache is not None:
+            actual, actual_size = io_cache.verify(path, metadata)
+        else:
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            actual_size = path.stat().st_size
+    except (OSError, ValueError) as exc:
+        raise AudienceOverviewError(f"{label} sha256 or size does not match source") from exc
     if actual != expected_hash.lower():
         raise AudienceOverviewError(f"{label} sha256 does not match source")
     expected_size = metadata.get("sizeBytes")
-    if expected_size is not None and (type(expected_size) is not int or expected_size != path.stat().st_size):
+    if expected_size is not None and (type(expected_size) is not int or expected_size != actual_size):
         raise AudienceOverviewError(f"{label} size does not match source")
 
 
-def _load_manifest_package(root: Path, package_name: str) -> tuple[dict, dict, dict]:
-    manifest = _read_json(root / "facts/manifest.json", "facts manifest", dict)
-    summary = _read_json(root / "run-summary.json", "run summary", dict)
+def _load_manifest_package(root: Path, package_name: str, io_cache=None) -> tuple[dict, dict, dict]:
+    manifest = _read_json(root / "facts/manifest.json", "facts manifest", dict, io_cache)
+    summary = _read_json(root / "run-summary.json", "run summary", dict, io_cache)
     packages = manifest.get("packages")
     package = packages.get(package_name) if isinstance(packages, dict) else None
     if not isinstance(package, dict):
         raise AudienceOverviewError(f"facts manifest {package_name} package is missing")
     package_path = _safe_path(root, package.get("path"), f"{package_name} package path")
-    _verify_file(package_path, package, f"{package_name} package")
+    if io_cache is not None:
+        try:
+            io_cache.verify_json(package_path, package)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise AudienceOverviewError(f"{package_name} package sha256 or size does not match source") from exc
+    else:
+        _verify_file(package_path, package, f"{package_name} package")
     return manifest, summary, package
 
 
-def _verify_list_source(root: Path, summary: dict, expected_count: int) -> None:
+def _verify_list_source(root: Path, summary: dict, expected_count: int, io_cache=None) -> None:
     artifacts = summary.get("artifacts")
     artifact = artifacts.get("listRecords") if isinstance(artifacts, dict) else None
     if not isinstance(artifact, dict) or artifact.get("path") != "normalized/list-records.json":
         raise AudienceOverviewError("normalized list source declaration is missing")
     source = _safe_path(root, artifact["path"], "list source path")
-    _verify_file(source, artifact, "list source")
-    rows = _read_json(source, "list source", list)
+    if io_cache is not None:
+        try:
+            rows = io_cache.verify_json(source, artifact)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise AudienceOverviewError("list source sha256 or size does not match source") from exc
+        if not isinstance(rows, list):
+            raise AudienceOverviewError("list source has invalid shape")
+    else:
+        _verify_file(source, artifact, "list source")
+        rows = _read_json(source, "list source", list)
     if len(rows) != expected_count:
         raise AudienceOverviewError("list source record_count does not match facts")
 
 
-def _package_records(root: Path, package_name: str) -> tuple[dict, dict, list[dict]]:
-    manifest, summary, package = _load_manifest_package(root, package_name)
+def _package_records(root: Path, package_name: str, io_cache=None) -> tuple[dict, dict, list[dict]]:
+    manifest, summary, package = _load_manifest_package(root, package_name, io_cache)
     expected_count = package.get("record_count")
     if type(expected_count) is not int or expected_count < 0:
         raise AudienceOverviewError(f"{package_name} record_count is invalid")
-    records = _read_json(_safe_path(root, package["path"], f"{package_name} package path"), f"{package_name} facts", dict).get("records")
+    records = _read_json(
+        _safe_path(root, package["path"], f"{package_name} package path"),
+        f"{package_name} facts",
+        dict,
+        io_cache,
+    ).get("records")
     if not isinstance(records, list) or len(records) != expected_count:
         raise AudienceOverviewError(f"{package_name} record_count does not match facts")
     ids = [item.get("material_id") for item in records if isinstance(item, dict)]
@@ -106,7 +137,7 @@ def _package_records(root: Path, package_name: str) -> tuple[dict, dict, list[di
             declared_source = record.get("source_paths", {}).get("normalized") if isinstance(record.get("source_paths"), dict) else None
             if declared_source != "normalized/list-records.json":
                 raise AudienceOverviewError("audience record normalized source path is invalid")
-        _verify_list_source(root, summary, expected_count)
+        _verify_list_source(root, summary, expected_count, io_cache)
     return manifest, summary, records
 
 
@@ -117,9 +148,10 @@ def _bucket_sort(item: tuple[str, int]) -> tuple[Any, ...]:
     return (-value, 1, label)
 
 
-def build_audience_overview(run_dir: Path, material_ids: set[str] | None = None) -> dict:
+def build_audience_overview(run_dir: Path, material_ids: set[str] | None = None, io_cache=None) -> dict:
     root = Path(run_dir).resolve()
-    _, _, records = _package_records(root, "audience")
+    io_cache = io_cache or CommandFileCache(root)
+    _, _, records = _package_records(root, "audience", io_cache)
     if material_ids is not None:
         records = [record for record in records if str(record.get("material_id")) in material_ids]
     counts: dict[str, dict[str, set[str]]] = {dimension: {} for dimension in _DIMENSIONS}

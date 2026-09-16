@@ -18,14 +18,22 @@ def _gap(gaps: dict[str, int], code: str) -> None:
     gaps[code] = gaps.get(code, 0) + 1
 
 
-def _verify_list_source(root: Path, summary: dict, expected_count: int) -> None:
+def _verify_list_source(root: Path, summary: dict, expected_count: int, io_cache=None) -> None:
     artifacts = summary.get("artifacts")
     artifact = artifacts.get("listRecords") if isinstance(artifacts, dict) else None
     if not isinstance(artifact, dict) or artifact.get("path") != "normalized/list-records.json":
         raise MarketingSellingPointOverviewError("normalized list source declaration is missing")
     source = _safe_path(root, artifact["path"], "list source path")
-    _verify_file(source, artifact, "list source")
-    rows = _read_json(source, "list source", list)
+    if io_cache is not None:
+        try:
+            rows = io_cache.verify_json(source, artifact)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise MarketingSellingPointOverviewError("list source sha256 or size does not match source") from exc
+        if not isinstance(rows, list):
+            raise MarketingSellingPointOverviewError("list source has invalid shape")
+    else:
+        _verify_file(source, artifact, "list source")
+        rows = _read_json(source, "list source", list)
     if len(rows) != expected_count:
         raise MarketingSellingPointOverviewError("list source record_count does not match facts")
 
@@ -35,7 +43,7 @@ def _bucket_sort(item: tuple[str, set[str]]) -> tuple[int, str]:
     return (-len(materials), label)
 
 
-def build_marketing_selling_point_overview(run_dir: Path, material_ids: set[str] | None = None) -> dict:
+def build_marketing_selling_point_overview(run_dir: Path, material_ids: set[str] | None = None, io_cache=None) -> dict:
     """Aggregate platform content tags into material-coverage buckets.
 
     Tags with an underscore use the text before the first underscore as the
@@ -46,7 +54,7 @@ def build_marketing_selling_point_overview(run_dir: Path, material_ids: set[str]
 
     root = Path(run_dir).resolve()
     try:
-        _, summary, package = _load_manifest_package(root, "content_tags")
+        _, summary, package = _load_manifest_package(root, "content_tags", io_cache)
         expected_count = package.get("record_count")
         if type(expected_count) is not int or expected_count < 0:
             raise MarketingSellingPointOverviewError("content tags record_count is invalid")
@@ -54,7 +62,7 @@ def build_marketing_selling_point_overview(run_dir: Path, material_ids: set[str]
         if not isinstance(source_paths, list) or "normalized/list-records.json" not in source_paths:
             raise MarketingSellingPointOverviewError("content tags normalized source declaration is missing")
         package_path = _safe_path(root, package.get("path"), "content tags package path")
-        payload = _read_json(package_path, "content tags facts", dict)
+        payload = _read_json(package_path, "content tags facts", dict, io_cache)
         records = payload.get("records")
         if not isinstance(records, list) or len(records) != expected_count:
             raise MarketingSellingPointOverviewError("content tags record_count does not match facts")
@@ -77,7 +85,7 @@ def build_marketing_selling_point_overview(run_dir: Path, material_ids: set[str]
             or len(set(actual_ids)) != len(actual_ids)
         ):
             raise MarketingSellingPointOverviewError("content tags material_ids do not match facts")
-        _verify_list_source(root, summary, expected_count)
+        _verify_list_source(root, summary, expected_count, io_cache)
     except AudienceOverviewError as exc:
         raise MarketingSellingPointOverviewError(str(exc)) from exc
 

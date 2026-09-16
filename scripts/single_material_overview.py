@@ -7,13 +7,14 @@ import json
 import math
 from pathlib import Path
 import re
-import shutil
 from typing import Any, Mapping
 
 try:
+    from command_io import CommandFileCache
     from material_field_registry import MaterialFieldRegistry
     from content_formula_labels import formula_detail_labels, resolve_formula_ref
 except ImportError:
+    from .command_io import CommandFileCache
     from .material_field_registry import MaterialFieldRegistry
     from .content_formula_labels import formula_detail_labels, resolve_formula_ref
 
@@ -42,9 +43,9 @@ class SingleMaterialOverviewError(ValueError):
     """Raised when detail-scoped facts or assets cannot be trusted."""
 
 
-def _read_json(path: Path, label: str, expected_type: type) -> Any:
+def _read_json(path: Path, label: str, expected_type: type, io_cache=None) -> Any:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = io_cache.read_json(path) if io_cache is not None else json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise SingleMaterialOverviewError(f"{label} is missing or unreadable") from exc
     if not isinstance(value, expected_type):
@@ -94,30 +95,45 @@ def _safe_path(root: Path, raw_path: Any, label: str) -> tuple[Path, str]:
     return resolved, relative.as_posix()
 
 
-def _verify_file(root: Path, metadata: Mapping[str, Any], label: str) -> tuple[Path, str, bytes]:
+def _verify_file(root: Path, metadata: Mapping[str, Any], label: str, io_cache=None) -> tuple[Path, str, int]:
     path, relative = _safe_path(root, metadata.get("path"), f"{label} path")
     if not path.is_file():
         raise SingleMaterialOverviewError(f"{label} is missing")
     expected = metadata.get("sha256")
     if not isinstance(expected, str) or not _SHA256.fullmatch(expected):
         raise SingleMaterialOverviewError(f"{label} sha256 is invalid")
-    content = path.read_bytes()
-    actual = hashlib.sha256(content).hexdigest()
+    try:
+        if io_cache is not None:
+            actual, actual_size = io_cache.verify(path, metadata)
+        else:
+            content = path.read_bytes()
+            actual, actual_size = hashlib.sha256(content).hexdigest(), len(content)
+    except (OSError, ValueError) as exc:
+        raise SingleMaterialOverviewError(f"{label} sha256 or size does not match source") from exc
     if actual != expected.lower():
         raise SingleMaterialOverviewError(f"{label} sha256 does not match source")
     declared_size = metadata.get("sizeBytes", metadata.get("size_bytes"))
-    if declared_size is not None and (type(declared_size) is not int or declared_size != len(content)):
+    if declared_size is not None and (type(declared_size) is not int or declared_size != actual_size):
         raise SingleMaterialOverviewError(f"{label} size does not match source")
-    return path, relative, content
+    return path, relative, actual_size
 
 
-def _package(root: Path, manifest: Mapping[str, Any], name: str, expected_count: int | None = None) -> tuple[dict, list[dict]]:
+def _package(root: Path, manifest: Mapping[str, Any], name: str, expected_count: int | None = None, io_cache=None) -> tuple[dict, list[dict]]:
     packages = manifest.get("packages")
     package = packages.get(name) if isinstance(packages, Mapping) else None
     if not isinstance(package, dict):
         raise SingleMaterialOverviewError(f"facts manifest {name} package is missing")
-    _verify_file(root, package, f"{name} package")
-    payload = _read_json(root / package["path"], f"{name} package", dict)
+    package_path, _ = _safe_path(root, package.get("path"), f"{name} package path")
+    if io_cache is not None:
+        try:
+            payload = io_cache.verify_json(package_path, package)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise SingleMaterialOverviewError(f"{name} package sha256 or size does not match source") from exc
+    else:
+        _verify_file(root, package, f"{name} package")
+        payload = _read_json(package_path, f"{name} package", dict)
+    if not isinstance(payload, dict):
+        raise SingleMaterialOverviewError(f"{name} package has invalid shape")
     records = payload.get("records")
     count = package.get("record_count")
     if not isinstance(records, list) or type(count) is not int or len(records) != count:
@@ -147,7 +163,7 @@ def _record_map(records: list[dict], label: str) -> dict[str, dict]:
     return result
 
 
-def _verify_source_artifacts(root: Path, manifest: Mapping[str, Any], relative_paths: set[str]) -> None:
+def _verify_source_artifacts(root: Path, manifest: Mapping[str, Any], relative_paths: set[str], io_cache=None) -> None:
     entries = manifest.get("source_artifacts")
     if not isinstance(entries, list):
         raise SingleMaterialOverviewError("facts source artifacts are missing")
@@ -156,32 +172,47 @@ def _verify_source_artifacts(root: Path, manifest: Mapping[str, Any], relative_p
         metadata = by_path.get(relative)
         if not isinstance(metadata, dict):
             raise SingleMaterialOverviewError(f"facts source artifact declaration is missing: {relative}")
-        _verify_file(root, metadata, f"facts source {relative}")
+        if io_cache is not None and Path(relative).suffix.lower() == ".json":
+            try:
+                io_cache.verify_json(root / relative, metadata)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                raise SingleMaterialOverviewError(f"facts source {relative} sha256 or size does not match source") from exc
+        else:
+            _verify_file(root, metadata, f"facts source {relative}", io_cache)
 
 
-def _verify_run(root: Path) -> tuple[dict, dict, dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict]]:
-    summary = _read_json(root / "run-summary.json", "run summary", dict)
+def _verify_run(root: Path, io_cache=None) -> tuple[dict, dict, dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict]]:
+    summary = _read_json(root / "run-summary.json", "run summary", dict, io_cache)
     run_id = _text(summary.get("runId"))
     if run_id is None:
         raise SingleMaterialOverviewError("run summary runId is required")
     if summary.get("collectionStatus", summary.get("status")) not in {"success", "succeeded", "ready_for_analysis", "analysis_completed"}:
         raise SingleMaterialOverviewError("run is not a completed successful collection")
-    facts_manifest = _read_json(root / "facts/manifest.json", "facts manifest", dict)
+    facts_manifest = _read_json(root / "facts/manifest.json", "facts manifest", dict, io_cache)
     if facts_manifest.get("run_id") != run_id:
         raise SingleMaterialOverviewError("facts manifest run_id does not match run summary")
     coverage = facts_manifest.get("coverage")
     if not isinstance(coverage, dict) or coverage.get("detail_records") is None:
         raise SingleMaterialOverviewError("facts detail coverage is missing")
-    ranking_package, ranking = _package(root, facts_manifest, "material_ranking", coverage.get("ranking_records"))
-    _, audience = _package(root, facts_manifest, "audience", coverage.get("ranking_records"))
-    _, interaction = _package(root, facts_manifest, "interaction_series", coverage.get("detail_records"))
-    _, script = _package(root, facts_manifest, "script", coverage.get("detail_records"))
-    _, highlights = _package(root, facts_manifest, "highlight_frames", coverage.get("highlight_materials"))
+    ranking_package, ranking = _package(root, facts_manifest, "material_ranking", coverage.get("ranking_records"), io_cache)
+    _, audience = _package(root, facts_manifest, "audience", coverage.get("ranking_records"), io_cache)
+    _, interaction = _package(root, facts_manifest, "interaction_series", coverage.get("detail_records"), io_cache)
+    _, script = _package(root, facts_manifest, "script", coverage.get("detail_records"), io_cache)
+    _, highlights = _package(root, facts_manifest, "highlight_frames", coverage.get("highlight_materials"), io_cache)
     list_artifact = summary.get("artifacts", {}).get("listRecords") if isinstance(summary.get("artifacts"), dict) else None
     if not isinstance(list_artifact, dict):
         raise SingleMaterialOverviewError("run summary listRecords artifact is missing")
-    _, list_relative, _ = _verify_file(root, list_artifact, "list records")
-    list_rows = _read_json(root / list_relative, "list records", list)
+    list_path, list_relative = _safe_path(root, list_artifact.get("path"), "list records path")
+    if io_cache is not None:
+        try:
+            list_rows = io_cache.verify_json(list_path, list_artifact)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise SingleMaterialOverviewError("list records sha256 or size does not match source") from exc
+        if not isinstance(list_rows, list):
+            raise SingleMaterialOverviewError("list records has invalid shape")
+    else:
+        _verify_file(root, list_artifact, "list records")
+        list_rows = _read_json(list_path, "list records", list)
     if len(list_rows) != ranking_package.get("record_count"):
         raise SingleMaterialOverviewError("list records count does not match ranking facts")
     task_runs = summary.get("taskRuns")
@@ -202,7 +233,14 @@ def _verify_run(root: Path) -> tuple[dict, dict, dict[str, dict], dict[str, dict
         artifact = artifacts.get(f"detailRecord:{material_id}")
         if not isinstance(artifact, dict):
             raise SingleMaterialOverviewError(f"detail record artifact is missing: {material_id}")
-        _verify_file(root, artifact, f"detail record {material_id}")
+        if io_cache is not None:
+            detail_path, _ = _safe_path(root, artifact.get("path"), f"detail record {material_id} path")
+            try:
+                io_cache.verify_json(detail_path, artifact)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                raise SingleMaterialOverviewError(f"detail record {material_id} sha256 or size does not match source") from exc
+        else:
+            _verify_file(root, artifact, f"detail record {material_id}")
         detail_ids.add(material_id)
     expected_detail_ids = set(_record_map(script, "script"))
     ranking_ids = set(_record_map(ranking, "material ranking"))
@@ -216,8 +254,8 @@ def _verify_run(root: Path) -> tuple[dict, dict, dict[str, dict], dict[str, dict
         list_relative,
         "highlights-manifest.json",
         *(f"normalized/detail-records/{material_id}.json" for material_id in detail_ids),
-    })
-    highlight_manifest = _read_json(root / "highlights-manifest.json", "highlights manifest", dict)
+    }, io_cache)
+    highlight_manifest = _read_json(root / "highlights-manifest.json", "highlights manifest", dict, io_cache)
     manifest_materials = highlight_manifest.get("materials")
     if not isinstance(manifest_materials, list):
         raise SingleMaterialOverviewError("highlights manifest materials are invalid")
@@ -259,12 +297,13 @@ def _project_core(ranking: Mapping[str, Any], registry: MaterialFieldRegistry) -
     ]}
 
 
-def _merge_detail_rate_metrics(root: Path, material_id: str, ranking: Mapping[str, Any]) -> dict:
+def _merge_detail_rate_metrics(root: Path, material_id: str, ranking: Mapping[str, Any], io_cache=None) -> dict:
     """Fill newly exposed rates from the verified detail artifact when the list snapshot predates them."""
     detail = _read_json(
         root / "normalized/detail-records" / f"{material_id}.json",
         f"detail record {material_id}",
         dict,
+        io_cache,
     )
     source = detail.get("core_metrics") or detail.get("metrics")
     if not isinstance(source, Mapping):
@@ -376,7 +415,7 @@ def _reason(value: Any) -> dict | None:
     return {"type": value["type"], "trendName": value["trend_name"].strip(), "value": value["value"], "rank": value["rank"], "withinHighPoint": value.get("within_high_point") if isinstance(value.get("within_high_point"), bool) else None}
 
 
-def _project_highlights(root: Path, facts: Mapping[str, Any], manifest: Mapping[str, Any], material_id: str) -> tuple[dict, list[tuple[dict, Path]]]:
+def _project_highlights(root: Path, facts: Mapping[str, Any], manifest: Mapping[str, Any], material_id: str, io_cache=None) -> tuple[dict, list[tuple[dict, Path]]]:
     fact_frames = facts.get("frames")
     manifest_frames = manifest.get("frames")
     if not isinstance(fact_frames, list) or not isinstance(manifest_frames, list):
@@ -393,44 +432,55 @@ def _project_highlights(root: Path, facts: Mapping[str, Any], manifest: Mapping[
         path, relative = _safe_path(root, declared.get("relative_path"), "frame path")
         if path.suffix.lower() not in _IMAGE_EXTENSIONS or not path.is_file():
             continue
-        content = path.read_bytes()
+        digest, size = io_cache.digest(path) if io_cache is not None else (
+            hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_size
+        )
         reasons = [_reason(item) for item in fact.get("reasons", [])] if isinstance(fact.get("reasons"), list) else []
         if not reasons or any(item is None for item in reasons):
             continue
-        digest = hashlib.sha256(content).hexdigest()
-        frame = {"id": f"highlight:{material_id}:{index}:{fact.get('second')}", "second": fact.get("second"), "role": "视频开场画面" if fact.get("is_cover") is True or fact.get("frame_type") == "cover" else "指标高光帧", "reasons": reasons, "assetPath": f"assets/single-material/{digest}{path.suffix.lower()}", "assetSha256": digest, "assetSizeBytes": len(content)}
+        frame = {"id": f"highlight:{material_id}:{index}:{fact.get('second')}", "second": fact.get("second"), "role": "视频开场画面" if fact.get("is_cover") is True or fact.get("frame_type") == "cover" else "指标高光帧", "reasons": reasons, "assetPath": f"assets/single-material/{digest}{path.suffix.lower()}", "assetSha256": digest, "assetSizeBytes": size}
         frames.append(frame)
         assets.append((frame, path))
     return {"status": "available" if frames else "unavailable", "reason": "" if frames else "verified_frame_missing", "frames": frames}, assets
 
 
-def _project_video(root: Path, material_id: str) -> tuple[dict, Path | None]:
+def _project_video(root: Path, material_id: str, io_cache=None) -> tuple[dict, Path | None]:
     path = root / "videos" / material_id / "source-video.mp4"
     if not path.is_file() or path.stat().st_size == 0:
         return {"available": False, "reason": "local_video_artifact_missing"}, None
-    content = path.read_bytes()
-    digest = hashlib.sha256(content).hexdigest()
+    if io_cache is not None:
+        digest, size = io_cache.digest(path)
+    else:
+        content = path.read_bytes()
+        digest, size = hashlib.sha256(content).hexdigest(), len(content)
     return {
         "available": True,
         "assetPath": f"assets/single-material/videos/{material_id}{_VIDEO_EXTENSION}",
         "assetSha256": digest,
-        "assetSizeBytes": len(content),
+        "assetSizeBytes": size,
     }, path
 
 
-def build_single_material_overview(run_dir: Path) -> dict:
+def build_single_material_overview(run_dir: Path, io_cache=None, asset_index=None) -> dict:
     root = Path(run_dir).resolve()
     if not root.is_dir():
         raise SingleMaterialOverviewError("run directory is missing")
-    summary, facts_manifest, ranking, audience, interaction, script, highlights, highlight_manifest = _verify_run(root)
+    io_cache = io_cache or CommandFileCache(root)
+    summary, facts_manifest, ranking, audience, interaction, script, highlights, highlight_manifest = _verify_run(root, io_cache)
     registry = MaterialFieldRegistry.from_path(Path(__file__).resolve().parents[1] / "config/yuntu-material-field-registry-v1.json")
     detail_ids = set(script)
     materials = []
     for material_id in sorted(detail_ids, key=lambda item: (ranking[item].get("rank", 10**9), item)):
-        ranking_record = _merge_detail_rate_metrics(root, material_id, ranking[material_id])
+        ranking_record = _merge_detail_rate_metrics(root, material_id, ranking[material_id], io_cache)
         script_record = script[material_id]
-        highlight_model, _ = _project_highlights(root, highlights[material_id], highlight_manifest[material_id], material_id)
-        video_model, _ = _project_video(root, material_id)
+        highlight_model, highlight_assets = _project_highlights(
+            root, highlights[material_id], highlight_manifest[material_id], material_id, io_cache
+        )
+        video_model, video_path = _project_video(root, material_id, io_cache)
+        if asset_index is not None:
+            asset_index.update({("single-frame", frame["id"]): path for frame, path in highlight_assets})
+            if video_path is not None:
+                asset_index[("single-video", material_id)] = video_path
         materials.append({
             "materialId": material_id,
             "rank": ranking_record.get("rank"),
@@ -454,45 +504,44 @@ def build_single_material_overview(run_dir: Path) -> dict:
     }
 
 
-def copy_verified_single_material_assets(run_dir: Path, output_dir: Path, model: Mapping[str, Any]) -> int:
+def copy_verified_single_material_assets(run_dir: Path, output_dir: Path, model: Mapping[str, Any], io_cache=None, asset_index=None) -> int:
     root = Path(run_dir).resolve()
     output = Path(output_dir).resolve()
     try:
         output.relative_to(root)
     except ValueError as exc:
         raise SingleMaterialOverviewError("output directory must remain inside the run") from exc
-    current = build_single_material_overview(root)
-    expected = [(frame["id"], frame["assetPath"], frame["assetSha256"], frame["assetSizeBytes"]) for material in model.get("materials", []) for frame in material.get("highlights", {}).get("frames", [])]
-    actual = [(frame["id"], frame["assetPath"], frame["assetSha256"], frame["assetSizeBytes"]) for material in current.get("materials", []) for frame in material.get("highlights", {}).get("frames", [])]
-    if expected != actual:
-        raise SingleMaterialOverviewError("single-material overview changed before asset copy")
-    source_by_id = {}
-    # Re-resolve through the verified model and run facts, without trusting model paths as source paths.
-    _, _, _, _, _, _, highlight_facts, highlight_manifests = _verify_run(root)
-    for material_id, fact in highlight_facts.items():
-        _, assets = _project_highlights(root, fact, highlight_manifests[material_id], material_id)
-        source_by_id.update({frame["id"]: path for frame, path in assets})
+    io_cache = io_cache or CommandFileCache(root)
+    if asset_index is None:
+        asset_index = {}
+        current = build_single_material_overview(root, io_cache=io_cache, asset_index=asset_index)
+        expected = [(frame["id"], frame["assetPath"], frame["assetSha256"], frame["assetSizeBytes"]) for material in model.get("materials", []) for frame in material.get("highlights", {}).get("frames", [])]
+        actual = [(frame["id"], frame["assetPath"], frame["assetSha256"], frame["assetSizeBytes"]) for material in current.get("materials", []) for frame in material.get("highlights", {}).get("frames", [])]
+        if expected != actual:
+            raise SingleMaterialOverviewError("single-material overview changed before asset copy")
     copied = 0
     for material in model.get("materials", []):
         video = material.get("video", {})
         if video.get("available"):
-            source = root / "videos" / material["materialId"] / "source-video.mp4"
+            source = asset_index.get(("single-video", material["materialId"]))
+            if source is None:
+                raise SingleMaterialOverviewError(f"verified video source is missing: {material['materialId']}")
             destination = output / video["assetPath"]
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-            content = destination.read_bytes()
-            if len(content) != video["assetSizeBytes"] or hashlib.sha256(content).hexdigest() != video["assetSha256"]:
-                raise SingleMaterialOverviewError(f"copied video failed verification: {material['materialId']}")
+            try:
+                io_cache.copy_verified(source, destination, video["assetSha256"], video["assetSizeBytes"])
+            except (OSError, ValueError) as exc:
+                raise SingleMaterialOverviewError(f"copied video failed verification: {material['materialId']}") from exc
             copied += 1
         for frame in material.get("highlights", {}).get("frames", []):
-            source = source_by_id.get(frame["id"])
+            source = asset_index.get(("single-frame", frame["id"]))
             if source is None:
                 raise SingleMaterialOverviewError(f"verified frame source is missing: {frame['id']}")
             destination = output / frame["assetPath"]
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
-            content = destination.read_bytes()
-            if len(content) != frame["assetSizeBytes"] or hashlib.sha256(content).hexdigest() != frame["assetSha256"]:
-                raise SingleMaterialOverviewError(f"copied frame failed verification: {frame['id']}")
+            try:
+                io_cache.copy_verified(source, destination, frame["assetSha256"], frame["assetSizeBytes"])
+            except (OSError, ValueError) as exc:
+                raise SingleMaterialOverviewError(f"copied frame failed verification: {frame['id']}") from exc
             copied += 1
     return copied

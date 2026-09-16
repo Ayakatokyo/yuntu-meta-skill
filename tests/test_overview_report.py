@@ -11,6 +11,7 @@ from scripts.overview_report import (
     render_overview_html,
     write_overview,
 )
+from scripts.command_io import CommandFileCache
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,57 @@ class OverviewFixtureMixin:
 
 
 class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
+    def test_brand_views_reuse_verified_files_within_one_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = self.make_run(directory)
+            rows = json.loads((run_dir / "normalized/list-records.json").read_text(encoding="utf-8"))
+            package_records = {
+                "audience": [{
+                    "material_id": str(row["material_id"]),
+                    "observations": [{"dimension": "crowd_group", "tag": "精致妈妈"}],
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                } for row in rows],
+                "script": [],
+                "content_tags": [{
+                    "material_id": str(row["material_id"]),
+                    "platform_content_tags": ["成分配方原料_燕窝"],
+                    "data_availability": {"material_tags": {"available": True}},
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                    "brand_classification": {"matchedBrands": ["测试品牌"] if index == 0 else []},
+                } for index, row in enumerate(rows)],
+            }
+            packages = {}
+            for name, records in package_records.items():
+                path = run_dir / "facts" / f"{name.replace('_', '-')}.json"
+                payload = json.dumps({"records": records}, ensure_ascii=False).encode()
+                path.write_bytes(payload)
+                packages[name] = {
+                    "path": path.relative_to(run_dir).as_posix(),
+                    "record_count": len(records),
+                    "material_ids": [record["material_id"] for record in records],
+                    "source_paths": ["normalized/list-records.json"] if name != "script" else ["normalized/detail-records/"],
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "sizeBytes": len(payload),
+                }
+            manifest_path = run_dir / "facts/manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["packages"] = packages
+            manifest["brand_classification"] = {
+                "candidate_brands": ["测试品牌"],
+                "rule_version": "test-v1",
+                "counts": {"测试品牌": 1},
+                "unknown_count": 2,
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            io_cache = CommandFileCache(run_dir)
+
+            build_overview_data(run_dir, REGISTRY, io_cache=io_cache)
+
+            self.assertEqual(io_cache.read_count(run_dir / "normalized/list-records.json"), 1)
+            self.assertEqual(io_cache.read_count(run_dir / "facts/audience.json"), 1)
+            self.assertEqual(io_cache.read_count(run_dir / "facts/script.json"), 1)
+            self.assertEqual(io_cache.read_count(run_dir / "facts/content-tags.json"), 1)
+
     def install_content_tags_package(self, run_dir, records):
         package_path = run_dir / "facts/content-tags.json"
         package_path.write_text(json.dumps({"schema_version": 1, "records": records}, ensure_ascii=False), encoding="utf-8")

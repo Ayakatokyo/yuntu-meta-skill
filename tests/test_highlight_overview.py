@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.highlight_overview import HighlightOverviewError, build_highlight_overview
+from scripts.highlight_overview import HighlightOverviewError, build_highlight_overview, copy_verified_highlight_assets
+from scripts.command_io import CommandFileCache
 
 
 def _sha256(path):
@@ -146,6 +147,23 @@ class HighlightOverviewFixtureMixin:
 
 
 class HighlightOverviewTests(HighlightOverviewFixtureMixin, unittest.TestCase):
+    def test_copy_reuses_asset_index_and_streams_each_frame_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = self.make_run(directory)
+            io_cache = CommandFileCache(run_dir)
+            asset_index = {}
+            model = build_highlight_overview(run_dir, io_cache=io_cache, asset_index=asset_index)
+            output = run_dir / "overview-preview"
+            before = {path: io_cache.read_count(path) for path in asset_index.values()}
+
+            copied = copy_verified_highlight_assets(
+                run_dir, output, model, io_cache=io_cache, asset_index=asset_index
+            )
+
+            self.assertEqual(copied, len(model["cards"]))
+            for path in asset_index.values():
+                self.assertEqual(io_cache.read_count(path), before[path] + 1)
+
     def test_projects_verified_cover_and_metric_cards_with_all_reasons(self):
         with tempfile.TemporaryDirectory() as directory:
             model = build_highlight_overview(self.make_run(directory))

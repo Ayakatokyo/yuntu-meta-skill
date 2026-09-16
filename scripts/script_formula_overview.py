@@ -20,7 +20,7 @@ def _gap(gaps: dict[str, int], code: str) -> None:
     gaps[code] = gaps.get(code, 0) + 1
 
 
-def _verify_detail_sources(root: Path, summary: dict, records: list[dict]) -> None:
+def _verify_detail_sources(root: Path, summary: dict, records: list[dict], io_cache=None) -> None:
     artifacts = summary.get("artifacts")
     if not isinstance(artifacts, dict):
         raise ScriptFormulaOverviewError("detail source declarations are missing")
@@ -34,14 +34,26 @@ def _verify_detail_sources(root: Path, summary: dict, records: list[dict]) -> No
         artifact = artifacts.get(f"detailRecord:{material_id}")
         if not isinstance(artifact, dict) or artifact.get("path") != expected_path:
             raise ScriptFormulaOverviewError("detail source declaration is missing")
-        _verify_file(_safe_path(root, expected_path, "detail source path"), artifact, "detail source")
+        source_path = _safe_path(root, expected_path, "detail source path")
+        if io_cache is not None:
+            try:
+                io_cache.verify_json(source_path, artifact)
+            except (OSError, UnicodeError, ValueError) as exc:
+                raise ScriptFormulaOverviewError("detail source sha256 or size does not match source") from exc
+        else:
+            _verify_file(source_path, artifact, "detail source")
 
 
-def build_script_formula_overview(run_dir: Path, material_ids: set[str] | None = None) -> dict:
+def build_script_formula_overview(run_dir: Path, material_ids: set[str] | None = None, io_cache=None) -> dict:
     root = Path(run_dir).resolve()
     try:
-        _, summary, package = _load_manifest_package(root, "script")
-        records = _read_json(_safe_path(root, package["path"], "script package path"), "script facts", dict).get("records")
+        _, summary, package = _load_manifest_package(root, "script", io_cache)
+        records = _read_json(
+            _safe_path(root, package["path"], "script package path"),
+            "script facts",
+            dict,
+            io_cache,
+        ).get("records")
     except AudienceOverviewError as exc:
         raise ScriptFormulaOverviewError(str(exc)) from exc
     expected_count = package.get("record_count")
@@ -55,7 +67,7 @@ def build_script_formula_overview(run_dir: Path, material_ids: set[str] | None =
     if not isinstance(declared_ids, list) or set(actual_ids) != set(declared_ids) or len(set(actual_ids)) != len(actual_ids):
         raise ScriptFormulaOverviewError("script material_ids do not match facts")
     try:
-        _verify_detail_sources(root, summary, records)
+        _verify_detail_sources(root, summary, records, io_cache)
     except AudienceOverviewError as exc:
         raise ScriptFormulaOverviewError(str(exc)) from exc
     if material_ids is not None:

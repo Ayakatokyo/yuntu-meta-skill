@@ -22,18 +22,18 @@ def _brand_id(brand: str) -> str:
     return f"brand:{brand}"
 
 
-def build_brand_dimension(run_dir: Path) -> dict:
+def build_brand_dimension(run_dir: Path, io_cache=None) -> dict:
     """Project the persisted runtime brand classification without re-matching titles."""
 
     root = Path(run_dir).resolve()
     try:
-        manifest, _, package = _load_manifest_package(root, "content_tags")
+        manifest, _, package = _load_manifest_package(root, "content_tags", io_cache)
         expected_count = package.get("record_count")
         if type(expected_count) is not int or expected_count < 0:
             raise BrandDimensionError("content tags record_count is invalid")
         package_path = _safe_path(root, package.get("path"), "content tags package path")
-        _verify_file(package_path, package, "content tags package")
-        payload = _read_json(package_path, "content tags facts", dict)
+        _verify_file(package_path, package, "content tags package", io_cache)
+        payload = _read_json(package_path, "content tags facts", dict, io_cache)
         records = payload.get("records")
         if not isinstance(records, list) or len(records) != expected_count:
             raise BrandDimensionError("content tags record_count does not match facts")

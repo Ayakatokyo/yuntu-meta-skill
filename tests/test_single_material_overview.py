@@ -10,6 +10,7 @@ from scripts.single_material_overview import (
     build_single_material_overview,
     copy_verified_single_material_assets,
 )
+from scripts.command_io import CommandFileCache
 
 
 class SingleMaterialFixture:
@@ -102,6 +103,33 @@ class SingleMaterialFixture:
 
 
 class SingleMaterialOverviewTests(unittest.TestCase):
+    def test_copy_reuses_asset_index_and_streams_each_asset_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = SingleMaterialFixture(Path(directory))
+            video = fixture.run / "videos/101/source-video.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"verified-video")
+            io_cache = CommandFileCache(fixture.run)
+            asset_index = {}
+            model = build_single_material_overview(
+                fixture.run, io_cache=io_cache, asset_index=asset_index
+            )
+            output = fixture.run / "overview-preview"
+            before = {path: io_cache.read_count(path) for path in asset_index.values()}
+
+            copied = copy_verified_single_material_assets(
+                fixture.run,
+                output,
+                model,
+                io_cache=io_cache,
+                asset_index=asset_index,
+            )
+
+            self.assertEqual(copied, 3)
+            self.assertTrue(asset_index)
+            for path in asset_index.values():
+                self.assertEqual(io_cache.read_count(path), before[path] + 1)
+
     def test_real_run_selects_only_persisted_detail_materials_and_projects_every_module(self):
         root = Path(__file__).resolve().parents[1]
         model = build_single_material_overview(root / "runs/food-drink-exposure-20260820-27-top10")

@@ -17,6 +17,11 @@ except ImportError:
     from .material_field_registry import MaterialFieldRegistry, MaterialFieldRegistryError
 
 try:
+    from command_io import CommandFileCache
+except ImportError:  # pragma: no cover
+    from .command_io import CommandFileCache
+
+try:
     from brand_dimension import BrandDimensionError, build_brand_dimension
 except ImportError:
     from .brand_dimension import BrandDimensionError, build_brand_dimension
@@ -106,9 +111,9 @@ class OverviewReportError(ValueError):
     """Raised when a run cannot produce a trustworthy overview."""
 
 
-def _read_json(path: Path, label: str, expected_type: type) -> Any:
+def _read_json(path: Path, label: str, expected_type: type, io_cache=None) -> Any:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = io_cache.read_json(path) if io_cache is not None else json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise OverviewReportError(f"{label} is missing or unreadable") from exc
     if not isinstance(payload, expected_type):
@@ -168,10 +173,10 @@ def _resolve_relative_path(run_root: Path, raw_path: Any) -> tuple[Path, str]:
     return candidate, relative.as_posix()
 
 
-def _validate_run_and_source(run_root: Path) -> tuple[dict, Path, str, list]:
+def _validate_run_and_source(run_root: Path, io_cache=None) -> tuple[dict, Path, str, list]:
     if not run_root.is_dir():
         raise OverviewReportError("run directory is missing")
-    summary = _read_json(run_root / "run-summary.json", "run summary", dict)
+    summary = _read_json(run_root / "run-summary.json", "run summary", dict, io_cache)
     run_id = _nonblank(summary.get("runId"), "run summary runId")
     status = summary.get("collectionStatus", summary.get("status"))
     if status is not None and status not in {"success", "succeeded", "analysis_completed"}:
@@ -193,21 +198,24 @@ def _validate_run_and_source(run_root: Path) -> tuple[dict, Path, str, list]:
     declared_hash = _nonblank(list_artifact.get("sha256"), "list records sha256")
     if not _SHA256.fullmatch(declared_hash):
         raise OverviewReportError("list records sha256 is invalid")
-    source_bytes = source_path.read_bytes()
-    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    rows = _read_json(source_path, "list records source", list, io_cache)
+    if io_cache is not None:
+        source_hash, source_size = io_cache.digest(source_path)
+    else:
+        source_bytes = source_path.read_bytes()
+        source_hash, source_size = hashlib.sha256(source_bytes).hexdigest(), len(source_bytes)
     if source_hash != declared_hash.lower():
         raise OverviewReportError("list records sha256 does not match source")
     if list_artifact.get("sizeBytes") is not None:
         size = list_artifact.get("sizeBytes")
-        if type(size) is not int or size != len(source_bytes):
+        if type(size) is not int or size != source_size:
             raise OverviewReportError("list records size does not match source")
-    rows = _read_json(source_path, "list records source", list)
     if not rows:
         raise OverviewReportError("list records source must not be empty")
     if list_artifact.get("recordCount") is not None and list_artifact["recordCount"] != len(rows):
         raise OverviewReportError("list records record count does not match source")
 
-    batch = _read_json(run_root / "batch-manifest.json", "batch manifest", dict)
+    batch = _read_json(run_root / "batch-manifest.json", "batch manifest", dict, io_cache)
     batch_run_id = batch.get("runId")
     if batch_run_id is not None and batch_run_id != run_id:
         raise OverviewReportError("batch manifest runId does not match run summary")
@@ -220,7 +228,7 @@ def _validate_run_and_source(run_root: Path) -> tuple[dict, Path, str, list]:
 
     facts_manifest_path = run_root / "facts/manifest.json"
     if facts_manifest_path.is_file():
-        facts = _read_json(facts_manifest_path, "facts manifest", dict)
+        facts = _read_json(facts_manifest_path, "facts manifest", dict, io_cache)
         if facts.get("run_id") is not None and facts["run_id"] != run_id:
             raise OverviewReportError("facts manifest run_id does not match run summary")
         coverage = facts.get("coverage")
@@ -241,8 +249,8 @@ def _is_sensitive_field(value: Any) -> bool:
     return any(part in token for part in _SENSITIVE_TOKENS)
 
 
-def _query_context(run_root: Path) -> dict:
-    spec = _read_json(run_root / "resolved-query-spec.json", "resolved query spec", dict)
+def _query_context(run_root: Path, io_cache=None) -> dict:
+    spec = _read_json(run_root / "resolved-query-spec.json", "resolved query spec", dict, io_cache)
     context: dict[str, Any] = {}
     if _safe_scalar(spec.get("industry")) is not None:
         context["industry"] = _safe_scalar(spec["industry"])
@@ -307,12 +315,12 @@ _HIGHLIGHT_STRATEGY_LABELS = {
 }
 
 
-def _highlight_filter_context(run_root: Path) -> list[dict[str, str]]:
+def _highlight_filter_context(run_root: Path, io_cache=None) -> list[dict[str, str]]:
     path = run_root / "resolved-highlight-spec.json"
     if not path.is_file():
         return []
     try:
-        spec = _read_json(path, "resolved highlight spec", dict)
+        spec = _read_json(path, "resolved highlight spec", dict, io_cache)
     except OverviewReportError:
         return []
     entries: list[dict[str, str]] = []
@@ -360,9 +368,10 @@ def _filter_highlight_overview(model: dict, material_ids: set[str]) -> dict:
     return filtered
 
 
-def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
+def build_overview_data(run_dir: Path, registry_path: Path, io_cache=None, asset_index=None) -> dict:
     run_root = Path(run_dir).resolve()
-    summary, source_path, relative_path, source_rows = _validate_run_and_source(run_root)
+    io_cache = io_cache or CommandFileCache(run_root)
+    summary, source_path, relative_path, source_rows = _validate_run_and_source(run_root, io_cache)
     try:
         registry = MaterialFieldRegistry.from_path(Path(registry_path))
     except MaterialFieldRegistryError as exc:
@@ -411,19 +420,21 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
     for field in fields:
         field["defaultVisible"] = field["id"] in default_ids
     try:
-        audience_overview = build_audience_overview(run_root)
+        audience_overview = build_audience_overview(run_root, io_cache=io_cache)
     except AudienceOverviewError:
         audience_overview = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "audience_overview_unavailable"}]}
     try:
-        script_formula_overview = build_script_formula_overview(run_root)
+        script_formula_overview = build_script_formula_overview(run_root, io_cache=io_cache)
     except ScriptFormulaOverviewError:
         script_formula_overview = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "script_formula_overview_unavailable"}]}
     try:
-        marketing_selling_point_overview = build_marketing_selling_point_overview(run_root)
+        marketing_selling_point_overview = build_marketing_selling_point_overview(run_root, io_cache=io_cache)
     except MarketingSellingPointOverviewError:
         marketing_selling_point_overview = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "marketing_selling_point_overview_unavailable"}]}
     try:
-        highlight_overview = build_highlight_overview(run_root)
+        highlight_overview = build_highlight_overview(
+            run_root, io_cache=io_cache, asset_index=asset_index
+        )
     except HighlightOverviewError:
         highlight_overview = {
             "schemaVersion": 1,
@@ -433,7 +444,9 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
             "gaps": [{"code": "highlight_overview_unavailable"}],
         }
     try:
-        single_material_overview = build_single_material_overview(run_root)
+        single_material_overview = build_single_material_overview(
+            run_root, io_cache=io_cache, asset_index=asset_index
+        )
     except SingleMaterialOverviewError:
         single_material_overview = {
             "schemaVersion": 1,
@@ -445,7 +458,7 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
             "gaps": [{"code": "single_material_overview_unavailable"}],
         }
     try:
-        brand_overview = build_brand_dimension(run_root)
+        brand_overview = build_brand_dimension(run_root, io_cache=io_cache)
     except BrandDimensionError:
         brand_overview = {
             "schemaVersion": 1,
@@ -470,15 +483,15 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
                 }
                 continue
             try:
-                scoped_audience = build_audience_overview(run_root, material_ids)
+                scoped_audience = build_audience_overview(run_root, material_ids, io_cache=io_cache)
             except AudienceOverviewError:
                 scoped_audience = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "audience_overview_unavailable"}]}
             try:
-                scoped_script = build_script_formula_overview(run_root, material_ids)
+                scoped_script = build_script_formula_overview(run_root, material_ids, io_cache=io_cache)
             except ScriptFormulaOverviewError:
                 scoped_script = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "script_formula_overview_unavailable"}]}
             try:
-                scoped_marketing = build_marketing_selling_point_overview(run_root, material_ids)
+                scoped_marketing = build_marketing_selling_point_overview(run_root, material_ids, io_cache=io_cache)
             except MarketingSellingPointOverviewError:
                 scoped_marketing = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "marketing_selling_point_overview_unavailable"}]}
             brand_views[tab_id] = {
@@ -495,11 +508,11 @@ def build_overview_data(run_dir: Path, registry_path: Path) -> dict:
         "runId": _nonblank(summary["runId"], "run summary runId"),
         "source": {
             "path": relative_path,
-            "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "sha256": io_cache.digest(source_path)[0],
             "recordCount": len(rows),
         },
-        "queryContext": _query_context(run_root),
-        "highlightFilterContext": _highlight_filter_context(run_root),
+        "queryContext": _query_context(run_root, io_cache),
+        "highlightFilterContext": _highlight_filter_context(run_root, io_cache),
         "fields": fields,
         "defaultFieldIds": default_ids,
         "rows": rows,
@@ -1148,14 +1161,30 @@ def _safe_output_dir(run_dir: Path, output_dir: Path) -> Path:
 
 
 def write_overview(run_dir: Path, output_dir: Path, registry_path: Path) -> dict:
-    model = build_overview_data(run_dir, registry_path)
     run_root = Path(run_dir).resolve()
+    io_cache = CommandFileCache(run_root)
+    asset_index = {}
+    model = build_overview_data(
+        run_dir, registry_path, io_cache=io_cache, asset_index=asset_index
+    )
     output_path = _safe_output_dir(run_root, Path(output_dir))
     output_path.mkdir(parents=True, exist_ok=True)
     if model.get("highlightOverview", {}).get("cards"):
-        copy_verified_highlight_assets(run_root, output_path, model["highlightOverview"])
+        copy_verified_highlight_assets(
+            run_root,
+            output_path,
+            model["highlightOverview"],
+            io_cache=io_cache,
+            asset_index=asset_index,
+        )
     if model.get("singleMaterialOverview", {}).get("materials"):
-        copy_verified_single_material_assets(run_root, output_path, model["singleMaterialOverview"])
+        copy_verified_single_material_assets(
+            run_root,
+            output_path,
+            model["singleMaterialOverview"],
+            io_cache=io_cache,
+            asset_index=asset_index,
+        )
     data_path = output_path / "overview-data.json"
     html_path = output_path / "index.html"
     _write_atomic(data_path, json.dumps(model, ensure_ascii=False, indent=2) + "\n")
