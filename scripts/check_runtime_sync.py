@@ -18,6 +18,7 @@ RUNTIME_FILES = (
     "scripts/overview_report.py",
     "scripts/rpa_dynamic_client.py",
     "scripts/rpa_dynamic_detail_client.py",
+    "scripts/runtime_paths.py",
     "scripts/brand_classifier.py",
     "scripts/fact_packages.py",
     "scripts/analysis_spec.py",

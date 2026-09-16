@@ -26,6 +26,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import rpa_dynamic_client as list_dynamic_rpa
 import rpa_dynamic_detail_client as detail_dynamic_rpa
+from runtime_paths import external_runtime_path
 
 try:
     from yuntu_batch import (
@@ -835,6 +836,17 @@ def _parser():
     return parser
 
 
+def _enforce_external_runtime_paths(args):
+    if args.command in {"collect", "retry-failed", "retry-unresolved", "retry-highlights"}:
+        args.output_dir = str(external_runtime_path(args.output_dir, label="run directory"))
+    if args.command in {"build-facts", "render-overview", "analyze", "workflow"}:
+        args.run_dir = str(external_runtime_path(args.run_dir, label="run directory"))
+    if args.command in {"analyze", "workflow"}:
+        args.output = str(external_runtime_path(args.output, label="analysis output"))
+    if args.command == "render-overview" and args.output_dir:
+        args.output_dir = str(external_runtime_path(args.output_dir, label="overview output directory"))
+
+
 def _cmd_self_test():
     validate_list_business_params({})
     validate_detail_business_params(
@@ -1141,6 +1153,7 @@ def main(argv=None):
     parser = _parser()
     args = parser.parse_args(argv)
     try:
+        _enforce_external_runtime_paths(args)
         environment = None
         if args.command in {"runtime-check", "list-accounts", "schema", "collect", "retry-failed", "retry-unresolved"}:
             environment, receipt = _cli_runtime(args)

@@ -51,3 +51,12 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertEqual(len(keys), 27)
         self.assertEqual(set(references), set(keys))
         self.assertEqual(len(references), len(keys))
+
+    def test_runtime_outputs_are_kept_outside_the_skill_installation(self):
+        _, body = load_skill_document()
+
+        self.assertIn('WORKSPACE_ROOT="$PWD"', body)
+        self.assertIn('$WORKSPACE_ROOT/云图数据资源/', body)
+        self.assertIn("拒绝技能安装目录内的目标", body)
+        self.assertIn("必须显式传 `--output-dir`", body)
+        self.assertNotIn("未来运行统一写入技能根目录", body)

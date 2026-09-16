@@ -19,23 +19,29 @@ def load_client(filename, module_name):
 
 
 class DynamicRpaMigrationTests(unittest.TestCase):
-    def test_list_client_has_yuntu_resource_default(self):
+    def test_list_client_requires_explicit_output_directory(self):
         client = load_client("rpa_dynamic_client.py", "yuntu_dynamic_list_client")
 
         self.assertEqual(
             client.CONNECTOR_CODE,
             "rpa.conn.juliang.yt.industry.content.rankings.list",
         )
-        self.assertEqual(client.default_output_dir().relative_to(ROOT).parts[0], "云图数据资源")
+        with self.assertRaises(SystemExit):
+            client.build_parser().parse_args([
+                "fetch", "--shop-id", "shop-1", "--params-json", "{}",
+            ])
 
-    def test_detail_client_has_yuntu_resource_default(self):
+    def test_detail_client_requires_explicit_output_directory(self):
         client = load_client("rpa_dynamic_detail_client.py", "yuntu_dynamic_detail_client")
 
         self.assertEqual(
             client.CONNECTOR_CODE,
             "rpa.conn.juliang.yt.industry.content.rankings.details",
         )
-        self.assertEqual(client.default_output_dir().relative_to(ROOT).parts[0], "云图数据资源")
+        with self.assertRaises(SystemExit):
+            client.build_parser().parse_args([
+                "fetch", "--shop-id", "shop-1", "--params-json", "{}",
+            ])
 
     def test_clients_preserve_legacy_session_cookie_fallback(self):
         for filename, module_name in (
