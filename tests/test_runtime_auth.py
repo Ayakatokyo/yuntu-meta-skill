@@ -39,10 +39,14 @@ class RuntimeAuthTests(unittest.TestCase):
             "list": "rpa.conn.juliang.yt.industry.content.rankings.list",
             "detail": "rpa.conn.juliang.yt.industry.content.rankings.details",
         }[operation]
-        params = [] if operation == "list" else [
-            {"param": "material_id", "isRequired": True, "dataTypeEnum": "STRING"},
-            {"param": "date_type", "isRequired": True, "dataTypeEnum": "STRING"},
-        ]
+        params = (
+            [{"param": "date_type", "isRequired": True, "dataTypeEnum": "STRING"}]
+            if operation == "list"
+            else [
+                {"param": "material_id", "isRequired": True, "dataTypeEnum": "STRING"},
+                {"param": "date_type", "isRequired": True, "dataTypeEnum": "STRING"},
+            ]
+        )
         return cls.response({
             "success": True,
             "data": [{
@@ -171,7 +175,7 @@ class RuntimeAuthTests(unittest.TestCase):
                 mock.patch.object(collector, "_default_session", return_value=session), \
                 mock.patch.object(collector.time, "sleep"):
             invoker = collector._batch_invoker(environ=self.explicit)
-            invoker.invoke_list("shop-1", {})
+            invoker.invoke_list("shop-1", {"date_type": "LAST_7_DAYS"})
             task = invoker.submit_detail("shop-1", {"material_id": "101", "date_type": "LAST_7_DAYS"})
             invoker.wait_detail(task)
         self.assertEqual(len(session.post.call_args_list), 6)

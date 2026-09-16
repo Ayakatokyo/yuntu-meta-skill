@@ -242,7 +242,7 @@ def resolve_query_spec(payload: dict) -> dict:
 
 def query_to_rpa_params(resolved: dict) -> dict:
     period = resolved["period"]
-    params = {"industry": resolved["industry"], "time_range_type": period["type"], "ranking_limit_type": resolved["ranking"]["metric"]}
+    params = {"industry": resolved["industry"], "date_type": period["type"], "ranking_limit_type": resolved["ranking"]["metric"]}
     if period["type"] == "CUSTOM":
         params.update(custom_start_date=period["start_date"], custom_end_date=period["end_date"])
     filters = resolved["filters"]

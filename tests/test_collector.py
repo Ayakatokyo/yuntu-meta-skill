@@ -157,6 +157,10 @@ class CollectorTests(unittest.TestCase):
                 {"material_id": "101", "date_range_type": "LAST_7_DAYS"}
             )
 
+    def test_list_business_params_require_date_type_for_new_requests(self):
+        with self.assertRaisesRegex(collector.RpaConnectorError, "date_type is required"):
+            collector.validate_list_business_params({"industry": "食品饮料"})
+
     def test_list_connector_reads_live_contract_and_uses_async_tasks(self):
         class Response:
             def __init__(self, payload):
@@ -179,8 +183,14 @@ class CollectorTests(unittest.TestCase):
                     "inParamJsonSchemaText": json.dumps({
                         "$schema": "https://json-schema.org/draft/2020-12/schema",
                         "type": "object",
-                        "properties": {"industry": {"type": "string"}},
-                        "required": ["industry"],
+                        "properties": {
+                            "industry": {"type": "string"},
+                            "date_type": {
+                                "type": "string",
+                                "enum": ["LAST_7_DAYS", "LAST_30_DAYS", "CUSTOM"],
+                            },
+                        },
+                        "required": ["date_type"],
                         "additionalProperties": False,
                     }),
                     "inParamList": [{"param": "must_not_be_used"}],
@@ -201,7 +211,10 @@ class CollectorTests(unittest.TestCase):
 
         with mock.patch.object(collector.time, "sleep"):
             result = collector.invoke_list(
-                "shop-1", {"industry": "食品饮料"}, environ=environment, session=session
+                "shop-1",
+                {"industry": "食品饮料", "date_type": "LAST_7_DAYS"},
+                environ=environment,
+                session=session,
             )
 
         self.assertEqual(result["payload"][0]["material_id"], "101")
@@ -621,7 +634,8 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(captured["shop_id"], "shop-1")
         self.assertEqual(captured["list_params"]["ranking_limit_type"], "CTR_TOP1000")
-        self.assertEqual(captured["list_params"]["time_range_type"], "LAST_7_DAYS")
+        self.assertEqual(captured["list_params"]["date_type"], "LAST_7_DAYS")
+        self.assertNotIn("time_range_type", captured["list_params"])
         self.assertEqual(captured["detail_date_params"], {"date_type": "LAST_7_DAYS"})
         self.assertEqual(captured["target_top_n"], 2)
         self.assertEqual(captured["candidate_top_n"], 1000)

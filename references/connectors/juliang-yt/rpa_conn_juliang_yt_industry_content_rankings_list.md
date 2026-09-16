@@ -12,8 +12,9 @@
 
 ## 历史业务语义参考
 
+- 新请求时间字段：`date_type`
+- 历史批次时间字段：`time_range_type`（仅用于读取历史数据）
 - `industry`
-- `time_range_type`
 - `custom_start_date`
 - `custom_end_date`
 - `ages`

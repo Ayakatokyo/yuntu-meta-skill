@@ -666,7 +666,8 @@ def _validate_list_context(list_records, list_params):
     issues = []
     if "industry" in list_params and context.get("industry") != list_params["industry"]:
         issues.append("industry")
-    if list_params.get("time_range_type") == "CUSTOM":
+    period_type = list_params.get("date_type", list_params.get("time_range_type"))
+    if period_type == "CUSTOM":
         expected = (
             f"{_display_date(list_params['custom_start_date'])} ~ "
             f"{_display_date(list_params['custom_end_date'])}"

@@ -46,7 +46,10 @@ class ConfigSpecTests(unittest.TestCase):
     def test_query_uses_fixed_top_1000_list_capacity_and_translates_rpa_parameters(self):
         resolved = resolve_query_spec(query())
         self.assertEqual(resolved["collection"], {"target_top_n": 10, "candidate_top_n": 1000})
-        self.assertEqual(query_to_rpa_params(resolved)["ranking_limit_type"], "CTR_TOP1000")
+        list_params = query_to_rpa_params(resolved)
+        self.assertEqual(list_params["ranking_limit_type"], "CTR_TOP1000")
+        self.assertEqual(list_params["date_type"], "LAST_7_DAYS")
+        self.assertNotIn("time_range_type", list_params)
         self.assertEqual(detail_to_rpa_params(resolved), {"date_type": "LAST_7_DAYS"})
         with self.assertRaisesRegex(ConfigSpecError, "must be 1000"):
             resolve_query_spec(query(collection={"target_top_n": 2, "candidate_top_n": 4}))

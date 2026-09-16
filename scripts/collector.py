@@ -191,7 +191,7 @@ RANKING_LIMIT_VALUES = {
 BRAND_SCOPE_VALUES = {"ALL_INDUSTRY", "SPECIFIED_BRANDS"}
 LIST_FIELDS = {
     "industry",
-    "time_range_type",
+    "date_type",
     "custom_start_date",
     "custom_end_date",
     "ages",
@@ -352,6 +352,8 @@ def _normalize_multivalue(value, field_name, allowed_values=None):
 def validate_list_business_params(raw_params):
     if not isinstance(raw_params, dict):
         raise RpaConnectorError("list business_params must be an object")
+    if "time_range_type" in raw_params:
+        raise RpaConnectorError("time_range_type is obsolete for new requests; use date_type")
     unexpected = set(raw_params) - LIST_FIELDS
     if unexpected:
         raise RpaConnectorError(
@@ -365,17 +367,18 @@ def validate_list_business_params(raw_params):
             raise RpaConnectorError("industry must be a nonblank string")
         params["industry"] = industry.strip()
 
-    date_range_type = raw_params.get("time_range_type")
-    if date_range_type is not None:
-        if not isinstance(date_range_type, str) or date_range_type not in DATE_RANGE_TYPES:
-            raise RpaConnectorError(
-                "time_range_type must be one of: " + ", ".join(sorted(DATE_RANGE_TYPES))
-            )
-        params["time_range_type"] = date_range_type
+    date_type = raw_params.get("date_type")
+    if date_type is None:
+        raise RpaConnectorError("date_type is required for list requests")
+    if not isinstance(date_type, str) or date_type not in DATE_RANGE_TYPES:
+        raise RpaConnectorError(
+            "date_type must be one of: " + ", ".join(sorted(DATE_RANGE_TYPES))
+        )
+    params["date_type"] = date_type
 
     custom_start = raw_params.get("custom_start_date")
     custom_end = raw_params.get("custom_end_date")
-    if date_range_type == "CUSTOM":
+    if date_type == "CUSTOM":
         if not custom_start or not custom_end:
             raise RpaConnectorError("CUSTOM requires custom_start_date and custom_end_date")
         start = _parse_date(custom_start, "custom_start_date")
