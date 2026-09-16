@@ -140,6 +140,22 @@ class FactPackageTests(unittest.TestCase):
         self.assertNotEqual(summary["workflow"]["stage"], "ready_for_analysis")
         self.assertEqual(result["run_id"], "run-partial")
 
+    def test_fact_build_error_preserves_existing_recoverable_stage(self):
+        self.list_path.write_text("{}", encoding="utf-8")
+
+        for stage in ("partial", "failed"):
+            with self.subTest(stage=stage):
+                (self.run_dir / "run-summary.json").write_text(
+                    json.dumps({"runId": f"run-{stage}", "status": stage}), encoding="utf-8"
+                )
+
+                with self.assertRaises(FactPackageError):
+                    build_fact_packages(self.run_dir)
+
+                summary = json.loads((self.run_dir / "run-summary.json").read_text(encoding="utf-8"))
+                self.assertEqual(summary["status"], stage)
+                self.assertEqual(summary["workflow"]["stage"], stage)
+
     def test_extract_runtime_brands_deduplicates_in_first_seen_order(self):
         records = [
             {"list_context": {"brands": [" 品牌A ", "品牌B/Brand B"]}},

@@ -144,6 +144,8 @@ python "$SKILL_ROOT/scripts/collector.py" analyze --run-dir "$WORKSPACE_ROOT/云
 python "$SKILL_ROOT/scripts/check_runtime_sync.py" --target .system/skills/custom/yuntu-meta-skill
 ```
 
+采集或后处理返回 `partial`、`failed` 或非零退出码后，默认动作是停止并保留现场。不得自动执行任何重试、续跑或新目录重采；先向用户说明失败事实、已有落盘数据和可选恢复动作，只有用户明确选择恢复后才执行 `retry-failed`、`retry-unresolved`、`retry-highlights`、同目录 `collect` 或新目录 `collect`。用户在当前会话表达过暂停、停止或质疑重跑时，后续外部采集与恢复动作必须再次取得明确授权。只读诊断、状态查询和本地完整性核对可以直接执行。
+
 ### 运行环境与鉴权
 
 用户在当前任务中明确指定的网关和凭证优先于继承环境。提示词中的赋值不会自动改变 shell 环境；必须实际传入采集进程，不能仅检查变量存在就声称已采用用户配置。凭证可来自平台注入或用户主动提供，不能从无关日志、历史产物或配置文件搜集凭证。`CODEX_SESSION_ID` 是 Codex 任务标识，不能作为网关凭证。
@@ -164,7 +166,7 @@ python "$SKILL_ROOT/scripts/collector.py" --runtime-config-stdin --expected-gate
 
 ## 产物与恢复
 
-新运行统一写入用户工作对象目录下的 `$WORKSPACE_ROOT/云图数据资源/`，技能安装目录只保留代码、配置与参考资料。所有会写文件的入口都必须显式提供输出路径，并拒绝技能安装目录内的目标；两个动态 RPA 客户端也必须显式传 `--output-dir`。原有技能内 `runs/`、`RPA数据汇总/`、`云图数据资源/` 仅作为历史只读兼容目录，不搬动、不覆盖；如需恢复或继续生成产物，先完整复制到工作对象目录并从副本接续。每个运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；恢复只轮询已登记任务，临时网络异常保留为可恢复 unresolved。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
+新运行统一写入用户工作对象目录下的 `$WORKSPACE_ROOT/云图数据资源/`，技能安装目录只保留代码、配置与参考资料。所有会写文件的入口都必须显式提供输出路径，并拒绝技能安装目录内的目标；两个动态 RPA 客户端也必须显式传 `--output-dir`。原有技能内 `runs/`、`RPA数据汇总/`、`云图数据资源/` 仅作为历史只读兼容目录，不搬动、不覆盖；如需恢复或继续生成产物，先完整复制到工作对象目录并从副本接续。每个运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；恢复只轮询已登记任务，临时网络异常保留为可恢复 unresolved。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。经用户明确授权后，`retry-highlights` 可从 `partial` 或 `failed` 恢复到采集态，只处理已落盘详情对应的缺失高光帧，再重新构建事实包；它不重新提交榜单或详情 RPA。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
 
 `collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 

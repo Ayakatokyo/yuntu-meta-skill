@@ -60,3 +60,9 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertIn("拒绝技能安装目录内的目标", body)
         self.assertIn("必须显式传 `--output-dir`", body)
         self.assertNotIn("未来运行统一写入技能根目录", body)
+
+    def test_retry_commands_require_explicit_user_authorization(self):
+        _, body = load_skill_document()
+
+        self.assertIn("不得自动执行任何重试、续跑或新目录重采", body)
+        self.assertIn("先向用户说明失败事实、已有落盘数据和可选恢复动作", body)

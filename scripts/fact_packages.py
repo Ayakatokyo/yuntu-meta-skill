@@ -513,13 +513,15 @@ def _build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None =
 
 
 def build_fact_packages(run_dir: str | Path, *, output_dir: str | Path | None = None) -> dict:
-    """Build facts and persist a failed workflow state when a gate raises."""
+    """Build facts without destroying an existing recoverable collection state."""
     root = Path(run_dir)
+    initial_stage = get_workflow_status(root)["stage"]
     try:
         return _build_fact_packages(root, output_dir=output_dir)
     except Exception:
         try:
-            set_stage(root, "failed", error="fact package build failed")
+            failure_stage = initial_stage if initial_stage in {"partial", "failed"} else "failed"
+            set_stage(root, failure_stage, error="fact package build failed")
         except Exception:
             pass
         raise

@@ -701,6 +701,7 @@ class YuntuBatchTests(unittest.TestCase):
                 root / "run-summary.json",
             )
             batch.set_stage(root, "collecting")
+            batch.set_stage(root, "partial", reason="highlight gate incomplete")
             detail_path = root / "normalized" / "detail-records" / "101.json"
             detail_path.parent.mkdir(parents=True)
             detail_path.write_text(json.dumps({
@@ -750,6 +751,11 @@ class YuntuBatchTests(unittest.TestCase):
         self.assertEqual(manifest["selectedMaterials"][0]["postprocessStatus"], "succeeded")
         self.assertEqual(facts["coverage"]["available_highlight_frames"], 1)
         self.assertEqual(summary["workflow"]["stage"], "ready_for_analysis")
+        recovery_events = [
+            event for event in summary["workflow"]["history"]
+            if event.get("recovery") == "retry_highlights"
+        ]
+        self.assertEqual([event["stage"] for event in recovery_events], ["collecting"])
 
     def test_scripts_package_imports_from_repository_root(self):
         result = subprocess.run(

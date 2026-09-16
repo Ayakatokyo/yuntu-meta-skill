@@ -1802,6 +1802,7 @@ def retry_highlights_batch(*, output_dir, highlight_spec):
         manifest = _load_json(manifest_path)
     except (OSError, ValueError) as exc:
         raise YuntuBatchError("existing batch manifest is unreadable") from exc
+    summary = set_stage(root, "collecting", recovery="retry_highlights")
 
     details = []
     for item in manifest.get("selectedMaterials", []):
