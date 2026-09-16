@@ -11,7 +11,11 @@ import sys
 
 RUNTIME_FILES = (
     "SKILL.md",
+    "metadata.yaml",
     "scripts/collector.py",
+    "scripts/config_specs.py",
+    "scripts/yuntu_highlights.py",
+    "scripts/overview_report.py",
     "scripts/rpa_dynamic_client.py",
     "scripts/rpa_dynamic_detail_client.py",
     "scripts/brand_classifier.py",

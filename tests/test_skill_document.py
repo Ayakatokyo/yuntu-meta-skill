@@ -5,6 +5,7 @@ import yaml
 
 
 SKILL_PATH = Path(__file__).resolve().parents[1] / "SKILL.md"
+METADATA_PATH = Path(__file__).resolve().parents[1] / "metadata.yaml"
 
 
 def load_skill_document():
@@ -13,8 +14,12 @@ def load_skill_document():
     return yaml.safe_load(frontmatter), body
 
 
+def load_skill_form():
+    return yaml.safe_load(METADATA_PATH.read_text(encoding="utf-8"))["skill_form"]
+
+
 class SkillDocumentTests(unittest.TestCase):
-    def test_pre_input_uses_platform_html_blocks_and_blank_spans(self):
+    def test_pre_input_uses_typed_field_placeholders(self):
         metadata, _ = load_skill_document()
         pre_input = metadata["metadata"]["pre_input"]
 
@@ -22,13 +27,27 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertGreaterEqual(pre_input.count("\n"), 14)
         self.assertNotIn("<p>", pre_input)
         self.assertNotIn("data-pre-input-blank", pre_input)
-        self.assertIn("____", pre_input)
+        self.assertNotIn("____", pre_input)
+        self.assertIn("__field:industry__", pre_input)
+        self.assertIn("__field:date_range__", pre_input)
+        self.assertIn("__field:highlight_mode__", pre_input)
 
     def test_pre_input_keeps_query_before_highlight_rules(self):
         metadata, _ = load_skill_document()
         pre_input = metadata["metadata"]["pre_input"]
 
         self.assertLess(pre_input.index("行业是"), pre_input.index("是否同时生成高光帧图片"))
-        self.assertLess(pre_input.index("是否同时生成高光帧图片"), pre_input.index("高光帧设置"))
+        self.assertIn("封面是否保留", pre_input)
         for metric in ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数"):
             self.assertIn(metric, pre_input)
+
+    def test_pre_input_references_every_typed_form_field_once(self):
+        metadata, _ = load_skill_document()
+        pre_input = metadata["metadata"]["pre_input"]
+        form = load_skill_form()
+        keys = [field["key"] for field in form]
+        references = __import__("re").findall(r"__field:([a-z0-9_]+)__", pre_input)
+
+        self.assertEqual(len(keys), 27)
+        self.assertEqual(set(references), set(keys))
+        self.assertEqual(len(references), len(keys))

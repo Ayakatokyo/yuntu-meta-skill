@@ -13,6 +13,7 @@ class RuntimeSyncTests(unittest.TestCase):
     def _copy_runtime(self, destination):
         shutil.copytree(ROOT / "scripts", destination / "scripts")
         shutil.copy2(ROOT / "SKILL.md", destination / "SKILL.md")
+        shutil.copy2(ROOT / "metadata.yaml", destination / "metadata.yaml")
 
     def test_stale_skill_instructions_are_reported_as_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -22,6 +23,16 @@ class RuntimeSyncTests(unittest.TestCase):
             result = check_runtime_sync(ROOT, target)
         self.assertFalse(result["ok"])
         self.assertIn("SKILL.md", result["mismatches"])
+
+    def test_missing_form_metadata_is_reported_as_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "target"
+            self._copy_runtime(target)
+            (target / "metadata.yaml").unlink()
+            result = check_runtime_sync(ROOT, target)
+
+        self.assertFalse(result["ok"])
+        self.assertIn("metadata.yaml", result["mismatches"])
 
     def test_matching_runtime_copy_and_help_are_valid(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -43,6 +54,10 @@ class RuntimeSyncTests(unittest.TestCase):
         )
         self.assertIn("scripts/model_analysis_request.py", result["files"])
         self.assertTrue(result["files"]["scripts/model_analysis_request.py"]["match"])
+        self.assertIn("scripts/config_specs.py", result["files"])
+        self.assertTrue(result["files"]["scripts/config_specs.py"]["match"])
+        self.assertTrue(result["files"]["scripts/yuntu_highlights.py"]["match"])
+        self.assertTrue(result["files"]["scripts/overview_report.py"]["match"])
 
     def test_modified_runtime_file_is_reported_as_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:

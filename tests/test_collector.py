@@ -41,7 +41,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(status, 0)
         payload = json.loads(output[0])
         self.assertEqual(payload["query"]["collection"]["target_top_n"], 2)
-        self.assertEqual(payload["highlights"]["metrics"]["点赞指数"]["strategy"], "top_values")
+        self.assertEqual(payload["highlights"]["metrics"]["点赞指数"]["strategy"], "global_top_values")
 
     def test_collector_has_analyze_command(self):
         commands = collector._parser()._subparsers._group_actions[0].choices
@@ -644,7 +644,7 @@ class CollectorTests(unittest.TestCase):
             {"filters": [], "sort": {"field": "rank", "direction": "asc"}},
         )
         self.assertNotIn("material_list", captured["list_params"])
-        self.assertEqual(captured["highlight_spec"]["metrics"]["点赞指数"]["strategy"], "top_values")
+        self.assertEqual(captured["highlight_spec"]["metrics"]["点赞指数"]["strategy"], "global_top_values")
         self.assertTrue(query_file_exists)
         self.assertTrue(highlight_file_exists)
         build.assert_called_once_with(directory)

@@ -42,6 +42,22 @@ def highlights(**overrides):
     return value
 
 
+def modern_highlights(**overrides):
+    value = {
+        "schemaVersion": 1,
+        "includeZeroSecond": True,
+        "metrics": {
+            "点赞指数": {"enabled": True, "strategy": "local_peaks", "maxFrames": 3},
+            "流失指数": {"enabled": True, "strategy": "local_peaks", "maxFrames": 3},
+            "点击指数": {"enabled": True, "strategy": "local_peaks", "maxFrames": 3},
+            "互动指数": {"enabled": True, "strategy": "local_peaks", "maxFrames": 3},
+            "评论指数": {"enabled": True, "strategy": "local_peaks", "maxFrames": 3},
+        },
+    }
+    value.update(overrides)
+    return value
+
+
 class ConfigSpecTests(unittest.TestCase):
     def test_query_uses_fixed_top_1000_list_capacity_and_translates_rpa_parameters(self):
         resolved = resolve_query_spec(query())
@@ -141,62 +157,64 @@ class ConfigSpecTests(unittest.TestCase):
         self.assertEqual(query_to_rpa_params(resolved)["brands"], ["甲", "乙", "丙"])
         self.assertEqual(detail_to_rpa_params(resolved)["custom_end_date"], "20260805")
 
-    def test_highlight_accepts_a_subset_of_metrics(self):
-        resolved = resolve_highlight_spec(highlights(
-            metrics={
-                "点赞指数": {"strategy": "top_values", "limit": 2},
-                "流失指数": {"strategy": "local_peaks", "limit": 2},
-            },
-        ))
-        self.assertTrue(resolved["include_cover"])
-        self.assertEqual(
-            resolved["metrics"],
-            {
-                "点赞指数": {"strategy": "top_values", "limit": 2},
-                "流失指数": {"strategy": "local_peaks", "limit": 2},
-            },
-        )
+    def test_highlight_accepts_the_unified_contract_with_disabled_metrics(self):
+        metrics = modern_highlights()["metrics"]
+        metrics["点赞指数"] = {"enabled": True, "strategy": "global_top_values", "maxFrames": 2}
+        metrics["流失指数"] = {"enabled": False}
+        resolved = resolve_highlight_spec(modern_highlights(metrics=metrics))
 
-    def test_highlight_requires_explicit_cover_and_at_least_one_metric(self):
+        self.assertTrue(resolved["includeZeroSecond"])
+        self.assertEqual(
+            resolved["metrics"]["点赞指数"],
+            {"enabled": True, "strategy": "global_top_values", "maxFrames": 2},
+        )
+        self.assertEqual(resolved["metrics"]["流失指数"], {"enabled": False})
+
+    def test_highlight_normalizes_the_legacy_contract_for_existing_runs(self):
         resolved = resolve_highlight_spec(highlights(
             metrics={
-                **highlights()["metrics"],
-                "点击指数": {"strategy": "top_values", "limit": 2},
+                "点赞指数": {"strategy": "top_values", "limit": 2},
+                "流失指数": {"strategy": "local_peaks", "limit": 2},
             },
         ))
-        self.assertTrue(resolved["include_cover"])
-        self.assertEqual(resolved["metrics"]["点击指数"], {"strategy": "top_values", "limit": 2})
-        self.assertEqual(set(resolved["metrics"]), {"点赞指数", "流失指数", "点击指数", "互动指数", "评论指数"})
-        with self.assertRaisesRegex(ConfigSpecError, "include_cover"):
-            resolve_highlight_spec({"metrics": highlights()["metrics"]})
+
+        self.assertTrue(resolved["includeZeroSecond"])
+        self.assertEqual(
+            resolved["metrics"]["点赞指数"],
+            {"enabled": True, "strategy": "global_top_values", "maxFrames": 2},
+        )
+        self.assertEqual(resolved["metrics"]["点击指数"], {"enabled": False})
+
+    def test_highlight_requires_all_unified_metrics_and_an_enabled_selection(self):
+        with self.assertRaisesRegex(ConfigSpecError, "explicitly configure all"):
+            resolve_highlight_spec(modern_highlights(metrics={"点赞指数": {"enabled": False}}))
         with self.assertRaisesRegex(ConfigSpecError, "at least one metric"):
-            resolve_highlight_spec({
-                "include_cover": True,
-                "metrics": {},
-            })
+            resolve_highlight_spec(modern_highlights(
+                metrics={name: {"enabled": False} for name in modern_highlights()["metrics"]}
+            ))
 
     def test_highlight_rejects_removed_absolute_max_strategy(self):
         with self.assertRaisesRegex(ConfigSpecError, "unsupported"):
-            resolve_highlight_spec(highlights(
+            resolve_highlight_spec(modern_highlights(
                 metrics={
-                    **highlights()["metrics"],
-                    "点击指数": {"strategy": "absolute_max", "limit": 1},
+                    **modern_highlights()["metrics"],
+                    "点击指数": {"enabled": True, "strategy": "absolute_max", "maxFrames": 1},
                 },
             ))
 
     def test_highlight_rejects_unknown_strategy_and_nonpositive_limit(self):
-        invalid_strategy = highlights(
+        invalid_strategy = modern_highlights(
             metrics={
-                **highlights()["metrics"],
-                "点击指数": {"strategy": "median", "limit": 1},
+                **modern_highlights()["metrics"],
+                "点击指数": {"enabled": True, "strategy": "median", "maxFrames": 1},
             },
         )
         with self.assertRaisesRegex(ConfigSpecError, "unsupported"):
             resolve_highlight_spec(invalid_strategy)
-        invalid_limit = highlights(
+        invalid_limit = modern_highlights(
             metrics={
-                **highlights()["metrics"],
-                "点击指数": {"strategy": "local_peaks", "limit": 0},
+                **modern_highlights()["metrics"],
+                "点击指数": {"enabled": True, "strategy": "local_peaks", "maxFrames": 0},
             },
         )
         with self.assertRaisesRegex(ConfigSpecError, "positive"):
