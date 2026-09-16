@@ -5,21 +5,20 @@ metadata:
   argument_hint: 输入行业、时间范围、榜单类型、品牌和人群筛选、素材列表本地筛选及详情素材数。高光帧默认不生成；如选择生成，按下方高光帧设置填写封面、指标、提取规则和帧数。
   pre_input: |
     请采集云图行业素材及相关数据。
-    行业是 ____（必填）。
-    时间范围是 ____（默认近7天；自定义时填写起止日期）。
-    截取方式是 ____（曝光量TOP1000、CTRTOP1000、互动率TOP1000或完播率TOP1000）。
-    品牌范围是 ____（默认全行业，或指定3至10个品牌）。
-    需要获取详情的素材数是 ____（默认10；详情请求包含秒级拆解和内容公式字段；如同时生成高光帧图片，再按下方规则提取高光帧图片）。
-    年龄、性别、八大人群筛选是 ____（可选，留空不过滤）。
-    素材列表本地筛选/排序是 ____（可选，例如先落盘完整TOP1000后按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）。
-    是否同时生成高光帧图片：____（是/否，可选，默认否）。
-    高光帧设置（选择否时，以下全部留空；选择是时，按需逐项填写）：
-    - 封面是否保留：____（是/否）。
-    - 点赞指数：是否选择 ____；提取规则 ____（局部峰值/最高值）；帧数 ____（正整数）。
-    - 流失指数：是否选择 ____；提取规则 ____（局部峰值/最高值）；帧数 ____（正整数）。
-    - 点击指数：是否选择 ____；提取规则 ____（局部峰值/最高值）；帧数 ____（正整数）。
-    - 互动指数：是否选择 ____；提取规则 ____（局部峰值/最高值）；帧数 ____（正整数）。
-    - 评论指数：是否选择 ____；提取规则 ____（局部峰值/最高值）；帧数 ____（正整数）。
+    行业是 __field:industry__（必填，云图行业筛选）
+    分析周期是 __field:date_range__
+    截取方式是 __field:ranking_metric__
+    品牌范围是 __field:brand_scope__；指定品牌是 __field:brands__（品牌数量范围3-10个）
+    年龄筛选：__field:ages__；性别筛选：__field:genders__；八大人群筛选：__field:crowd_groups__（可选）
+    素材筛选与排序：__field:material_list__ （可选，例如按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）
+    详情素材数 __field:detail_top_n__（包含秒级拆解和内容公式数据，默认10）
+    是否同时生成高光帧图片：__field:highlight_mode__（如选择否，则可无视下方高光帧规则，选择是则反之）
+    - 封面是否保留：__field:highlight_include_cover__
+    - 点赞指数：__field:highlight_like_enabled__；提取规则 __field:highlight_like_strategy__；帧数 __field:highlight_like_limit__
+    - 流失指数：__field:highlight_loss_enabled__；提取规则 __field:highlight_loss_strategy__；帧数 __field:highlight_loss_limit__
+    - 点击指数：__field:highlight_click_enabled__；提取规则 __field:highlight_click_strategy__；帧数 __field:highlight_click_limit__
+    - 互动指数：__field:highlight_interaction_enabled__；提取规则 __field:highlight_interaction_strategy__；帧数 __field:highlight_interaction_limit__
+    - 评论指数：__field:highlight_comment_enabled__；提取规则 __field:highlight_comment_strategy__；帧数 __field:highlight_comment_limit__
 ---
 
 # 可配置云图采集与商业分析工作流

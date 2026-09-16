@@ -302,6 +302,7 @@ def _query_context(run_root: Path) -> dict:
 
 _HIGHLIGHT_STRATEGY_LABELS = {
     "local_peaks": "局部峰值",
+    "global_top_values": "数值 Top",
     "top_values": "数值 Top",
 }
 
@@ -315,7 +316,7 @@ def _highlight_filter_context(run_root: Path) -> list[dict[str, str]]:
     except OverviewReportError:
         return []
     entries: list[dict[str, str]] = []
-    include_cover = spec.get("include_cover")
+    include_cover = spec.get("includeZeroSecond", spec.get("include_cover"))
     if isinstance(include_cover, bool):
         entries.append({"label": "封面帧", "value": "包含" if include_cover else "不包含"})
     metrics = spec.get("metrics")
@@ -323,8 +324,10 @@ def _highlight_filter_context(run_root: Path) -> list[dict[str, str]]:
         for metric, config in metrics.items():
             if not isinstance(config, dict):
                 continue
+            if config.get("enabled", True) is False:
+                continue
             strategy = _HIGHLIGHT_STRATEGY_LABELS.get(config.get("strategy"), "未找到中文映射：%s" % config.get("strategy"))
-            limit = config.get("limit")
+            limit = config.get("maxFrames", config.get("limit"))
             value = strategy
             if type(limit) is int:
                 value = "%s，%d 帧" % (strategy, limit)

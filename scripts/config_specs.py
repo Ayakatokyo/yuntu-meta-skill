@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 import hashlib
 import json
 from pathlib import Path
 import math
+from zoneinfo import ZoneInfo
 
 try:
     from .material_field_registry import (
@@ -46,10 +47,12 @@ CROWD_GROUP_VALUES = {
     "URBAN_SILVER", "TOWN_MIDDLE_ELDER", "URBAN_BLUE_COLLAR",
 }
 HIGHLIGHT_METRICS = ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数")
-HIGHLIGHT_STRATEGIES = {"local_peaks", "top_values"}
+HIGHLIGHT_STRATEGIES = {"local_peaks", "global_top_values"}
+_LEGACY_HIGHLIGHT_STRATEGIES = {"top_values": "global_top_values"}
 DEFAULT_MATERIAL_LIST = {
     "filters": [], "sort": {"field": "rank", "direction": "asc"}
 }
+SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 class ConfigSpecError(ValueError):
@@ -184,7 +187,7 @@ def resolve_query_spec(payload: dict) -> dict:
             raise ConfigSpecError("CUSTOM requires period.start_date and period.end_date")
         start = _date(period["start_date"], "period.start_date")
         end = _date(period["end_date"], "period.end_date")
-        today = date.today()
+        today = datetime.now(SHANGHAI_TIMEZONE).date()
         if start < today - timedelta(days=369):
             raise ConfigSpecError("period.start_date cannot be more than 369 days before today")
         if end > today - timedelta(days=4):
@@ -265,30 +268,67 @@ def detail_to_rpa_params(resolved: dict) -> dict:
 
 
 def resolve_highlight_spec(payload: dict | None) -> dict:
+    """Normalize the shared high-frame contract, accepting prior Yuntu runs."""
     payload = {} if payload is None else _object(payload, "HighlightSpec")
-    _keys(payload, {"schema_version", "include_cover", "metrics"}, "HighlightSpec")
-    if payload.get("schema_version", 1) != 1:
-        raise ConfigSpecError("HighlightSpec schema_version must be 1")
-    if "include_cover" not in payload or not isinstance(payload["include_cover"], bool):
-        raise ConfigSpecError("HighlightSpec.include_cover must be boolean")
-    include_cover = payload["include_cover"]
+    if "schemaVersion" not in payload:
+        _keys(payload, {"schema_version", "include_cover", "metrics"}, "legacy HighlightSpec")
+        if payload.get("schema_version", 1) != 1:
+            raise ConfigSpecError("legacy HighlightSpec schema_version must be 1")
+        if "include_cover" not in payload or not isinstance(payload["include_cover"], bool):
+            raise ConfigSpecError("legacy HighlightSpec.include_cover must be boolean")
+        legacy_metrics = _object(payload.get("metrics"), "legacy metrics")
+        unknown = set(legacy_metrics) - set(HIGHLIGHT_METRICS)
+        if unknown:
+            raise ConfigSpecError(f"unsupported highlight metrics: {', '.join(sorted(unknown))}")
+        for name, item in legacy_metrics.items():
+            item = _object(item, f"legacy metrics.{name}")
+            _keys(item, {"strategy", "limit"}, f"legacy metrics.{name}")
+        payload = {
+            "schemaVersion": 1,
+            "includeZeroSecond": payload["include_cover"],
+            "metrics": {
+                name: (
+                    {
+                        "enabled": True,
+                        "strategy": _LEGACY_HIGHLIGHT_STRATEGIES.get(legacy_metrics[name].get("strategy"), legacy_metrics[name].get("strategy")),
+                        "maxFrames": legacy_metrics[name].get("limit"),
+                    }
+                    if name in legacy_metrics else {"enabled": False}
+                )
+                for name in HIGHLIGHT_METRICS
+            },
+        }
+
+    _keys(payload, {"schemaVersion", "includeZeroSecond", "metrics"}, "HighlightSpec")
+    if payload.get("schemaVersion") != 1:
+        raise ConfigSpecError("HighlightSpec schemaVersion must be 1")
+    if not isinstance(payload.get("includeZeroSecond"), bool):
+        raise ConfigSpecError("HighlightSpec.includeZeroSecond must be boolean")
     custom = _object(payload.get("metrics"), "metrics")
-    unknown = set(custom) - set(HIGHLIGHT_METRICS)
-    if unknown:
-        raise ConfigSpecError(f"unsupported highlight metrics: {', '.join(sorted(unknown))}")
-    if not custom:
-        raise ConfigSpecError("HighlightSpec.metrics must configure at least one metric")
+    if set(custom) != set(HIGHLIGHT_METRICS):
+        raise ConfigSpecError("HighlightSpec.metrics must explicitly configure all Yuntu metrics")
+
     metrics = {}
     for name in HIGHLIGHT_METRICS:
-        if name not in custom:
-            continue
         item = _object(custom[name], f"metrics.{name}")
-        _keys(item, {"strategy", "limit"}, f"metrics.{name}")
-        strategy = item.get("strategy")
-        if strategy not in HIGHLIGHT_STRATEGIES:
+        enabled = item.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ConfigSpecError(f"metrics.{name}.enabled must be boolean")
+        if not enabled:
+            _keys(item, {"enabled"}, f"metrics.{name}")
+            metrics[name] = {"enabled": False}
+            continue
+        _keys(item, {"enabled", "strategy", "maxFrames"}, f"metrics.{name}")
+        if item.get("strategy") not in HIGHLIGHT_STRATEGIES:
             raise ConfigSpecError(f"metrics.{name}.strategy is unsupported")
-        metrics[name] = {"strategy": strategy, "limit": _positive(item.get("limit"), f"metrics.{name}.limit")}
-    return {"schema_version": 1, "include_cover": include_cover, "metrics": metrics}
+        metrics[name] = {
+            "enabled": True,
+            "strategy": item["strategy"],
+            "maxFrames": _positive(item.get("maxFrames"), f"metrics.{name}.maxFrames"),
+        }
+    if not any(item["enabled"] for item in metrics.values()):
+        raise ConfigSpecError("HighlightSpec.metrics must enable at least one metric")
+    return {"schemaVersion": 1, "includeZeroSecond": payload["includeZeroSecond"], "metrics": metrics}
 
 
 def resolve_highlight_request(payload: dict | None, *, enabled: bool | None = None) -> dict:

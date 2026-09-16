@@ -187,7 +187,7 @@ def select_highlight_candidates(detail, trend_names):
 def select_highlight_candidates_by_spec(detail, highlight_spec):
     """Select one merged candidate list from independently configured metrics."""
     candidates = {}
-    if highlight_spec.get("include_cover", True):
+    if highlight_spec.get("includeZeroSecond", highlight_spec.get("include_cover", True)):
         candidates[0] = {
             "second": 0,
             "is_cover": True,
@@ -195,12 +195,14 @@ def select_highlight_candidates_by_spec(detail, highlight_spec):
             "reasons": [{"type": "cover"}],
         }
     for trend_name, policy in highlight_spec.get("metrics", {}).items():
+        if policy.get("enabled", True) is False:
+            continue
         series = _series_for_trend(detail, trend_name)
-        if policy["strategy"] == "top_values":
-            selected = _top_values(series, limit=policy["limit"])
+        if policy["strategy"] in {"global_top_values", "top_values"}:
+            selected = _top_values(series, limit=policy.get("maxFrames", policy.get("limit")))
             selected_type = "top_values"
         else:
-            selected = _local_peaks(series, limit=policy["limit"])
+            selected = _local_peaks(series, limit=policy.get("maxFrames", policy.get("limit")))
             selected_type = "local_peak"
         for rank, (second, value) in enumerate(selected, start=1):
             candidate = candidates.setdefault(
