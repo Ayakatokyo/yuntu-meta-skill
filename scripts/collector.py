@@ -401,7 +401,9 @@ def validate_list_business_params(raw_params):
 
     for field_name in ("ages", "genders", "crowd_groups"):
         if field_name in raw_params:
-            params[field_name] = _normalize_multivalue(raw_params[field_name], field_name)
+            params[field_name] = ",".join(
+                _normalize_multivalue(raw_params[field_name], field_name)
+            )
 
     scope = raw_params.get("brand_scope_type")
     if scope is not None:
@@ -417,7 +419,7 @@ def validate_list_business_params(raw_params):
             raise RpaConnectorError("brands requires brand_scope_type SPECIFIED_BRANDS")
         if not 3 <= len(brands) <= 10:
             raise RpaConnectorError("brands must contain 3 to 10 values")
-        params["brands"] = brands
+        params["brands"] = ",".join(brands)
     elif scope == "SPECIFIED_BRANDS":
         raise RpaConnectorError("SPECIFIED_BRANDS requires brands")
 

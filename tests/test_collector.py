@@ -161,6 +161,22 @@ class CollectorTests(unittest.TestCase):
         with self.assertRaisesRegex(collector.RpaConnectorError, "date_type is required"):
             collector.validate_list_business_params({"industry": "食品饮料"})
 
+    def test_list_business_params_serializes_multivalue_filters_as_strings(self):
+        params = collector.validate_list_business_params({
+            "industry": "食品饮料",
+            "date_type": "LAST_7_DAYS",
+            "ages": ["AGE_18_19", "AGE_20_23"],
+            "genders": "MALE,FEMALE",
+            "crowd_groups": '["GENZ", "REFINED_MOM"]',
+            "brand_scope_type": "SPECIFIED_BRANDS",
+            "brands": ["小仙炖", "燕之屋", "五个女博士"],
+        })
+
+        self.assertEqual(params["ages"], "AGE_18_19,AGE_20_23")
+        self.assertEqual(params["genders"], "MALE,FEMALE")
+        self.assertEqual(params["crowd_groups"], "GENZ,REFINED_MOM")
+        self.assertEqual(params["brands"], "小仙炖,燕之屋,五个女博士")
+
     def test_list_connector_reads_live_contract_and_uses_async_tasks(self):
         class Response:
             def __init__(self, payload):

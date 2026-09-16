@@ -82,8 +82,8 @@ skill_form:
   - key: brands
     type: textarea
     label: 品牌名称
-    description: 仅在指定品牌时填写 3 至 10 个品牌，用逗号或换行分隔
-    placeholder: "每行一个品牌，填写 3 至 10 个"
+    description: 仅在指定品牌时填写 3 至 10 个品牌，用英文逗号分隔
+    placeholder: "小仙炖,燕之屋,五个女博士"
     required: true
     rows: 2
     max_length: 200

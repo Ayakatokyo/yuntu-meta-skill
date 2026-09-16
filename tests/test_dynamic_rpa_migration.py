@@ -53,6 +53,21 @@ class DynamicRpaMigrationTests(unittest.TestCase):
                 self.assertEqual(runtime["session_id"], "legacy-session")
                 self.assertEqual(runtime["cookies"], {"YCSESSIONID": "legacy-session"})
 
+    def test_list_validator_accepts_comma_delimited_enum_values(self):
+        client = load_client("rpa_dynamic_client.py", "yuntu_dynamic_list_validator")
+        definitions = [
+            {
+                "param": "ages",
+                "isRequired": False,
+                "dataTypeEnum": "STRING",
+                "valEnumList": [{"val": "AGE_18_19"}, {"val": "AGE_20_23"}],
+            }
+        ]
+
+        client.validate_list_params(
+            definitions, {"ages": "AGE_18_19,AGE_20_23"}
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

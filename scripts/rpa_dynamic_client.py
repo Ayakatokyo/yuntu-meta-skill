@@ -245,7 +245,14 @@ def validate_list_params(in_param_list: list[Any], params: dict[str, Any]) -> No
         raw_enum = definition.get("valEnumList")
         enum_values = [item.get("val") for item in raw_enum if isinstance(item, dict) and "val" in item] if isinstance(raw_enum, list) else []
         if enum_values:
-            invalid_values = [item for item in value if item not in enum_values] if isinstance(value, list) else ([] if value in enum_values else [value])
+            values_to_validate = (
+                value
+                if isinstance(value, list)
+                else value.split(",")
+                if isinstance(value, str)
+                else [value]
+            )
+            invalid_values = [item for item in values_to_validate if item not in enum_values]
             if invalid_values:
                 errors.append(f"{name} 包含非法枚举值 {invalid_values}；允许值：{enum_values}")
     if errors:
