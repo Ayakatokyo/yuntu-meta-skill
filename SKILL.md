@@ -113,8 +113,6 @@ python "$SKILL_ROOT/scripts/collector.py" collect --shop-id "<shop_id>" --query-
 # 请求图片时才提供 --highlight-spec；--highlight-mode off 与规则同时出现会被拒绝
 python "$SKILL_ROOT/scripts/collector.py" collect --shop-id "<shop_id>" --query-spec query.json --highlight-mode on --highlight-spec highlights.json --output-dir "$WORKSPACE_ROOT/云图数据资源/example"
 python "$SKILL_ROOT/scripts/collector.py" status --output-dir "$WORKSPACE_ROOT/云图数据资源/example"
-python "$SKILL_ROOT/scripts/collector.py" retry-failed --shop-id "<shop_id>" --output-dir "$WORKSPACE_ROOT/云图数据资源/example"
-python "$SKILL_ROOT/scripts/collector.py" retry-unresolved --shop-id "<shop_id>" --output-dir "$WORKSPACE_ROOT/云图数据资源/example"
 python "$SKILL_ROOT/scripts/collector.py" retry-highlights --output-dir "$WORKSPACE_ROOT/云图数据资源/example"
 python "$SKILL_ROOT/scripts/collector.py" build-facts --run-dir "$WORKSPACE_ROOT/云图数据资源/example"
 # 阶段一采集/事实门禁通过后，生成离线第一阶段数据报告；默认写入 $WORKSPACE_ROOT/云图数据资源/example/overview/
@@ -144,7 +142,7 @@ python "$SKILL_ROOT/scripts/collector.py" analyze --run-dir "$WORKSPACE_ROOT/云
 python "$SKILL_ROOT/scripts/check_runtime_sync.py" --target .system/skills/custom/yuntu-meta-skill
 ```
 
-采集或后处理返回 `partial`、`failed` 或非零退出码后，默认动作是停止并保留现场。不得自动执行任何重试、续跑或新目录重采；先向用户说明失败事实、已有落盘数据和可选恢复动作，只有用户明确选择恢复后才执行 `retry-failed`、`retry-unresolved`、`retry-highlights`、同目录 `collect` 或新目录 `collect`。用户在当前会话表达过暂停、停止或质疑重跑时，后续外部采集与恢复动作必须再次取得明确授权。只读诊断、状态查询和本地完整性核对可以直接执行。
+采集或后处理返回 `partial`、`failed` 或非零退出码后，默认动作是停止并保留现场。RPA 失败项不自动重试，也不提供失败项或 unresolved 项的 RPA 重提命令；先向用户说明失败事实和已有落盘数据。`retry-highlights` 只处理本地已落盘详情的图片后处理，不调用 RPA，只有用户明确选择恢复后才执行。用户在当前会话表达过暂停、停止或质疑重跑时，后续外部采集动作必须再次取得明确授权。只读诊断、状态查询和本地完整性核对可以直接执行。
 
 ### 运行环境与鉴权
 
@@ -158,7 +156,7 @@ python "$SKILL_ROOT/scripts/collector.py" --runtime-config-stdin --expected-gate
 python "$SKILL_ROOT/scripts/collector.py" --runtime-config-stdin --expected-gateway https://gateway.example/api collect --shop-id "<shop_id>" --query-spec query.json --output-dir "$WORKSPACE_ROOT/云图数据资源/example"
 ```
 
-终端交互模式会关闭输入回显，宿主通过终端标准输入发送 JSON 行；管道模式从标准输入读取一行。不要用含真实凭证的 `echo`、heredoc、命令参数或落盘文件构造输入。每次新的 CLI 调用都需要重新传入同一组任务配置（包括 collect、retry-failed、retry-unresolved）；一次调用不会修改全局环境或自动配置后续调用。同一次采集的榜单、详情提交和轮询会共享该配置。
+终端交互模式会关闭输入回显，宿主通过终端标准输入发送 JSON 行；管道模式从标准输入读取一行。不要用含真实凭证的 `echo`、heredoc、命令参数或落盘文件构造输入。每次新的 `collect` CLI 调用都需要重新传入同一组任务配置；一次调用不会修改全局环境或自动配置后续调用。同一次采集的榜单、详情提交和轮询会共享该配置。
 
 未显式提供配置时保留平台环境兼容路径。`runtime-check` 只显示目标网关、配置来源、变量存在性，不验证认证；RPA 命令也会向 stderr 输出同样的脱敏预检信息，stdout 保持原业务 JSON。用户指定网关时加 `--expected-gateway`，不匹配就会在请求前失败。不要回显凭证或以长度相同判断值相同。
 
@@ -166,9 +164,9 @@ python "$SKILL_ROOT/scripts/collector.py" --runtime-config-stdin --expected-gate
 
 ## 产物与恢复
 
-新运行统一写入用户工作对象目录下的 `$WORKSPACE_ROOT/云图数据资源/`，技能安装目录只保留代码、配置与参考资料。所有会写文件的入口都必须显式提供输出路径，并拒绝技能安装目录内的目标；两个动态 RPA 客户端也必须显式传 `--output-dir`。原有技能内 `runs/`、`RPA数据汇总/`、`云图数据资源/` 仅作为历史只读兼容目录，不搬动、不覆盖；如需恢复或继续生成产物，先完整复制到工作对象目录并从副本接续。每个运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；恢复只轮询已登记任务，临时网络异常保留为可恢复 unresolved。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。经用户明确授权后，`retry-highlights` 可从 `partial` 或 `failed` 恢复到采集态，只处理已落盘详情对应的缺失高光帧，再重新构建事实包；它不重新提交榜单或详情 RPA。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
+新运行统一写入用户工作对象目录下的 `$WORKSPACE_ROOT/云图数据资源/`，技能安装目录只保留代码、配置与参考资料。所有会写文件的入口都必须显式提供输出路径，并拒绝技能安装目录内的目标；两个动态 RPA 客户端也必须显式传 `--output-dir`。原有技能内 `runs/`、`RPA数据汇总/`、`云图数据资源/` 仅作为历史只读兼容目录，不搬动、不覆盖；如需恢复或继续生成本地产物，先完整复制到工作对象目录并从副本接续。每个运行目录包含解析后的配置、`raw-csv/`、`normalized/`、`batch-manifest.json`、`run-summary.json`，以及仅在请求图片时存在的 `highlights-manifest.json` 与 JPEG。详情异步提交会立即在 manifest 的 `taskRuns` 登记 `task_group_id`；同一次采集只轮询已登记任务，临时网络异常保留为 unresolved 并停止，不重新提交 RPA。关闭图片时其状态为 `not_requested`，不是缺包；图片失败不改变已选源素材，但会在第一阶段回执中单独记录。经用户明确授权后，`retry-highlights` 可从 `partial` 或 `failed` 恢复到采集态，只处理已落盘详情对应的缺失高光帧，再重新构建事实包；它不重新提交榜单或详情 RPA。`retry-highlights` 仍是显式第一阶段恢复，第二阶段绝不触发它。
 
-`collect`、`retry-failed`、`retry-unresolved` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
+`collect` 和 `retry-highlights` 在更新运行产物后会自动构建 `facts/`，并输出 facts 清单路径、coverage 和 ready 回执；只有采集门禁、四类事实包和品牌分类都完成时才进入 `ready_for_analysis`，阶段一不会自动分析。`status` 会通过 `facts_status` 报告 `complete`、`missing` 或 `invalid`，并返回当前工作流状态。采集完成后也可使用 `build-facts` 将现有运行目录整理为商业分析的事实底座，该命令只读取本地 `normalized/`、`raw-csv/`、`highlights-manifest.json` 和运行摘要，不调用 RPA 或网络，并在 `facts/` 生成素材榜单、人群、脚本、高光帧四类事实包及 `manifest.json`。事实包只做来源字段整理和可用性标记，不生成商业洞察；脚本为空时会保留 `source_empty` 原因。
 
 ### 第一阶段报告与停止点
 

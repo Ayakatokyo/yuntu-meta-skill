@@ -61,8 +61,11 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertIn("必须显式传 `--output-dir`", body)
         self.assertNotIn("未来运行统一写入技能根目录", body)
 
-    def test_retry_commands_require_explicit_user_authorization(self):
+    def test_rpa_retry_commands_are_removed_but_local_highlight_retry_is_documented(self):
         _, body = load_skill_document()
 
-        self.assertIn("不得自动执行任何重试、续跑或新目录重采", body)
-        self.assertIn("先向用户说明失败事实、已有落盘数据和可选恢复动作", body)
+        self.assertNotIn("retry-failed", body)
+        self.assertNotIn("retry-unresolved", body)
+        self.assertIn("RPA 失败项不自动重试", body)
+        self.assertIn("retry-highlights", body)
+        self.assertIn("不调用 RPA", body)

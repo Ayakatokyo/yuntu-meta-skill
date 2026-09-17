@@ -669,29 +669,12 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(output["facts_coverage"]["ranking_records"], 2)
 
     @mock.patch.dict(collector.os.environ, RUNTIME_ENV, clear=True)
-    def test_each_retry_command_builds_facts_and_reports_manifest(self):
-        commands = (
-            ("retry-failed", "retry_failed_batch", {"shop_id": "shop-1"}),
-            ("retry-unresolved", "retry_unresolved_batch", {"shop_id": "shop-1"}),
-            ("retry-highlights", "retry_highlights_batch", {}),
-        )
-        for command, retry_name, expected in commands:
-            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
-                retry = mock.patch.object(collector, retry_name, return_value=0)
-                build = mock.patch.object(collector, "build_fact_packages", return_value=self._fact_manifest())
-                saved_specs = mock.patch.object(
-                    collector, "_load_saved_specs", return_value=({}, {"metrics": {}})
+    def test_rpa_retry_commands_are_not_available(self):
+        for command in ("retry-failed", "retry-unresolved"):
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                collector._parser().parse_args(
+                    [command, "--shop-id", "shop-1", "--output-dir", "output"]
                 )
-                with retry as retry_mock, build as build_mock, saved_specs, mock.patch("builtins.print") as printer:
-                    argv = [command, "--output-dir", directory]
-                    if "shop_id" in expected:
-                        argv[1:1] = ["--shop-id", expected["shop_id"]]
-                    status = collector.main(argv)
-
-                self.assertEqual(status, 0)
-                build_mock.assert_called_once_with(directory)
-                output = json.loads(printer.call_args.args[0])
-                self.assertEqual(output["facts_manifest_path"], str(Path(directory) / "facts/manifest.json"))
 
     def test_retry_highlights_uses_the_saved_spec_without_a_shop_id(self):
         captured = {}

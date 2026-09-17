@@ -33,17 +33,13 @@ try:
         ConnectorInvoker,
         collection_status,
         fetch_batch,
-        retry_failed_batch,
         retry_highlights_batch,
-        retry_unresolved_batch,
     )
 except ImportError:
     ConnectorInvoker = None
     collection_status = None
     fetch_batch = None
-    retry_failed_batch = None
     retry_highlights_batch = None
-    retry_unresolved_batch = None
 
 try:
     from config_specs import (
@@ -784,17 +780,6 @@ def _parser():
     validate_parser.add_argument("--query-spec", required=True)
     validate_parser.add_argument("--highlight-spec")
     validate_parser.add_argument("--highlight-mode", choices=("on", "off"))
-    retry_parser = commands.add_parser(
-        "retry-failed", help="Retry rejected detail fetches from an existing batch"
-    )
-    retry_parser.add_argument("--shop-id", required=True)
-    retry_parser.add_argument("--output-dir", required=True)
-    retry_unresolved_parser = commands.add_parser(
-        "retry-unresolved",
-        help="Explicitly retry detail requests interrupted before persistence",
-    )
-    retry_unresolved_parser.add_argument("--shop-id", required=True)
-    retry_unresolved_parser.add_argument("--output-dir", required=True)
     retry_highlights_parser = commands.add_parser(
         "retry-highlights",
         help="Retry missing or unavailable highlighter assets from persisted details",
@@ -837,7 +822,7 @@ def _parser():
 
 
 def _enforce_external_runtime_paths(args):
-    if args.command in {"collect", "retry-failed", "retry-unresolved", "retry-highlights"}:
+    if args.command in {"collect", "retry-highlights"}:
         args.output_dir = str(external_runtime_path(args.output_dir, label="run directory"))
     if args.command in {"build-facts", "render-overview", "analyze", "workflow"}:
         args.run_dir = str(external_runtime_path(args.run_dir, label="run directory"))
@@ -1155,7 +1140,7 @@ def main(argv=None):
     try:
         _enforce_external_runtime_paths(args)
         environment = None
-        if args.command in {"runtime-check", "list-accounts", "schema", "collect", "retry-failed", "retry-unresolved"}:
+        if args.command in {"runtime-check", "list-accounts", "schema", "collect"}:
             environment, receipt = _cli_runtime(args)
             if args.command == "runtime-check":
                 print(json.dumps(receipt, ensure_ascii=False, indent=2))
@@ -1200,24 +1185,6 @@ def main(argv=None):
             output["ready_receipt"] = build_ready_receipt(args.output_dir)
             print(json.dumps(output, ensure_ascii=False, indent=2))
             return 0
-        if args.command == "retry-failed":
-            specs = _load_saved_specs(args.output_dir)
-            status = retry_failed_batch(
-                shop_id=args.shop_id, output_dir=args.output_dir,
-                invoker=_batch_invoker(environ=environment), highlight_spec=specs[1]
-            )
-            facts_manifest = _build_facts_after_run(args.output_dir)
-            _print_batch_result(args.output_dir, facts_manifest)
-            return status
-        if args.command == "retry-unresolved":
-            specs = _load_saved_specs(args.output_dir)
-            status = retry_unresolved_batch(
-                shop_id=args.shop_id, output_dir=args.output_dir,
-                invoker=_batch_invoker(environ=environment), highlight_spec=specs[1]
-            )
-            facts_manifest = _build_facts_after_run(args.output_dir)
-            _print_batch_result(args.output_dir, facts_manifest)
-            return status
         if args.command == "retry-highlights":
             specs = _load_saved_specs(args.output_dir)
             status = retry_highlights_batch(
