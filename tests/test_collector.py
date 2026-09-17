@@ -101,6 +101,10 @@ class CollectorTests(unittest.TestCase):
                     "outParamList": [],
                 }],
             }),
+            Response({
+                "success": True,
+                "data": [{"accountId": "shop-1", "platform": "YT_DYNAMIC_PLATFORM"}],
+            }),
             Response({"success": True, "data": {"task_group_id": "tg-101"}}),
         ]
         environment = {
@@ -125,6 +129,35 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["business_params"]["date_type"], "LAST_7_DAYS")
         self.assertNotIn("date_range_type", kwargs["json"]["business_params"])
         self.assertEqual(kwargs["json"]["platform"], "YT_DYNAMIC_PLATFORM")
+
+    def test_selected_rpa_account_must_still_be_authorized(self):
+        self.assertEqual(
+            collector._authorized_rpa_shop_ids(
+                {"data": {"accounts": [{"shopId": "yt-1", "platform": "YT"}]}}, "YT"
+            ),
+            {"yt-1"},
+        )
+        self.assertEqual(
+            collector._authorized_rpa_shop_ids(
+                {"data": [{"accountId": "other", "platform": "YT"}]}, "YT"
+            ),
+            {"other"},
+        )
+
+    def test_unauthorized_selected_rpa_account_stops_before_task_submission(self):
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {"success": True, "data": []}
+        session = mock.Mock()
+        session.post.return_value = response
+
+        with self.assertRaisesRegex(collector.RpaConnectorError, "rpa_shop_not_authorized"):
+            collector._require_authorized_rpa_shop(
+                "yt-expired", "YT", api_base="https://gateway.example/api",
+                authorization="auth", cookies={"YCSESSIONID": "session"}, session=session,
+            )
+        self.assertEqual(session.post.call_count, 1)
+        self.assertTrue(session.post.call_args.args[0].endswith("/rpa/authorizations/query"))
 
     def test_wait_fetch_task_polls_until_completed_and_rejects_old_date_key(self):
         class Response:
@@ -213,6 +246,10 @@ class CollectorTests(unittest.TestCase):
                     "outParamList": [],
                 }],
             }),
+            Response({
+                "success": True,
+                "data": [{"accountId": "shop-1", "platform": "YT_DYNAMIC_PLATFORM"}],
+            }),
             Response({"success": True, "data": {"task_group_id": "tg-list"}}),
             Response({
                 "success": True,
@@ -236,14 +273,15 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(result["payload"][0]["material_id"], "101")
         urls = [call.args[0] for call in session.post.call_args_list]
         self.assertTrue(urls[0].endswith("/dcConnector/v3/listByConnectorCode"))
-        self.assertTrue(urls[1].endswith("/adg/v1/agent/fetch/tasks"))
-        self.assertTrue(urls[2].endswith("/adg/v1/agent/fetch/tasks/status"))
+        self.assertTrue(urls[1].endswith("/adg/v1/agent/rpa/authorizations/query"))
+        self.assertTrue(urls[2].endswith("/adg/v1/agent/fetch/tasks"))
+        self.assertTrue(urls[3].endswith("/adg/v1/agent/fetch/tasks/status"))
         self.assertEqual(
-            session.post.call_args_list[1].kwargs["json"]["function_code"],
+            session.post.call_args_list[2].kwargs["json"]["function_code"],
             "rpa.conn.juliang.yt.industry.content.rankings.list",
         )
         self.assertEqual(
-            session.post.call_args_list[1].kwargs["json"]["platform"],
+            session.post.call_args_list[2].kwargs["json"]["platform"],
             "YT_DYNAMIC_PLATFORM",
         )
 

@@ -28,6 +28,15 @@ market:
     - title: 高光帧分析
       prompt: "识别云图优质素材的点击与互动高光时刻，辅助优化创作"
 skill_form:
+  - key: rpa_shop
+    type: rpa_shop
+    label: 云图授权账号
+    description: 从云图 RPA 已授权账号中选择；榜单与素材详情两个步骤均使用此账号，不再分别填写
+    application_id: RPA_JULIANG_YT_ACCOUNT_PASSWORD
+    value_format: both
+    multiple: false
+    required: true
+
   - key: industry
     type: input
     label: 行业
@@ -38,10 +47,11 @@ skill_form:
   - key: date_range
     type: daterange
     label: 分析周期
-    description: 结束日期不得晚于采集当天前 3 天，分析周期最多 45 天，起止日期均为 YYYY-MM-DD
+    description: 结束日期不得晚于采集当天前 4 天，分析周期最多 45 天，起止日期均为 YYYY-MM-DD
     placeholder: "开始日期,结束日期"
     format: YYYY-MM-DD
     value_format: YYYY-MM-DD
+    max_policy: t_plus_4
     required: true
 
   - key: ranking_metric

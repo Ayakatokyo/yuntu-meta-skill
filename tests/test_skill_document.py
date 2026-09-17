@@ -28,6 +28,7 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertNotIn("<p>", pre_input)
         self.assertNotIn("data-pre-input-blank", pre_input)
         self.assertNotIn("____", pre_input)
+        self.assertIn("__field:rpa_shop__", pre_input)
         self.assertIn("__field:industry__", pre_input)
         self.assertIn("__field:date_range__", pre_input)
         self.assertIn("__field:highlight_mode__", pre_input)
@@ -48,9 +49,29 @@ class SkillDocumentTests(unittest.TestCase):
         keys = [field["key"] for field in form]
         references = __import__("re").findall(r"__field:([a-z0-9_]+)__", pre_input)
 
-        self.assertEqual(len(keys), 27)
+        self.assertEqual(keys[0], "rpa_shop")
+        self.assertEqual(len(keys), 28)
         self.assertEqual(set(references), set(keys))
         self.assertEqual(len(references), len(keys))
+
+    def test_rpa_selector_is_the_only_collection_account_field(self):
+        fields = {field["key"]: field for field in load_skill_form()}
+
+        self.assertEqual(fields["rpa_shop"]["type"], "rpa_shop")
+        self.assertEqual(
+            fields["rpa_shop"]["application_id"],
+            "RPA_JULIANG_YT_ACCOUNT_PASSWORD",
+        )
+        self.assertTrue(fields["rpa_shop"]["required"])
+        _, body = load_skill_document()
+        self.assertIn("rpa_shop.extra.shop_id", body)
+        self.assertIn("rpa_shop_not_authorized", body)
+
+    def test_date_range_uses_the_yuntu_t_plus_4_form_policy(self):
+        fields = {field["key"]: field for field in load_skill_form()}
+
+        self.assertEqual(fields["date_range"]["max_policy"], "t_plus_4")
+        self.assertIn("前 4 天", fields["date_range"]["description"])
 
     def test_runtime_outputs_are_kept_outside_the_skill_installation(self):
         _, body = load_skill_document()

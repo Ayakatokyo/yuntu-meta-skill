@@ -608,6 +608,45 @@ def list_accounts(environ=None, session=None):
     return _gateway_result(response, "list RPA accounts", api_base)
 
 
+def _authorized_rpa_shop_ids(payload, platform):
+    """Return normalized IDs from the gateway authorization response."""
+    accounts = payload.get("data") if isinstance(payload, dict) else None
+    if isinstance(accounts, dict):
+        accounts = accounts.get("accounts") or accounts.get("list") or accounts.get("data")
+    if not isinstance(accounts, list):
+        return set()
+    return {
+        str(item.get("accountId") or item.get("account_id") or item.get("id") or
+            item.get("shop_id") or item.get("shopId") or "").strip()
+        for item in accounts
+        if isinstance(item, dict)
+        and item.get("platform") in (None, "", platform)
+        and str(item.get("accountId") or item.get("account_id") or item.get("id") or
+                item.get("shop_id") or item.get("shopId") or "").strip()
+    }
+
+
+def _require_authorized_rpa_shop(shop_id, platform, *, api_base, authorization, cookies, session):
+    """Stop before a task submission when the selected form account expired."""
+    try:
+        response = session.post(
+            f"{api_base}/adg/v1/agent/rpa/authorizations/query",
+            json={"authorization": authorization, "platform": platform},
+            headers=HEADERS,
+            cookies=cookies,
+            timeout=30,
+        )
+    except Exception as exc:
+        raise RpaConnectorError("unable to verify selected RPA account") from exc
+    authorized = _authorized_rpa_shop_ids(
+        _gateway_result(response, "verify selected RPA account", api_base), platform
+    )
+    if shop_id.strip() not in authorized:
+        raise RpaConnectorError(
+            "rpa_shop_not_authorized: selected RPA shop ID is not authorized for the current credentials"
+        )
+
+
 def _operation_function_code(operation):
     return _operation_client(operation).CONNECTOR_CODE
 
@@ -633,6 +672,10 @@ def submit_fetch_task(operation, shop_id, business_params, *, environ=None, sess
         platform = client.resolve_platform(detail)
     except client.ContractError as exc:
         raise RpaConnectorError(str(exc)) from exc
+    _require_authorized_rpa_shop(
+        shop_id, platform, api_base=api_base, authorization=authorization,
+        cookies=cookies, session=session,
+    )
     try:
         response = session.post(
             f"{api_base}/adg/v1/agent/fetch/tasks",
