@@ -1,9 +1,6 @@
-short-description: "采集云图行业内容榜单与素材详情，生成可审计的阶段一素材总览和后续分析交接包"
+short-description: "分析云图行业榜单、品牌、人群与素材内容，生成可审计的行业内容经营报告"
 tags:
   - 云图
-  - 行业榜单
-  - 短视频内容
-  - 素材分析
 compatibility:
   - data-analysis
   - python
@@ -16,24 +13,20 @@ requires:
     - YCSESSIONID
 market:
   title: "云图素材全景诊断"
-  summary: "按行业、分析周期、榜单类型、品牌和人群筛选云图内容，获取素材秒级详情与可选高光帧，生成离线事实总览并在用户提出问题后继续商业分析。"
+  summary: "按行业、周期、榜单、品牌和人群分析云图内容，拆解素材表现、脚本、人群与高光时刻，生成可审计的行业内容经营报告，并支持进一步提炼选题与创作策略。"
   category:
     key: short_video_content
     label: 短视频内容
   badges:
     - label: 云图
       tone: blue
-    - label: 行业榜单
-      tone: green
-    - label: 内容策略
-      tone: orange
   examples:
     - title: 行业内容榜单
-      prompt: "获取食品饮料行业近7天的云图内容榜单和 TOP10 素材详情"
+      prompt: "洞察食品饮料行业近7天的内容趋势，拆解 TOP10 优质素材"
     - title: 品牌对比
-      prompt: "对比指定品牌的云图素材表现、脚本和人群事实"
+      prompt: "对比指定品牌的内容表现与创作打法，提炼差异化机会"
     - title: 高光帧分析
-      prompt: "获取云图素材详情并生成点击、互动相关高光帧"
+      prompt: "识别云图优质素材的点击与互动高光时刻，辅助优化创作"
 skill_form:
   - key: industry
     type: input
