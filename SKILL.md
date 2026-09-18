@@ -26,6 +26,8 @@ metadata:
 
 该技能负责榜单、详情、高光帧资产和第一阶段离线报告，并通过同一入口分两阶段运行：阶段一先采集并准备事实资产，确认 `ready_for_analysis` 后调用 `render-overview` 生成可审计的数据工作台报告；报告完成后停止并要求用户直接输入分析思路或商业问题，收到有效问题前不会启动商业分析。用户随后提供分析问题和范围，第二阶段才进入商业分析编排。第一阶段报告只展示已采集事实、确定性统计和已验证本地图片，不生成未经引用的商业洞察。列表与新详情分别只静态保存 connector code，平台、输入契约和输出字段全部在运行时读取；历史批次仍可读取旧详情格式，但不作为新批次回退路径。
 
+同一运行目录可以并行承载多个第二阶段问题。采集与事实就绪状态仍保留在运行目录根部；每次 `workflow` 启动会返回唯一的 `analysis_id`，并把该问题的输入、事实选择、模型交接、状态和报告写入 `analysis/<analysis_id>/`。后续回放必须携带该 `analysis_id`；不同 ID 互不覆盖，也不会把运行目录从 `ready_for_analysis` 置为分析中状态。
+
 ## 输入
 
 云图没有独立的 API 报表店铺阶段。先选择 `rpa_shop`：榜单和素材详情均通过 `RPA_JULIANG_YT_ACCOUNT_PASSWORD` 获取，`rpa_shop.extra.shop_id` 是这两个步骤唯一使用的授权账号 ID，必须原样同时传入两步的 `--shop-id`；不得再手填、猜测或替换账号。执行每个阶段前查询当前授权列表：所选账号不在列表时以 `rpa_shop_not_authorized` 停止，不提交后续 RPA 任务，也不改用其他账号。
@@ -124,17 +126,19 @@ python "$SKILL_ROOT/scripts/collector.py" render-overview --run-dir "$WORKSPACE_
 python "$SKILL_ROOT/scripts/collector.py" render-overview --run-dir "$WORKSPACE_ROOT/云图数据资源/example" --output-dir "$WORKSPACE_ROOT/云图数据资源/example/overview-preview"
 # render-overview 成功后停止，等待用户输入商业分析思路或商业问题；收到问题后才进入阶段二
 python "$SKILL_ROOT/scripts/collector.py" workflow --run-dir "$WORKSPACE_ROOT/云图数据资源/example" \
-  --business-question "找出曝光高但转化差的素材" --output "$WORKSPACE_ROOT/云图数据资源/example/analysis/workflow.md"
-# 当前对话模型返回 FactSelectionSpec JSON 后回放本地事实选择
+  --business-question "找出曝光高但转化差的素材"
+# 记录上一步返回的 analysis_id；当前对话模型返回 FactSelectionSpec JSON 后回放本地事实选择
 python "$SKILL_ROOT/scripts/collector.py" workflow --run-dir "$WORKSPACE_ROOT/云图数据资源/example" \
   --business-question "找出曝光高但转化差的素材" \
+  --analysis-id "<analysis_id>" \
   --fact-selection-result "$WORKSPACE_ROOT/云图数据资源/example/selection-result.json" \
-  --output "$WORKSPACE_ROOT/云图数据资源/example/analysis/workflow.md"
+  --output "$WORKSPACE_ROOT/云图数据资源/example/analysis/<analysis_id>/workflow.md"
 # 当前对话模型返回 AnalysisResult JSON 后生成最终报告
 python "$SKILL_ROOT/scripts/collector.py" workflow --run-dir "$WORKSPACE_ROOT/云图数据资源/example" \
   --business-question "找出曝光高但转化差的素材" \
+  --analysis-id "<analysis_id>" \
   --analysis-result "$WORKSPACE_ROOT/云图数据资源/example/analysis-result.json" \
-  --output "$WORKSPACE_ROOT/云图数据资源/example/analysis/workflow.md"
+  --output "$WORKSPACE_ROOT/云图数据资源/example/analysis/<analysis_id>/workflow.md"
 # 历史运行仍可使用旧 AnalysisInput 入口
 python "$SKILL_ROOT/scripts/collector.py" analyze --run-dir "$WORKSPACE_ROOT/云图数据资源/example" --input analysis-input.json --output "$WORKSPACE_ROOT/云图数据资源/example/analysis.md"
 # 历史运行仍可使用旧 AnalysisSpec 入口
@@ -191,4 +195,4 @@ python "$SKILL_ROOT/scripts/collector.py" --runtime-config-stdin --expected-gate
 
 `analyze` 在等待模型时旁写 `<stem>.model-analysis-request.json` 和 `<stem>.prompt-packet.json`；模型结果校验通过后才在 `--output` 写入 Markdown 报告，并旁写 `<stem>.analysis-result.json`。报告正文以核心结论和行动建议开头，随后按 `material_ranking`、`audience`、`script`、`highlight_frames` 固定顺序展示四类事实包；未选择模块明确标注。正文使用 `[E1]` 等短证据编号，不展示 finding 类型、置信度或完整 `fact_refs`；附录 A 保留完整引用索引，附录 B 保留结论类型、置信度、品牌代理说明和逐条审计映射。历史 `AnalysisResult` 缺少展示专用字段时仍按现有 `findings`、`gaps`、`next_questions` 渲染。结果校验失败时只保存包含 `code`、`path`、`message`、`suggestion` 的 `<stem>.analysis-error.json`，保持运行可重试且不生成报告。
 
-新流程优先使用 `workflow`：第一次模型交接只生成 `AnalysisIntent + FactSelectionSpec`，技能在本地从已落盘 `facts/` 选择记录；第二次模型交接只分析 `selected-fact-context.json`。两轮都使用当前会话内模型，阶段二不生成或修改任何 RPA 入参，也不重新采集、规范化或品牌分类。报告额外展示“用户问题 → AnalysisIntent → FactSelectionSpec → 实际选中记录 → 数据缺口 → AI 结论 → fact_refs”链路。不存在的 ROI/GMV 等字段和脚本 `source_empty` 必须显式作为缺口；真实运行中的 1000 条榜单及 306 条未知品牌限制会进入审计。
+新流程优先使用 `workflow`：第一次模型交接只生成 `AnalysisIntent + FactSelectionSpec`，技能在本地从已落盘 `facts/` 选择记录；第二次模型交接只分析同一 `analysis_id` 目录下的 `selected-fact-context.json`。两轮都使用当前会话内模型，阶段二不生成或修改任何 RPA 入参，也不重新采集、规范化或品牌分类。恢复事实选择或提交模型结果时必须显式传入首次回执中的 `--analysis-id`；报告输出必须位于对应 `analysis/<analysis_id>/`，未传 `--output` 时默认使用其中的 `workflow.md`。报告额外展示“用户问题 → AnalysisIntent → FactSelectionSpec → 实际选中记录 → 数据缺口 → AI 结论 → fact_refs”链路。不存在的 ROI/GMV 等字段和脚本 `source_empty` 必须显式作为缺口；真实运行中的 1000 条榜单及 306 条未知品牌限制会进入审计。

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import collector
+from scripts.workflow_state import get_analysis_status, get_workflow_status
 
 
 ROOT = Path(__file__).resolve().parent
@@ -425,8 +426,10 @@ class CollectorTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertFalse(fetch.called)
             self.assertFalse(build.called)
-            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
-            self.assertEqual(summary["workflow"]["stage"], "analysis_completed")
+            request = json.loads(output.with_suffix(".model-analysis-request.json").read_text(encoding="utf-8"))
+            analysis_id = request["host_context"]["analysis_id"]
+            self.assertEqual(get_workflow_status(root)["status"], "ready_for_analysis")
+            self.assertEqual(get_analysis_status(root, analysis_id)["status"], "analysis_completed")
 
     def test_analyze_accepts_only_explicitly_confirmed_default_question(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -601,9 +604,15 @@ class CollectorTests(unittest.TestCase):
                     ])
 
             self.assertEqual(raised.exception.code, 2)
-            summary = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
-            self.assertEqual(summary["status"], "analysis_failed")
-            attempts = json.loads((root / "analysis" / "analysis-attempts.json").read_text(encoding="utf-8"))
+            request = json.loads(
+                (root / "analysis.model-analysis-request.json").read_text(encoding="utf-8")
+            )
+            analysis_id = request["host_context"]["analysis_id"]
+            self.assertEqual(get_workflow_status(root)["status"], "ready_for_analysis")
+            self.assertEqual(get_analysis_status(root, analysis_id)["status"], "analysis_failed")
+            attempts = json.loads(
+                (root / "analysis" / analysis_id / "analysis-attempts.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(attempts[-1]["status"], "failed")
             self.assertTrue((root / "analysis.analysis-error.json").is_file())
             self.assertFalse((root / "analysis.analysis-result.json").exists())

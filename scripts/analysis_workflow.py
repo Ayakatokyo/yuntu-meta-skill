@@ -14,7 +14,12 @@ try:
     from .fact_catalog import build_fact_catalog
     from .fact_selection import FactSelectionSpec
     from .model_analysis_request import build_fact_selection_request, build_model_analysis_request
-    from .workflow_state import begin_fact_selection, complete_fact_selection, get_workflow_status
+    from .workflow_state import (
+        analysis_context_dir,
+        begin_fact_selection,
+        complete_fact_selection,
+        get_workflow_status,
+    )
 except ImportError:  # pragma: no cover - direct script imports
     from analysis_facts import build_fact_index, execute_fact_selection
     from analysis_intent import parse_analysis_intent
@@ -23,7 +28,12 @@ except ImportError:  # pragma: no cover - direct script imports
     from fact_catalog import build_fact_catalog
     from fact_selection import FactSelectionSpec
     from model_analysis_request import build_fact_selection_request, build_model_analysis_request
-    from workflow_state import begin_fact_selection, complete_fact_selection, get_workflow_status
+    from workflow_state import (
+        analysis_context_dir,
+        begin_fact_selection,
+        complete_fact_selection,
+        get_workflow_status,
+    )
 
 
 def _read(path: Path) -> Any:
@@ -63,8 +73,9 @@ def prepare_fact_selection_handoff(run_dir: Path, business_question: str) -> dic
     catalog = build_fact_catalog(root)
     request = build_fact_selection_request(spec, catalog)
     begin_fact_selection(root, spec.analysis_id)
-    _write(root / "analysis" / "analysis-input.json", spec.to_dict())
-    _write(root / "analysis" / "fact-selection-request.json", request)
+    context = analysis_context_dir(root, spec.analysis_id)
+    _write(context / "analysis-input.json", spec.to_dict())
+    _write(context / "fact-selection-request.json", request)
     return request
 
 
@@ -86,7 +97,9 @@ def _selection_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], dict[st
     return intent, selection, run_id.strip(), data_gaps
 
 
-def apply_fact_selection_result(run_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+def apply_fact_selection_result(
+    run_dir: Path, analysis_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     """Validate and execute an AI selection plan against local persisted facts."""
     root = Path(run_dir)
     intent, raw_selection, result_run_id, model_gaps = _selection_payload(payload)
@@ -95,7 +108,10 @@ def apply_fact_selection_result(run_dir: Path, payload: dict[str, Any]) -> dict[
     if result_run_id != expected_run_id:
         raise ValueError(f"selection result run_id does not match facts manifest: {result_run_id} != {expected_run_id}")
     selection = FactSelectionSpec.from_dict(raw_selection)
-    input_payload = _read(root / "analysis" / "analysis-input.json")
+    context = analysis_context_dir(root, analysis_id)
+    input_payload = _read(context / "analysis-input.json")
+    if input_payload.get("analysis_id") != analysis_id:
+        raise ValueError("analysis context does not match analysis_id")
     original_question = input_payload.get("business_question") if isinstance(input_payload, dict) else None
     parsed_intent = parse_analysis_intent(intent)
     if parsed_intent.business_question != original_question:
@@ -122,22 +138,25 @@ def apply_fact_selection_result(run_dir: Path, payload: dict[str, Any]) -> dict[
         "data_gaps": combined_gaps,
         "validation_errors": list(result.validation_errors),
     }
-    _write(root / "analysis" / "analysis-intent.json", intent)
-    _write(root / "analysis" / "fact-selection-spec.json", selection.to_dict())
-    context_path = root / "analysis" / "selected-fact-context.json"
+    _write(context / "analysis-intent.json", intent)
+    _write(context / "fact-selection-spec.json", selection.to_dict())
+    context_path = context / "selected-fact-context.json"
     _write(context_path, serializable)
-    complete_fact_selection(root, context_path)
+    complete_fact_selection(root, analysis_id, context_path)
     return serializable
 
 
-def prepare_model_analysis_handoff(run_dir: Path) -> dict[str, Any]:
+def prepare_model_analysis_handoff(run_dir: Path, analysis_id: str) -> dict[str, Any]:
     """Build the final current-model request from the locally selected facts."""
     root = Path(run_dir)
     manifest = _manifest(root)
-    input_payload = _read(root / "analysis" / "analysis-input.json")
+    context = analysis_context_dir(root, analysis_id)
+    input_payload = _read(context / "analysis-input.json")
+    if input_payload.get("analysis_id") != analysis_id:
+        raise ValueError("analysis context does not match analysis_id")
     status = get_workflow_status(root)
     spec = parse_analysis_input(input_payload, status, manifest)
-    selected_context = _read(root / "analysis" / "selected-fact-context.json")
+    selected_context = _read(context / "selected-fact-context.json")
     if not isinstance(selected_context, dict) or not isinstance(selected_context.get("sections"), dict):
         raise ValueError("selected fact context is missing or invalid")
     selected = {
@@ -147,7 +166,7 @@ def prepare_model_analysis_handoff(run_dir: Path) -> dict[str, Any]:
         "data_gaps": selected_context.get("data_gaps", []),
     }
     fact_index = build_fact_index(selected)
-    intent_path = root / "analysis" / "analysis-intent.json"
+    intent_path = context / "analysis-intent.json"
     standardized_intent = _read(intent_path) if intent_path.is_file() else None
     catalog = build_fact_catalog(root)
     request = build_model_analysis_request(
@@ -157,8 +176,8 @@ def prepare_model_analysis_handoff(run_dir: Path) -> dict[str, Any]:
         standardized_intent=standardized_intent,
         capability_snapshot=catalog.to_dict(),
     )
-    _write(root / "analysis" / "model-analysis-request.json", request)
-    _write(root / "analysis" / "prompt-packet.json", request["host_context"].get("facts", {}))
+    _write(context / "model-analysis-request.json", request)
+    _write(context / "prompt-packet.json", request["host_context"].get("facts", {}))
     return request
 
 

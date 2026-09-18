@@ -10,6 +10,7 @@ from scripts.workflow_state import (
     begin_fact_selection,
     complete_fact_selection,
     complete_model_analysis,
+    get_analysis_status,
     get_workflow_status,
     fail_model_analysis,
     set_stage,
@@ -35,7 +36,7 @@ class WorkflowStateTests(unittest.TestCase):
             persisted = json.loads((root / "run-summary.json").read_text(encoding="utf-8"))
             self.assertEqual(persisted["custom"], {"keep": True})
             self.assertEqual(persisted["workflow"]["stage"], "ready_for_analysis")
-            self.assertEqual(persisted["workflow"]["protocol_version"], "yuntu-two-phase-v1")
+            self.assertEqual(persisted["workflow"]["protocol_version"], "yuntu-two-phase-v2")
             self.assertEqual(len(persisted["workflow"]["history"]), 5)
 
     def test_stage_regression_is_rejected(self):
@@ -76,14 +77,15 @@ class WorkflowStateTests(unittest.TestCase):
             set_stage(root, "ready_for_analysis")
 
             running = begin_model_analysis(root, "request-1")
-            self.assertEqual(running["workflow"]["stage"], "analysis_running")
-            self.assertEqual(running["workflow"]["metadata"]["request_id"], "request-1")
+            self.assertEqual(running["stage"], "analysis_running")
+            self.assertEqual(running["metadata"]["request_id"], "request-1")
+            self.assertEqual(get_workflow_status(root)["status"], "ready_for_analysis")
 
             result_path = root / "analysis.result.json"
             result_path.write_text("{}", encoding="utf-8")
-            completed = complete_model_analysis(root, result_path)
-            self.assertEqual(completed["workflow"]["stage"], "analysis_completed")
-            self.assertEqual(completed["workflow"]["metadata"]["result_path"], str(result_path))
+            completed = complete_model_analysis(root, "request-1", result_path)
+            self.assertEqual(completed["stage"], "analysis_completed")
+            self.assertEqual(completed["metadata"]["result_path"], str(result_path))
 
     def test_fact_selection_and_analysis_states_are_resumable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -91,15 +93,15 @@ class WorkflowStateTests(unittest.TestCase):
             set_stage(root, "ready_for_analysis")
 
             waiting = begin_fact_selection(root, "analysis-1")
-            self.assertEqual(waiting["workflow"]["stage"], "awaiting_fact_selection")
+            self.assertEqual(waiting["stage"], "awaiting_fact_selection")
 
             selection_path = root / "selection.json"
             selection_path.write_text("{}", encoding="utf-8")
-            selected = complete_fact_selection(root, selection_path)
-            self.assertEqual(selected["workflow"]["stage"], "facts_selected")
+            selected = complete_fact_selection(root, "analysis-1", selection_path)
+            self.assertEqual(selected["stage"], "facts_selected")
 
-            running = begin_model_analysis(root, "analysis-1")
-            self.assertEqual(running["workflow"]["stage"], "analysis_running")
+            running = begin_model_analysis(root, "analysis-1", "analysis-1")
+            self.assertEqual(running["stage"], "analysis_running")
 
     def test_failed_model_analysis_is_explicitly_failed_and_retryable(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -107,12 +109,12 @@ class WorkflowStateTests(unittest.TestCase):
             set_stage(root, "ready_for_analysis")
             begin_model_analysis(root, "request-1")
 
-            failed = fail_model_analysis(root, "request-1", "invalid response")
+            failed = fail_model_analysis(root, "request-1", "request-1", "invalid response")
 
-            self.assertEqual(failed["workflow"]["stage"], "analysis_failed")
-            self.assertEqual(get_workflow_status(root)["status"], "analysis_failed")
-            self.assertEqual(failed["workflow"]["metadata"]["error"], "invalid response")
-            self.assertTrue(get_workflow_status(root)["summary"]["workflow"]["history"][-1]["stage"] == "analysis_failed")
+            self.assertEqual(failed["stage"], "analysis_failed")
+            self.assertEqual(get_analysis_status(root, "request-1")["status"], "analysis_failed")
+            self.assertEqual(failed["metadata"]["error"], "invalid response")
+            self.assertTrue(failed["history"][-1]["stage"] == "analysis_failed")
 
     def test_ready_receipt_contains_coverage_packages_and_next_step(self):
         with tempfile.TemporaryDirectory() as directory:

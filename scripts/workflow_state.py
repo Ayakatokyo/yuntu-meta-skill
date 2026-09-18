@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover - direct script imports
     from yuntu_run_state import load_run_state, save_run_state, sha256_file
 
 
-WORKFLOW_PROTOCOL_VERSION = "yuntu-two-phase-v1"
+WORKFLOW_PROTOCOL_VERSION = "yuntu-two-phase-v2"
 RUN_SUMMARY_NAME = "run-summary.json"
 COLLECTION_STAGES = (
     "collecting",
@@ -49,8 +49,69 @@ def _read_json(path: Path):
         return json.load(source)
 
 
-def _attempts_path(root: Path) -> Path:
-    return root / "analysis" / "analysis-attempts.json"
+def _attempts_path(context_root: Path) -> Path:
+    return context_root / "analysis-attempts.json"
+
+
+def analysis_context_dir(run_root: Path, analysis_id: str) -> Path:
+    """Return the isolated artifact directory for one phase-two analysis."""
+    if not isinstance(analysis_id, str) or not analysis_id.strip():
+        raise WorkflowStateError("analysis_id is required")
+    normalized = analysis_id.strip()
+    if Path(normalized).name != normalized or normalized in {".", ".."}:
+        raise WorkflowStateError("analysis_id must be a single path segment")
+    return Path(run_root) / "analysis" / normalized
+
+
+def _analysis_state_path(run_root: Path, analysis_id: str) -> Path:
+    return analysis_context_dir(run_root, analysis_id) / "workflow-state.json"
+
+
+def _load_analysis_state(run_root: Path, analysis_id: str) -> dict:
+    path = _analysis_state_path(run_root, analysis_id)
+    if not path.is_file():
+        return {"analysis_id": analysis_id.strip(), "stage": "not_started", "history": []}
+    try:
+        payload = _read_json(path)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise WorkflowStateError(f"unable to load analysis state: {path}") from exc
+    if not isinstance(payload, dict):
+        raise WorkflowStateError(f"analysis state must be an object: {path}")
+    return payload
+
+
+def _set_analysis_stage(run_root: Path, analysis_id: str, stage: str, **metadata) -> dict:
+    if stage not in ANALYSIS_STAGES:
+        raise WorkflowStateError(f"unsupported analysis stage: {stage}")
+    state = _load_analysis_state(run_root, analysis_id)
+    current = state.get("stage", "not_started")
+    if current not in {"not_started", *ANALYSIS_STAGES}:
+        raise WorkflowStateError(f"unsupported persisted analysis stage: {current}")
+    if current in ANALYSIS_STAGES and _STAGE_INDEX[stage] < _STAGE_INDEX[current]:
+        retry = current == "analysis_failed" and stage == "analysis_running"
+        if not retry:
+            raise WorkflowStateError(f"analysis stage cannot move backward: {current} -> {stage}")
+    history = state.get("history")
+    if not isinstance(history, list):
+        history = []
+    event = {
+        "stage": stage,
+        "at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    event.update(metadata)
+    history.append(event)
+    state.update({
+        "protocol_version": WORKFLOW_PROTOCOL_VERSION,
+        "analysis_id": analysis_id.strip(),
+        "stage": stage,
+        "history": history,
+    })
+    if metadata:
+        state["metadata"] = dict(metadata)
+    path = _analysis_state_path(run_root, analysis_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomically(state, path)
+    return state
 
 
 def _load_attempts(root: Path) -> list[dict]:
@@ -250,75 +311,89 @@ def set_stage(run_root: Path, stage: str, **metadata) -> dict:
     return summary
 
 
-def begin_model_analysis(run_root: Path, request_id: str) -> dict:
-    """Move a ready run into model execution for one request."""
+def begin_model_analysis(run_root: Path, request_id: str, analysis_id: str | None = None) -> dict:
+    """Move one isolated analysis context into model execution."""
     if not isinstance(request_id, str) or not request_id.strip():
         raise WorkflowStateError("request_id is required")
-    status = get_workflow_status(run_root)
-    if status["stage"] not in {"ready_for_analysis", "facts_selected", "analysis_failed", "analysis_completed"}:
-        raise WorkflowStateError(
-            "model analysis requires ready_for_analysis, facts_selected, or analysis_completed"
-        )
+    resolved_id = analysis_id or request_id
+    status = get_analysis_status(run_root, resolved_id)
+    if status["stage"] not in {"not_started", "facts_selected", "analysis_failed"}:
+        raise WorkflowStateError("model analysis requires a new, selected, or failed analysis context")
     root = Path(run_root)
     attempt_id = uuid.uuid4().hex
-    attempts = _load_attempts(root)
+    context_root = analysis_context_dir(root, resolved_id)
+    attempts = _load_attempts(context_root)
     attempts.append({"attempt_id": attempt_id, "request_id": request_id.strip(), "status": "running", "started_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
-    _save_attempts(root, attempts)
-    return set_stage(root, "analysis_running", request_id=request_id.strip(), attempt_id=attempt_id)
+    _save_attempts(context_root, attempts)
+    return _set_analysis_stage(root, resolved_id, "analysis_running", request_id=request_id.strip(), attempt_id=attempt_id)
 
 
 def begin_fact_selection(run_root: Path, analysis_id: str) -> dict:
     """Begin the local fact-selection handoff for a phase-two analysis."""
-    if not isinstance(analysis_id, str) or not analysis_id.strip():
-        raise WorkflowStateError("analysis_id is required")
-    status = get_workflow_status(run_root)
-    if status["stage"] not in {"ready_for_analysis", "analysis_failed", "analysis_completed"}:
-        raise WorkflowStateError(
-            "fact selection requires ready_for_analysis or analysis_completed"
-        )
-    return set_stage(Path(run_root), "awaiting_fact_selection", analysis_id=analysis_id.strip())
+    run_status = get_workflow_status(run_root)
+    if run_status["stage"] != "ready_for_analysis":
+        raise WorkflowStateError("fact selection requires ready_for_analysis")
+    status = get_analysis_status(run_root, analysis_id)
+    if status["stage"] != "not_started":
+        raise WorkflowStateError("analysis context already exists")
+    return _set_analysis_stage(run_root, analysis_id, "awaiting_fact_selection")
 
 
-def complete_fact_selection(run_root: Path, selection_path: Path) -> dict:
-    """Persist a validated local selection and make the run ready for analysis."""
+def complete_fact_selection(run_root: Path, analysis_id: str, selection_path: Path) -> dict:
+    """Persist a validated local selection in one analysis context."""
     path = Path(selection_path)
     if not path.is_file():
         raise WorkflowStateError(f"fact selection is missing: {path}")
-    status = get_workflow_status(run_root)
+    status = get_analysis_status(run_root, analysis_id)
     if status["stage"] != "awaiting_fact_selection":
         raise WorkflowStateError("fact selection is not awaiting a result")
-    return set_stage(Path(run_root), "facts_selected", selection_path=str(path))
+    return _set_analysis_stage(run_root, analysis_id, "facts_selected", selection_path=str(path))
 
 
-def complete_model_analysis(run_root: Path, result_path: Path, report_path: Path | None = None) -> dict:
-    """Persist successful model completion metadata after local validation."""
+def complete_model_analysis(run_root: Path, analysis_id: str, result_path: Path, report_path: Path | None = None) -> dict:
+    """Persist successful completion metadata in one analysis context."""
     path = Path(result_path)
     if not path.is_file():
         raise WorkflowStateError(f"analysis result is missing: {path}")
     if report_path is not None and not Path(report_path).is_file():
         raise WorkflowStateError(f"analysis report is missing: {report_path}")
-    status = get_workflow_status(run_root)
+    status = get_analysis_status(run_root, analysis_id)
     if status["stage"] != "analysis_running":
         raise WorkflowStateError("model analysis is not running")
     root = Path(run_root)
-    attempts = _load_attempts(root)
+    attempts = _load_attempts(analysis_context_dir(root, analysis_id))
     if attempts and attempts[-1].get("status") == "running":
         attempts[-1].update({"status": "completed", "result_path": str(path), "report_path": str(report_path) if report_path else None, "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
-        _save_attempts(root, attempts)
-    return set_stage(root, "analysis_completed", result_path=str(path))
+        _save_attempts(analysis_context_dir(root, analysis_id), attempts)
+    return _set_analysis_stage(root, analysis_id, "analysis_completed", result_path=str(path))
 
 
-def fail_model_analysis(run_root: Path, request_id: str, error: str) -> dict:
-    """Return a failed model attempt to a ready, retryable run."""
-    status = get_workflow_status(run_root)
+def fail_model_analysis(run_root: Path, analysis_id: str, request_id: str, error: str) -> dict:
+    """Return a failed model attempt to a retryable analysis context."""
+    status = get_analysis_status(run_root, analysis_id)
     if status["stage"] != "analysis_running":
         raise WorkflowStateError("model analysis is not running")
     root = Path(run_root)
-    attempts = _load_attempts(root)
+    attempts = _load_attempts(analysis_context_dir(root, analysis_id))
     if attempts and attempts[-1].get("status") == "running":
         attempts[-1].update({"status": "failed", "error": str(error), "failed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
-        _save_attempts(root, attempts)
-    return set_stage(root, "analysis_failed", request_id=request_id, error=str(error))
+        _save_attempts(analysis_context_dir(root, analysis_id), attempts)
+    return _set_analysis_stage(root, analysis_id, "analysis_failed", request_id=request_id, error=str(error))
+
+
+def get_analysis_status(run_root: Path, analysis_id: str) -> dict:
+    """Read one phase-two context without changing collection readiness."""
+    state = _load_analysis_state(run_root, analysis_id)
+    stage = state.get("stage", "not_started")
+    if stage not in {"not_started", *ANALYSIS_STAGES}:
+        return {"status": "failed", "stage": "failed", "analysis_id": analysis_id, "error": "analysis state is invalid"}
+    return {
+        "status": stage,
+        "stage": stage,
+        "analysis_id": analysis_id.strip(),
+        "state_path": str(_analysis_state_path(run_root, analysis_id)),
+        "state": state,
+    }
 
 
 def get_workflow_status(run_root: Path) -> dict:
@@ -337,7 +412,15 @@ def get_workflow_status(run_root: Path) -> dict:
                 "run_id": None,
                 "error": "run summary is unreadable",
             }
-    stage = _legacy_stage(root, summary)
+    persisted_stage = _legacy_stage(root, summary)
+    # v1 persisted analysis state beside collection state in run-summary.json.
+    # Facts remain usable while those legacy contexts exist, so v2 exposes the
+    # run as ready and keeps any new analysis state under its own context.
+    stage = (
+        "ready_for_analysis"
+        if persisted_stage in ANALYSIS_STAGES and _manifest_is_complete(root)
+        else persisted_stage
+    )
     return {
         "status": stage,
         "stage": stage,
@@ -345,6 +428,7 @@ def get_workflow_status(run_root: Path) -> dict:
         "run_id": summary.get("runId") or summary.get("run_id"),
         "summary_path": str(summary_path) if summary_path.is_file() else None,
         "collection_status": summary.get("collectionStatus") or summary.get("status"),
+        "legacy_analysis_stage": persisted_stage if persisted_stage in ANALYSIS_STAGES else None,
         "summary": summary,
     }
 

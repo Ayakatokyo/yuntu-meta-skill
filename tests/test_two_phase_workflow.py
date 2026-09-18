@@ -128,7 +128,7 @@ class TwoPhaseWorkflowTests(unittest.TestCase):
                 "facts/audience.json",
                 "facts/highlight-frames.json",
             })
-            self.assertEqual(get_workflow_status(run_copy)["status"], "analysis_completed")
+            self.assertEqual(get_workflow_status(run_copy)["status"], "ready_for_analysis")
             result = json.loads(request_output.with_suffix(".analysis-result.json").read_text(encoding="utf-8"))
             self.assertTrue(all(
                 finding["fact_refs"]
@@ -174,7 +174,7 @@ class TwoPhaseWorkflowTests(unittest.TestCase):
             self.assertFalse(fetch.called)
             self.assertFalse(build.called)
             self.assertEqual(before_summary, (run_copy / "normalized/list-records.json").read_bytes())
-            self.assertEqual(get_workflow_status(run_copy)["status"], "analysis_completed")
+            self.assertEqual(get_workflow_status(run_copy)["status"], "ready_for_analysis")
             result = json.loads(output.with_suffix(".analysis-result.json").read_text(encoding="utf-8"))
             self.assertTrue(all(
                 finding["fact_refs"]

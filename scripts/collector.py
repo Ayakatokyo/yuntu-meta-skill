@@ -71,20 +71,24 @@ except ImportError:
 
 try:
     from workflow_state import (
+        analysis_context_dir,
         begin_model_analysis,
         build_ready_receipt,
         complete_model_analysis,
         fail_model_analysis,
+        get_analysis_status,
         get_workflow_status,
         set_stage,
         WorkflowStateError,
     )
 except ImportError:
     from .workflow_state import (
+        analysis_context_dir,
         begin_model_analysis,
         build_ready_receipt,
         complete_model_analysis,
         fail_model_analysis,
+        get_analysis_status,
         get_workflow_status,
         set_stage,
         WorkflowStateError,
@@ -852,9 +856,10 @@ def _parser():
     )
     workflow_parser.add_argument("--run-dir", required=True)
     workflow_parser.add_argument("--business-question", required=True)
+    workflow_parser.add_argument("--analysis-id", help="Resume one isolated phase-two analysis context")
     workflow_parser.add_argument("--fact-selection-result")
     workflow_parser.add_argument("--analysis-result", help="Optional current-model AnalysisResult JSON path")
-    workflow_parser.add_argument("--output", required=True)
+    workflow_parser.add_argument("--output", help="Report path inside analysis/<analysis_id>; defaults to workflow.md in that context")
     fetch_parser = commands.add_parser("collect", help="Collect configured rankings, details, and frames")
     fetch_parser.add_argument("--shop-id", required=True)
     fetch_parser.add_argument("--query-spec", required=True)
@@ -869,7 +874,7 @@ def _enforce_external_runtime_paths(args):
         args.output_dir = str(external_runtime_path(args.output_dir, label="run directory"))
     if args.command in {"build-facts", "render-overview", "analyze", "workflow"}:
         args.run_dir = str(external_runtime_path(args.run_dir, label="run directory"))
-    if args.command in {"analyze", "workflow"}:
+    if args.command == "analyze" or (args.command == "workflow" and args.output):
         args.output = str(external_runtime_path(args.output, label="analysis output"))
     if args.command == "render-overview" and args.output_dir:
         args.output_dir = str(external_runtime_path(args.output_dir, label="overview output directory"))
@@ -978,19 +983,20 @@ def _analysis_context(run_dir, spec_path=None, input_payload=None):
     }
 
 
-def _workflow_analysis_context(run_dir):
+def _workflow_analysis_context(run_dir, analysis_id):
     """Load the persisted local selection for the final workflow handoff."""
     root = Path(run_dir)
     manifest = json.loads((root / "facts" / "manifest.json").read_text(encoding="utf-8"))
-    input_payload = json.loads((root / "analysis" / "analysis-input.json").read_text(encoding="utf-8"))
+    context_root = analysis_context_dir(root, analysis_id)
+    input_payload = json.loads((context_root / "analysis-input.json").read_text(encoding="utf-8"))
     spec = parse_analysis_input(input_payload, get_workflow_status(root), manifest)
     selected_context = json.loads(
-        (root / "analysis" / "selected-fact-context.json").read_text(encoding="utf-8")
+        (context_root / "selected-fact-context.json").read_text(encoding="utf-8")
     )
     if not isinstance(selected_context, dict) or not isinstance(selected_context.get("sections"), dict):
         raise ValueError("selected fact context is missing or invalid")
     selection_payload = json.loads(
-        (root / "analysis" / "fact-selection-spec.json").read_text(encoding="utf-8")
+        (context_root / "fact-selection-spec.json").read_text(encoding="utf-8")
     )
     selected_packages = selection_payload.get("packages", []) if isinstance(selection_payload, dict) else []
     selected_sections = [item for item in selected_packages if item in {
@@ -1008,7 +1014,7 @@ def _workflow_analysis_context(run_dir):
     }
     fact_index = build_fact_index(selected)
     packet = build_prompt_packet(spec, selected, fact_index)
-    intent_path = root / "analysis" / "analysis-intent.json"
+    intent_path = context_root / "analysis-intent.json"
     standardized_intent = json.loads(intent_path.read_text(encoding="utf-8")) if intent_path.is_file() else None
     catalog = build_fact_catalog(root)
     request = build_model_analysis_request(
@@ -1023,7 +1029,7 @@ def _workflow_analysis_context(run_dir):
         raise ValueError("ModelAnalysisRequest 校验失败: " + "; ".join(request_errors))
     phase_two = {
         "business_question": spec.business_question,
-        "intent": json.loads((root / "analysis" / "analysis-intent.json").read_text(encoding="utf-8")),
+        "intent": json.loads((context_root / "analysis-intent.json").read_text(encoding="utf-8")),
         "selection_spec": selection_payload,
         "selection_summary": selected_context.get("selection_summary", {}),
         "aggregates": selected_context.get("aggregates", {}),
@@ -1038,6 +1044,19 @@ def _workflow_analysis_context(run_dir):
         "request": request,
         "phase_two": phase_two,
     }
+
+
+def _workflow_output_path(run_dir, analysis_id, output):
+    """Keep each workflow report inside its analysis-specific artifact directory."""
+    context_root = analysis_context_dir(Path(run_dir), analysis_id).resolve()
+    path = (Path(output) if output else context_root / "workflow.md").resolve()
+    try:
+        path.relative_to(context_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"workflow output must be inside analysis context: {context_root}"
+        ) from exc
+    return path
 
 
 def _analysis_pipeline(run_dir, spec_path=None, result_path=None, input_payload=None, *, context=None):
@@ -1245,14 +1264,19 @@ def main(argv=None):
             return 0
         if args.command == "workflow":
             if not args.fact_selection_result and not args.analysis_result:
-                status = get_workflow_status(args.run_dir)
-                if status["status"] in {"facts_selected", "analysis_failed"} and (Path(args.run_dir) / "analysis/selected-fact-context.json").is_file():
-                    request = prepare_model_analysis_handoff(args.run_dir)
+                if args.analysis_id:
+                    context_status = get_analysis_status(args.run_dir, args.analysis_id)
+                    if context_status["status"] not in {"facts_selected", "analysis_failed"}:
+                        raise ValueError(
+                            "analysis context requires facts_selected or analysis_failed before model handoff"
+                        )
+                    request = prepare_model_analysis_handoff(args.run_dir, args.analysis_id)
+                    context_root = analysis_context_dir(args.run_dir, args.analysis_id)
                     print(json.dumps({
                         "status": "awaiting_model_analysis",
                         "analysis_id": request["host_context"]["analysis_id"],
                         "run_id": request["host_context"]["run_id"],
-                        "model_analysis_request_path": str(Path(args.run_dir) / "analysis/model-analysis-request.json"),
+                        "model_analysis_request_path": str(context_root / "model-analysis-request.json"),
                         "host_handoff": {
                             "model": "current_conversation_model",
                             "response_schema": "AnalysisResult",
@@ -1261,27 +1285,32 @@ def main(argv=None):
                     }, ensure_ascii=False, indent=2))
                     return 0
                 request = prepare_fact_selection_handoff(args.run_dir, args.business_question)
+                analysis_id = request["host_context"]["analysis_id"]
+                context_root = analysis_context_dir(args.run_dir, analysis_id)
                 print(json.dumps({
                     "status": "awaiting_fact_selection",
-                    "analysis_id": request["host_context"]["analysis_id"],
+                    "analysis_id": analysis_id,
                     "run_id": request["host_context"]["run_id"],
-                    "fact_selection_request_path": str(Path(args.run_dir) / "analysis/fact-selection-request.json"),
+                    "fact_selection_request_path": str(context_root / "fact-selection-request.json"),
                     "host_handoff": {
                         "model": "current_conversation_model",
                         "response_schema": "FactSelectionSpec",
                         "response_format": "JSON object with intent, selection_spec, and run_id",
-                        "resume_with": "将模型返回的 JSON 保存后，使用同一 run-dir 和 --fact-selection-result 重新执行 workflow。",
+                        "resume_with": "将模型返回的 JSON 保存后，使用同一 run-dir、analysis_id 和 --fact-selection-result 重新执行 workflow。",
                     },
                 }, ensure_ascii=False, indent=2))
                 return 0
+            if not args.analysis_id:
+                raise ValueError("--analysis-id is required when resuming a workflow analysis")
+            context_root = analysis_context_dir(args.run_dir, args.analysis_id)
             if args.fact_selection_result:
-                workflow_status = get_workflow_status(args.run_dir)
+                workflow_status = get_analysis_status(args.run_dir, args.analysis_id)
                 if workflow_status["status"] == "awaiting_fact_selection":
                     selection_payload = json.loads(Path(args.fact_selection_result).read_text(encoding="utf-8"))
-                    selected = apply_fact_selection_result(args.run_dir, selection_payload)
+                    selected = apply_fact_selection_result(args.run_dir, args.analysis_id, selection_payload)
                 elif workflow_status["status"] == "facts_selected":
                     selected_context = json.loads(
-                        (Path(args.run_dir) / "analysis/selected-fact-context.json").read_text(encoding="utf-8")
+                        (context_root / "selected-fact-context.json").read_text(encoding="utf-8")
                     )
                     selected = {
                         "selection_summary": selected_context.get("selection_summary", {}),
@@ -1290,39 +1319,41 @@ def main(argv=None):
                     raise ValueError("fact selection requires awaiting_fact_selection or facts_selected")
             else:
                 selected = {"selection_summary": {}}
-            request = prepare_model_analysis_handoff(args.run_dir)
+            request = prepare_model_analysis_handoff(args.run_dir, args.analysis_id)
             if args.analysis_result:
-                context = _workflow_analysis_context(args.run_dir)
+                context = _workflow_analysis_context(args.run_dir, args.analysis_id)
                 request_id = context["request"]["host_context"]["analysis_id"]
-                begin_model_analysis(args.run_dir, request_id)
+                output = _workflow_output_path(args.run_dir, args.analysis_id, args.output)
+                begin_model_analysis(args.run_dir, request_id, args.analysis_id)
                 try:
                     report, result_document, packet, _ = _analysis_pipeline(
                         args.run_dir,
                         input_payload=json.loads(
-                            (Path(args.run_dir) / "analysis/analysis-input.json").read_text(encoding="utf-8")
+                            (context_root / "analysis-input.json").read_text(encoding="utf-8")
                         ),
                         result_path=args.analysis_result,
                         context=context,
                     )
-                    _write_analysis_outputs(args.output, report, result_document, packet)
+                    _write_analysis_outputs(output, report, result_document, packet)
                     complete_model_analysis(
                         args.run_dir,
-                        _analysis_output_paths(args.output)["result"],
-                        _analysis_output_paths(args.output)["report"],
+                        args.analysis_id,
+                        _analysis_output_paths(output)["result"],
+                        _analysis_output_paths(output)["report"],
                     )
                 except Exception as exc:
                     try:
-                        fail_model_analysis(args.run_dir, request_id, str(exc))
-                        _write_analysis_error(args.output, context["request"], exc)
+                        fail_model_analysis(args.run_dir, args.analysis_id, request_id, str(exc))
+                        _write_analysis_error(output, context["request"], exc)
                     except WorkflowStateError:
                         pass
                     raise
                 print(json.dumps({
                     "status": "analysis_completed",
-                    "report_path": str(_analysis_output_paths(args.output)["report"]),
-                    "analysis_result_path": str(_analysis_output_paths(args.output)["result"]),
-                    "model_analysis_request_path": str(_analysis_output_paths(args.output)["request"]),
-                    "prompt_packet_path": str(_analysis_output_paths(args.output)["prompt"]),
+                    "report_path": str(_analysis_output_paths(output)["report"]),
+                    "analysis_result_path": str(_analysis_output_paths(output)["result"]),
+                    "model_analysis_request_path": str(_analysis_output_paths(output)["request"]),
+                    "prompt_packet_path": str(_analysis_output_paths(output)["prompt"]),
                 }, ensure_ascii=False, indent=2))
                 return 0
             print(json.dumps({
@@ -1330,7 +1361,7 @@ def main(argv=None):
                 "analysis_id": request["host_context"]["analysis_id"],
                 "run_id": request["host_context"]["run_id"],
                 "selected_record_counts": selected["selection_summary"]["selected_record_counts"],
-                "model_analysis_request_path": str(Path(args.run_dir) / "analysis/model-analysis-request.json"),
+                "model_analysis_request_path": str(context_root / "model-analysis-request.json"),
                 "host_handoff": {
                     "model": "current_conversation_model",
                     "response_schema": "AnalysisResult",
@@ -1382,12 +1413,13 @@ def main(argv=None):
                 _write_analysis_outputs(args.output, report, result_document, packet)
                 complete_model_analysis(
                     args.run_dir,
+                    request_id,
                     _analysis_output_paths(args.output)["result"],
                     _analysis_output_paths(args.output)["report"],
                 )
             except Exception as exc:
                 try:
-                    fail_model_analysis(args.run_dir, request_id, str(exc))
+                    fail_model_analysis(args.run_dir, request_id, request_id, str(exc))
                     _write_analysis_error(args.output, request, exc)
                 except WorkflowStateError:
                     pass

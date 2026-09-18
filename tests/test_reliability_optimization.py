@@ -22,6 +22,7 @@ from scripts.workflow_state import (
     complete_model_analysis,
     fail_model_analysis,
     get_workflow_status,
+    get_analysis_status,
     set_stage,
 )
 
@@ -168,30 +169,31 @@ def test_handoffs_expose_catalog_then_only_selected_context(tmp_path):
 def test_failed_analysis_is_audited_and_retryable_without_recollection(tmp_path):
     set_stage(tmp_path, "ready_for_analysis")
     begin_model_analysis(tmp_path, "analysis-1")
-    fail_model_analysis(tmp_path, "analysis-1", "invalid fact reference")
+    fail_model_analysis(tmp_path, "analysis-1", "analysis-1", "invalid fact reference")
 
-    failed = get_workflow_status(tmp_path)
+    failed = get_analysis_status(tmp_path, "analysis-1")
     assert failed["status"] == "analysis_failed"
-    attempts = json.loads((tmp_path / "analysis" / "analysis-attempts.json").read_text())
+    attempts = json.loads((tmp_path / "analysis" / "analysis-1" / "analysis-attempts.json").read_text())
     assert attempts[-1]["status"] == "failed"
 
-    begin_model_analysis(tmp_path, "analysis-1-retry")
-    result_path = tmp_path / "analysis" / "result.json"
+    begin_model_analysis(tmp_path, "analysis-1-retry", "analysis-1")
+    result_path = tmp_path / "analysis" / "analysis-1" / "result.json"
     _write_json(result_path, {"results": []})
-    complete_model_analysis(tmp_path, result_path)
-    assert get_workflow_status(tmp_path)["status"] == "analysis_completed"
-    attempts = json.loads((tmp_path / "analysis" / "analysis-attempts.json").read_text())
+    complete_model_analysis(tmp_path, "analysis-1", result_path)
+    assert get_workflow_status(tmp_path)["status"] == "ready_for_analysis"
+    assert get_analysis_status(tmp_path, "analysis-1")["status"] == "analysis_completed"
+    attempts = json.loads((tmp_path / "analysis" / "analysis-1" / "analysis-attempts.json").read_text())
     assert [attempt["status"] for attempt in attempts[-2:]] == ["failed", "completed"]
 
 
 def test_analysis_cannot_complete_when_report_artifact_is_missing(tmp_path):
     set_stage(tmp_path, "ready_for_analysis")
     begin_model_analysis(tmp_path, "analysis-1")
-    result_path = tmp_path / "analysis" / "result.json"
+    result_path = tmp_path / "analysis-1" / "result.json"
     _write_json(result_path, {"results": []})
 
     with pytest.raises(WorkflowStateError, match="report is missing"):
-        complete_model_analysis(tmp_path, result_path, tmp_path / "analysis" / "report.md")
+        complete_model_analysis(tmp_path, "analysis-1", result_path, tmp_path / "analysis-1" / "report.md")
 
 
 def test_result_validation_reports_canonical_fact_ref_errors():
