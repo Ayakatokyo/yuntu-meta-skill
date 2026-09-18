@@ -1,4 +1,4 @@
-short-description: "分析云图行业榜单、品牌、人群与素材内容，生成可审计的行业内容经营报告"
+short-description: "采集云图行业榜单、品牌、人群与素材事实，形成支持自定义分析的数据工作台"
 tags:
   - 云图
 compatibility:
@@ -12,8 +12,8 @@ requires:
     - YUCE_SESSION_ID
     - YCSESSIONID
 market:
-  title: "云图素材全景诊断"
-  summary: "按行业、周期、榜单、品牌和人群分析云图内容，拆解素材表现、脚本、人群与高光时刻，生成可审计的行业内容经营报告，并支持进一步提炼选题与创作策略。"
+  title: "云图行业素材数据工作台"
+  summary: "按行业、周期、榜单、品牌和人群采集云图素材及详情事实，沉淀可审计的数据资产，支持客户后续自定义内容分析。"
   category:
     key: short_video_content
     label: 短视频内容
@@ -21,12 +21,12 @@ market:
     - label: 云图
       tone: blue
   examples:
-    - title: 行业内容榜单
-      prompt: "洞察食品饮料行业近7天的内容趋势，拆解 TOP10 优质素材"
-    - title: 品牌对比
-      prompt: "对比指定品牌的内容表现与创作打法，提炼差异化机会"
-    - title: 高光帧分析
-      prompt: "识别云图优质素材的点击与互动高光时刻，辅助优化创作"
+    - title: 行业素材数据采集
+      prompt: "采集食品饮料行业近7天的云图榜单、品牌、人群和 TOP10 素材详情"
+    - title: 品牌素材数据对比
+      prompt: "采集并对比指定品牌的云图素材表现与内容事实，为后续自定义分析提供数据"
+    - title: 高光帧数据提取
+      prompt: "提取云图素材中的点击与互动高光时刻，为后续自定义内容分析提供证据"
 skill_form:
   - key: rpa_shop
     type: rpa_shop
