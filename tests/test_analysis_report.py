@@ -59,25 +59,30 @@ class AnalysisReportTests(unittest.TestCase):
             self.assertIn(f"## {heading}", report)
         self.assertIn("run-1", report)
         self.assertIn("2026-08-30T10:00:00Z", report)
-        self.assertIn("facts/material-ranking.json#/records/0", report)
-        self.assertIn("facts/script.json", report)
-        self.assertIn("完整 fact_refs 索引", report)
+        self.assertIn("素材榜单事实", report)
+        self.assertIn("脚本内容事实", report)
+        self.assertIn("支持多少条结论", report)
         self.assertIn("相关线索不等于因果关系", report)
-        self.assertIn("品牌代理识别", report)
+        self.assertIn("品牌代理推断", report)
 
     def test_body_uses_short_evidence_refs_and_moves_audit_metadata_to_appendices(self):
         report = render_analysis_report(self.spec, self.results, self.metadata)
         body = report.split("## 附录 A：证据索引", 1)[0]
         appendix = report.split("## 附录 A：证据索引", 1)[1]
 
-        self.assertIn("[E1]", body)
+        self.assertIn("[依据1]", body)
         self.assertNotIn("[fact/high]", body)
         self.assertNotIn("[inference/medium]", body)
         self.assertNotIn("fact_refs:", body)
-        self.assertIn("[E1]", appendix)
-        self.assertIn("facts/material-ranking.json#/records/0", appendix)
-        self.assertIn("类型：fact", appendix)
-        self.assertIn("置信度：high", appendix)
+        readable_appendix, technical = appendix.split("<details>", 1)
+        self.assertIn("| 依据 | 业务来源 | 覆盖范围 | 支持结论 | 追溯编号 |", readable_appendix)
+        self.assertIn("依据1", readable_appendix)
+        self.assertIn("素材榜单事实", readable_appendix)
+        self.assertIn("| 结论编号 | 结论摘要 | 业务类型 | 分析板块 | 可信度 | 主要依据 |", readable_appendix)
+        self.assertIn("数据事实", readable_appendix)
+        self.assertIn("高", readable_appendix)
+        self.assertNotIn("facts/material-ranking.json#/records/0", readable_appendix)
+        self.assertIn("facts/material-ranking.json#/records/0", technical)
 
     def test_repeated_fact_ref_reuses_one_evidence_id(self):
         repeated = [
@@ -90,9 +95,9 @@ class AnalysisReportTests(unittest.TestCase):
         report = render_analysis_report(self.spec, repeated, self.metadata)
         appendix = report.split("## 附录 A：证据索引", 1)[1]
 
-        self.assertIn("同一事实记录可支撑另一条核验说明。 [E1]", report)
-        self.assertEqual(appendix.count("[E1] `facts/material-ranking.json#/records/0`"), 1)
-        self.assertNotIn("[E2] `facts/material-ranking.json#/records/0`", appendix)
+        self.assertIn("同一事实记录可支撑另一条核验说明。 [依据1]", report)
+        self.assertEqual(appendix.count("E1：`facts/material-ranking.json#/records/0`"), 1)
+        self.assertNotIn("E2：`facts/material-ranking.json#/records/0`", appendix)
 
     def test_fact_package_chapters_are_fixed_order_and_unselected_module_is_explicit(self):
         spec = parse_analysis_spec({
@@ -146,7 +151,7 @@ class AnalysisReportTests(unittest.TestCase):
         report = render_analysis_report(self.spec, results, self.metadata)
 
         self.assertIn("## 二、行动建议", report)
-        self.assertIn("建议下一轮补充榜单指标对照实验。 [E1]", report)
+        self.assertIn("建议下一轮补充榜单指标对照实验。 [依据1]", report)
         self.assertIn("### 数据缺口与待验证问题", report)
         self.assertIn("数据缺口：缺少历史周期对照", report)
         self.assertIn("待验证问题：不同周期是否稳定？", report)
@@ -163,7 +168,7 @@ class AnalysisReportTests(unittest.TestCase):
         }])
         report = render_analysis_report(self.spec, [cross, self.results[1]], self.metadata)
         self.assertIn("## 七、跨模块观察", report)
-        self.assertIn("榜单与人群记录存在可进一步核验的关联。 [E1] [E2]", report)
+        self.assertIn("榜单与人群记录存在可进一步核验的关联。 [依据1] [依据2]", report)
 
     def test_brand_proxy_explanation_is_concentrated_at_chapter_start_and_kept_in_audit(self):
         proxy_ref = "facts/audience.json#/records/0"
@@ -196,8 +201,25 @@ class AnalysisReportTests(unittest.TestCase):
         self.assertIn("品牌候选范围：品牌A、品牌B", report)
         self.assertIn("runtime-title-rule-v1", report)
         self.assertIn("未知品牌数量：0", report)
-        self.assertIn("matchedBrands", report)
-        self.assertIn("match_tokens", report)
+        self.assertIn("命中品牌", report)
+        self.assertIn("命中依据", report)
+        self.assertNotIn("matchedBrands", report)
+        self.assertNotIn("match_tokens", report)
+
+    def test_business_conclusions_replace_raw_fields_without_extra_validation(self):
+        results = [
+            {"section": "material_ranking", "findings": [{
+                "claim": "metrics.show_cnt 较高但 metrics.cvr 偏低。", "type": "inference", "confidence": "medium",
+                "fact_refs": ["facts/material-ranking.json#/records/0"],
+            }]},
+            self.results[1],
+        ]
+
+        report = render_analysis_report(self.spec, results, self.metadata)
+
+        self.assertIn("曝光量较高但 CVR（点击转化率）偏低", report)
+        self.assertNotIn("metrics.show_cnt", report)
+        self.assertNotIn("metrics.cvr", report)
 
     def test_custom_sections_keep_declared_order(self):
         spec = parse_analysis_spec({
@@ -264,9 +286,10 @@ class AnalysisReportTests(unittest.TestCase):
         report = render_analysis_report(self.spec, self.results, metadata)
 
         self.assertIn("用户商业问题：找出曝光高但转化差的素材", report)
-        self.assertIn("选择计划：`FactSelectionSpec`", report)
-        self.assertIn("material_ranking=1000", report)
-        self.assertIn("script_text", report)
+        self.assertIn("使用事实：素材榜单、脚本分析", report)
+        self.assertIn("| 素材榜单 | 1000 | 4 |", report)
+        self.assertIn("视频脚本", report)
+        self.assertNotIn("script_text", report)
 
 
 if __name__ == "__main__":

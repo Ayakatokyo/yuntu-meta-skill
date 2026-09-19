@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
+import re
 from typing import Any
 
 try:
@@ -13,6 +15,72 @@ try:
 except ImportError:  # pragma: no cover - direct script imports
     from analysis_facts import _safe_path, _sha256
     from fact_selection import FactPackage
+
+
+_COMMON_FIELD_LABELS = {
+    "material_id": "素材ID",
+    "rank": "榜单排名",
+    "raw_people_tags": "人群标签",
+    "brand_classification.value": "品牌归属",
+    "selection_group.brand_name": "分组品牌名称",
+    "script_text": "视频脚本",
+    "content_formula": "内容公式",
+    "script_segments": "脚本分段",
+    "frames": "高光画面",
+    "timestamp_sec": "视频时间点（秒）",
+    "data_availability": "数据可用情况",
+    "source_empty": "源数据为空",
+    "brand": "品牌",
+    "package": "事实模块",
+    "field": "业务字段",
+    "reason": "缺口原因",
+    "request": "请求内容",
+    "operator": "筛选方式",
+    "value": "阈值",
+    "material_ranking": "素材榜单",
+    "audience": "人群分析",
+    "script": "脚本分析",
+    "highlight_frames": "高光帧分析",
+    "top_percentile": "高位分位",
+    "bottom_percentile": "低位分位",
+    "ranking_records": "素材榜单记录",
+    "audience_records": "人群分析记录",
+    "script_records": "脚本记录",
+    "highlight_records": "高光帧记录",
+}
+
+
+@lru_cache(maxsize=1)
+def business_field_labels() -> dict[str, str]:
+    """Return lightweight report labels without changing fact contracts."""
+    labels = dict(_COMMON_FIELD_LABELS)
+    path = Path(__file__).resolve().parents[1] / "config" / "yuntu-material-field-registry-v1.json"
+    try:
+        payload = _read(path)
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return labels
+    for entry in payload.get("fields", []) if isinstance(payload, dict) else []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("label"), str):
+            continue
+        field = entry.get("id")
+        source_path = entry.get("path")
+        if isinstance(field, str):
+            labels[field] = entry["label"]
+            if field.startswith("metrics."):
+                labels[field.split(".", 1)[1]] = entry["label"]
+        if isinstance(source_path, list) and all(isinstance(item, str) for item in source_path):
+            labels[".".join(source_path)] = entry["label"]
+    return labels
+
+
+def businessize_text(value: Any, labels: dict[str, str] | None = None) -> str:
+    text = str(value)
+    for field, label in sorted((labels or business_field_labels()).items(), key=lambda item: len(item[0]), reverse=True):
+        pattern = re.escape(field)
+        if field.replace("_", "").isalnum() and "." not in field:
+            pattern = rf"(?<![A-Za-z0-9_.]){pattern}(?![A-Za-z0-9_.])"
+        text = re.sub(pattern + r"\s*", label, text)
+    return text
 
 
 @dataclass(frozen=True)
@@ -26,6 +94,7 @@ class FactCatalog:
     capabilities: dict[FactPackage, dict[str, dict[str, Any]]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        labels = business_field_labels()
         return {
             "run_id": self.run_id,
             "schema_version": self.schema_version,
@@ -34,6 +103,11 @@ class FactCatalog:
                     "record_count": self.record_counts[package],
                     "fields": list(self.fields[package]),
                     "available_fields": self.available_fields[package],
+                    "business_field_labels": {
+                        field: labels[field]
+                        for field in self.fields[package]
+                        if field in labels
+                    },
                     "path": self.package_paths[package],
                     "capabilities": (self.capabilities or {}).get(package, {}),
                 }
@@ -129,4 +203,4 @@ def build_fact_catalog(run_root: Path) -> FactCatalog:
     return FactCatalog(run_id, manifest.get("schema_version"), counts, fields, availability, paths, capabilities)
 
 
-__all__ = ["FactCatalog", "build_fact_catalog"]
+__all__ = ["FactCatalog", "build_fact_catalog", "business_field_labels", "businessize_text"]

@@ -250,7 +250,8 @@ def test_report_transparency_contains_intent_selection_and_gap_without_business_
             },
         },
     )
-    assert "客户原问题" in report
-    assert "unsupported_requests" in report
+    assert "用户商业问题" in report
+    assert "本次不支持的请求" in report
+    assert "unsupported_requests" not in report
     assert "默认上限 100" in report
     assert "ROI：缺字段" in report

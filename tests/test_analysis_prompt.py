@@ -108,6 +108,17 @@ class AnalysisPromptTests(unittest.TestCase):
         self.assertIn("fact_catalog", prompt)
         self.assertNotIn("records", prompt["fact_catalog"])
         self.assertIn("不得生成 QuerySpec", " ".join(prompt["rules"]))
+        labels = prompt["fact_catalog"]["packages"]["material_ranking"]["business_field_labels"]
+        self.assertEqual(labels["metrics.ctr"], "CTR（点击率）")
+        self.assertIn("业务字段", " ".join(prompt["rules"]))
+
+    def test_analysis_packet_exposes_business_labels_without_tightening_result_schema(self):
+        packet = build_prompt_packet(self.spec, self.facts, build_fact_index(self.facts))
+
+        self.assertEqual(packet["business_field_labels"]["metrics.show_cnt"], "曝光量")
+        self.assertEqual(packet["business_field_labels"]["script_text"], "视频脚本")
+        self.assertIn("业务字段", packet["rules"]["report_language"])
+        self.assertEqual(packet["rules"]["required_fields"], ["claim", "type", "confidence", "fact_refs"])
 
 
 if __name__ == "__main__":

@@ -6,10 +6,10 @@ from typing import Any
 
 try:
     from .analysis_spec import AnalysisSpec
-    from .fact_catalog import FactCatalog
+    from .fact_catalog import FactCatalog, business_field_labels
 except ImportError:  # pragma: no cover - direct collector execution
     from analysis_spec import AnalysisSpec
-    from fact_catalog import FactCatalog
+    from fact_catalog import FactCatalog, business_field_labels
 
 
 MODULE_REQUIREMENTS = {
@@ -38,6 +38,7 @@ def build_fact_selection_prompt(spec: AnalysisSpec, catalog: FactCatalog) -> dic
             "不得生成 QuerySpec、HighlightSpec、shop_id 或采集参数。",
             "不得调用 RPA，不得读取事实目录之外的文件。",
             "无法支持的指标或问题必须放入 data_gaps，不得虚构数据。",
+            "选择字段时保留原始字段用于取数，同时优先使用 business_field_labels 中的业务字段名称描述选择理由。",
         ],
         "response_schema": "FactSelectionSpec",
     }
@@ -80,6 +81,7 @@ def build_prompt_packet(spec: AnalysisSpec, selected_facts: dict, fact_index: di
         "sections": list(spec.sections),
         "facts": facts,
         "fact_index_refs": selected_fact_refs,
+        "business_field_labels": business_field_labels(),
         "module_requirements": {
             section: MODULE_REQUIREMENTS[section] for section in spec.sections
         },
@@ -89,5 +91,6 @@ def build_prompt_packet(spec: AnalysisSpec, selected_facts: dict, fact_index: di
             "allowed_types": ["fact", "inference", "recommendation"],
             "allowed_confidence": ["high", "medium", "low"],
             "quality_gates": quality_gates,
+            "report_language": "商业结论和报告正文优先使用 business_field_labels 中的业务字段名称；原始字段、fact_refs 和 JSON 路径只用于内部取数与追溯，不作为用户侧主要文案。字段缺少标签时照常生成结果，不新增模型轮次或阻断式校验。",
         },
     }

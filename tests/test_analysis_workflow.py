@@ -255,8 +255,9 @@ def test_workflow_cli_replays_analysis_result_and_renders_selected_context():
 
         report = output.read_text(encoding="utf-8")
         assert "用户商业问题" in report
-        assert "FactSelectionSpec" in report
+        assert "使用事实：素材榜单、脚本分析" in report
         assert "1000" in report
-        assert "source_empty" in report
+        assert "源数据为空" in report
+        assert "source_empty" not in report
         assert get_workflow_status(run_copy)["status"] == "ready_for_analysis"
         assert get_analysis_status(run_copy, analysis_id)["status"] == "analysis_completed"
