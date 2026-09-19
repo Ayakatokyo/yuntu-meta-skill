@@ -14,7 +14,8 @@ class AnalysisReportTests(unittest.TestCase):
         })
         self.fact_index = {
             "facts/material-ranking.json#/records/0": {
-                "material_id": "101", "rank": 1,
+                "material_id": "101", "rank": 1, "title": "燕窝早餐场景素材",
+                "metrics": {"show_cnt": 969943, "ctr": 0.92},
                 "brand_classification": {
                     "value": "品牌A", "matchedBrands": ["品牌A"],
                     "source": "runtime_title_rule", "match_tokens": {"品牌A": ["品牌A"]},
@@ -75,14 +76,26 @@ class AnalysisReportTests(unittest.TestCase):
         self.assertNotIn("[inference/medium]", body)
         self.assertNotIn("fact_refs:", body)
         readable_appendix, technical = appendix.split("<details>", 1)
-        self.assertIn("| 依据 | 业务来源 | 覆盖范围 | 支持结论 | 追溯编号 |", readable_appendix)
+        self.assertIn("| 依据 | 业务来源 | 数据对象 | 真实数据参考 | 支持结论 |", readable_appendix)
         self.assertIn("依据1", readable_appendix)
         self.assertIn("素材榜单事实", readable_appendix)
-        self.assertIn("| 结论编号 | 结论摘要 | 业务类型 | 分析板块 | 可信度 | 主要依据 |", readable_appendix)
+        self.assertIn("| 结论编号 | 结论摘要 | 业务类型 | 分析板块 | 可信度 | 主要依据 | 证据数据参考 |", readable_appendix)
         self.assertIn("数据事实", readable_appendix)
         self.assertIn("高", readable_appendix)
         self.assertNotIn("facts/material-ranking.json#/records/0", readable_appendix)
         self.assertIn("facts/material-ranking.json#/records/0", technical)
+
+    def test_appendices_include_real_business_data_for_evidence_and_claim_review(self):
+        report = render_analysis_report(self.spec, self.results, self.metadata)
+        readable_appendix = report.split("## 附录 A：证据索引", 1)[1].split("<details>", 1)[0]
+
+        self.assertIn("| 依据 | 业务来源 | 数据对象 | 真实数据参考 | 支持结论 |", readable_appendix)
+        self.assertIn("燕窝早餐场景素材", readable_appendix)
+        self.assertIn("曝光量：969,943", readable_appendix)
+        self.assertIn("CTR（点击率）：0.92", readable_appendix)
+        self.assertIn("证据数据参考", readable_appendix)
+        self.assertNotIn("metrics.show_cnt", readable_appendix)
+        self.assertNotIn("metrics.ctr", readable_appendix)
 
     def test_repeated_fact_ref_reuses_one_evidence_id(self):
         repeated = [

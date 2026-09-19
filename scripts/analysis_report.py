@@ -14,7 +14,7 @@ try:
         validate_analysis_result,
     )
     from .analysis_spec import AnalysisSpec
-    from .fact_catalog import businessize_text
+    from .fact_catalog import business_field_labels, businessize_text
 except ImportError:  # pragma: no cover - direct collector execution
     from analysis_result import (
         ALLOWED_SECTIONS,
@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - direct collector execution
         validate_analysis_result,
     )
     from analysis_spec import AnalysisSpec
-    from fact_catalog import businessize_text
+    from fact_catalog import business_field_labels, businessize_text
 
 
 FIXED_SECTIONS = (
@@ -69,6 +69,77 @@ def _text(value: Any) -> str:
 
 def _md_cell(value: Any) -> str:
     return businessize_text(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _display_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float):
+        return f"{value:,.4f}".rstrip("0").rstrip(".")
+    if isinstance(value, list) and all(not isinstance(item, (dict, list)) for item in value):
+        return "、".join(str(item) for item in value[:5])
+    return str(value)
+
+
+def _business_values(record: Any, *, limit: int = 6) -> list[tuple[str, str]]:
+    if not isinstance(record, dict):
+        return []
+    labels = business_field_labels()
+    flattened: list[tuple[str, Any]] = []
+
+    def visit(value: Any, prefix: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                visit(child, path)
+        elif isinstance(value, list):
+            if value and all(not isinstance(item, (dict, list)) for item in value):
+                flattened.append((prefix, value))
+        elif value not in (None, ""):
+            flattened.append((prefix, value))
+
+    visit(record)
+    excluded = {
+        "material_id", "title", "material_name", "source_ref", "sourceRef",
+        "brand_classification.source", "brand_classification.rule_version",
+        "brand_classification.match_tokens", "brand_classification.matchedBrands",
+    }
+    priority = ("rank", "brand_classification.value", "metrics.", "raw_people_tags", "timestamp_sec")
+    candidates = []
+    for path, value in flattened:
+        if path in excluded or path.startswith(("source_", "artifact.", "data_availability.")):
+            continue
+        label = labels.get(path)
+        if not label:
+            continue
+        order = next((index for index, prefix in enumerate(priority) if path == prefix or path.startswith(prefix)), len(priority))
+        candidates.append((order, path, label, _display_value(value)))
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    return [(label, display) for _order, _path, label, display in candidates[:limit]]
+
+
+def _evidence_display(ref: str, metadata: dict) -> tuple[str, str]:
+    record = metadata.get("fact_index", {}).get(ref)
+    if not isinstance(record, dict):
+        return "事实记录", "暂无可展示的结构化数值"
+    object_label = next(
+        (str(record.get(key)).strip() for key in ("title", "material_name") if record.get(key)),
+        "",
+    )
+    if not object_label:
+        rank = record.get("rank")
+        material_id = record.get("material_id")
+        parts = []
+        if rank not in (None, ""):
+            parts.append(f"榜单第 {rank} 名")
+        if material_id not in (None, ""):
+            parts.append(f"素材 {material_id}")
+        object_label = " · ".join(parts) or "事实记录"
+    values = _business_values(record)
+    summary = "；".join(f"{label}：{value}" for label, value in values)
+    return object_label, summary or "暂无可展示的结构化数值"
 
 
 def _finding_explanation(finding: dict) -> str | None:
@@ -304,47 +375,51 @@ def _render_audit_appendices(
     lines = [
         "## 附录 A：证据索引",
         "",
-        "下表说明每条依据来自哪里、覆盖哪条事实记录，以及支持多少条结论。",
+        "下表直接展示每条依据对应的数据对象、真实业务数值，以及支持多少条结论；技术路径仅放在折叠追溯区。",
         "",
-        "| 依据 | 业务来源 | 覆盖范围 | 支持结论 | 追溯编号 |",
-        "| --- | --- | --- | ---: | --- |",
+        "| 依据 | 业务来源 | 数据对象 | 真实数据参考 | 支持结论 |",
+        "| --- | --- | --- | --- | ---: |",
     ]
     if evidence_ids:
         for ref, identifier in evidence_ids.items():
             path, _, pointer = ref.partition("#")
-            record = pointer.rsplit("/", 1)[-1] if pointer.startswith("/records/") else ""
-            coverage = f"第 {int(record) + 1} 条记录" if record.isdigit() else "文件级证据"
+            object_label, data_summary = _evidence_display(ref, metadata)
             lines.append(
                 f"| 依据{int(identifier[1:])} | {FACT_SOURCE_LABELS.get(path, '分析事实来源')} | "
-                f"{coverage} | {support_counts.get(ref, 0)} 条 | {identifier} |"
+                f"{_md_cell(object_label)} | {_md_cell(data_summary)} | {support_counts.get(ref, 0)} 条 |"
             )
     else:
-        lines.append("| — | 本次没有事实结论引用 | — | 0 条 | — |")
+        lines.append("| — | 本次没有事实结论引用 | — | — | 0 条 |")
 
     lines.extend([
         "",
         "## 附录 B：结论审计",
         "",
-        "| 结论编号 | 结论摘要 | 业务类型 | 分析板块 | 可信度 | 主要依据 |",
-        "| --- | --- | --- | --- | --- | --- |",
+        "| 结论编号 | 结论摘要 | 业务类型 | 分析板块 | 可信度 | 主要依据 | 证据数据参考 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
     ])
     if audits:
         proxy_explanations: list[str] = []
         for audit in audits:
             finding = audit["finding"]
             refs = "、".join(f"依据{int(identifier[1:])}" for identifier in audit["evidence_ids"])
+            data_reference = "；".join(
+                _evidence_display(ref, metadata)[1]
+                for ref in finding.get("fact_refs", [])[:2]
+            ) or "暂无可展示的结构化数值"
             lines.append(
                 f"| {audit['id']} | {_md_cell(finding['claim'])} | "
                 f"{FINDING_TYPE_LABELS.get(finding['type'], '分析结论')} | "
                 f"{SECTION_LABELS.get(audit['section'], audit['section'])} | "
-                f"{CONFIDENCE_LABELS.get(finding['confidence'], finding['confidence'])} | {refs or '无'} |"
+                f"{CONFIDENCE_LABELS.get(finding['confidence'], finding['confidence'])} | {refs or '无'} | "
+                f"{_md_cell(data_reference)} |"
             )
             explanation = _finding_explanation(finding)
             if explanation and explanation not in proxy_explanations:
                 proxy_explanations.append(explanation)
         lines.extend(f"- 品牌代理说明：{item}" for item in proxy_explanations)
     else:
-        lines.append("| — | 本次没有可审计结论 | — | — | — | — |")
+        lines.append("| — | 本次没有可审计结论 | — | — | — | — | — |")
 
     lines.extend(["", "### 品牌分类审计", ""])
     lines.extend(_render_brand_audit(metadata))

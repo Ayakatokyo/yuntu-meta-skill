@@ -1,8 +1,9 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from scripts.fact_catalog import build_fact_catalog
+from scripts.fact_catalog import FactCatalog, build_fact_catalog
 from scripts.fact_selection import (
     FactFilter,
     FactJoin,
@@ -109,3 +110,33 @@ def test_execute_fact_selection_rejects_unknown_field_before_reading_records():
 
     with pytest.raises(ValueError, match="unknown fact field"):
         execute_fact_selection(RUN_DIR, spec)
+
+
+def test_unknown_fact_field_error_lists_legal_fields_for_one_pass_repair():
+    catalog = FactCatalog(
+        run_id="run-1",
+        schema_version=3,
+        record_counts={FactPackage.MATERIAL_RANKING: 1},
+        fields={FactPackage.MATERIAL_RANKING: ("metrics.ctr", "metrics.show_cnt")},
+        available_fields={FactPackage.MATERIAL_RANKING: {"metrics.ctr": 1, "metrics.show_cnt": 1}},
+        package_paths={FactPackage.MATERIAL_RANKING: "facts/material-ranking.json"},
+    )
+    spec = FactSelectionSpec(
+        packages=(FactPackage.MATERIAL_RANKING,),
+        filters=(FactFilter(
+            FactPackage.MATERIAL_RANKING,
+            "metrics.starShowCnt",
+            SelectionOperator.GTE,
+            1,
+        ),),
+        fields={}, order_by=(), limit=None, joins=(),
+    )
+
+    with patch("scripts.fact_catalog.build_fact_catalog", return_value=catalog):
+        with pytest.raises(ValueError) as error:
+            execute_fact_selection(Path("/not-read"), spec)
+
+    message = str(error.value)
+    assert "合法字段" in message
+    assert "metrics.ctr" in message
+    assert "metrics.show_cnt" in message

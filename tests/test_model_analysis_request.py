@@ -64,6 +64,20 @@ class ModelAnalysisRequestTests(unittest.TestCase):
         self.assertIn("fact_package_hashes", request["local_audit"])
         self.assertEqual(validate_model_analysis_request(request), [])
 
+    def test_request_guides_flexible_one_pass_html_with_real_evidence_charts(self):
+        request = build_model_analysis_request(
+            self.spec,
+            self.selected_facts,
+            build_fact_index(self.selected_facts),
+        )
+
+        guidance = request["host_context"]["report_presentation_guidance"]
+        self.assertEqual(guidance["layout_policy"], "flexible")
+        self.assertEqual(guidance["validation_mode"], "advisory")
+        self.assertIn("真实数据", " ".join(guidance["evidence_index"]))
+        self.assertIn("可视化", " ".join(guidance["conclusion_audit"]))
+        self.assertIn("一次性", " ".join(guidance["delivery_workflow"]))
+
     def test_request_excludes_unselected_fact_packages(self):
         spec = parse_analysis_spec({
             "analysis_id": "analysis-2",

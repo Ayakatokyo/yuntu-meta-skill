@@ -20,6 +20,8 @@ except ImportError:  # pragma: no cover - direct script imports
 _COMMON_FIELD_LABELS = {
     "material_id": "素材ID",
     "rank": "榜单排名",
+    "title": "素材标题",
+    "material_name": "素材名称",
     "raw_people_tags": "人群标签",
     "brand_classification.value": "品牌归属",
     "selection_group.brand_name": "分组品牌名称",
@@ -108,6 +110,16 @@ class FactCatalog:
                         for field in self.fields[package]
                         if field in labels
                     },
+                    "projectable_fields": [
+                        {
+                            "field": field,
+                            "business_label": labels.get(field),
+                            "available_count": self.available_fields[package].get(field, 0),
+                            "value_type": ((self.capabilities or {}).get(package, {}).get(field, {}).get("value_type") or "unknown"),
+                            "aggregations": list((self.capabilities or {}).get(package, {}).get(field, {}).get("aggregations", [])),
+                        }
+                        for field in self.fields[package]
+                    ],
                     "path": self.package_paths[package],
                     "capabilities": (self.capabilities or {}).get(package, {}),
                 }

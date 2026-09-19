@@ -110,6 +110,16 @@ class AnalysisPromptTests(unittest.TestCase):
         self.assertIn("不得生成 QuerySpec", " ".join(prompt["rules"]))
         labels = prompt["fact_catalog"]["packages"]["material_ranking"]["business_field_labels"]
         self.assertEqual(labels["metrics.ctr"], "CTR（点击率）")
+        self.assertEqual(
+            prompt["fact_catalog"]["packages"]["material_ranking"]["projectable_fields"],
+            [{
+                "field": "metrics.ctr",
+                "business_label": "CTR（点击率）",
+                "available_count": 1,
+                "value_type": "unknown",
+                "aggregations": [],
+            }],
+        )
         self.assertIn("业务字段", " ".join(prompt["rules"]))
 
     def test_analysis_packet_exposes_business_labels_without_tightening_result_schema(self):

@@ -28,6 +28,23 @@ BASE_SYSTEM_RULES = (
     "脚本字段为 source_empty 时只能进入 gaps，不得用标题或标签替代脚本。",
 )
 
+REPORT_PRESENTATION_GUIDANCE = {
+    "layout_policy": "flexible",
+    "validation_mode": "advisory",
+    "evidence_index": [
+        "证据索引优先展示素材名称或榜单位置、业务字段名称和真实数据值，不以事实路径、原始字段名或只有编号的表格作为主要内容。",
+        "有两条及以上可比较数据时，至少用一张合适的可视化呈现关键指标；图表类型由报告设计自行选择。",
+    ],
+    "conclusion_audit": [
+        "每条结论除依据编号外，展示一组可直接核对的真实数据参考；不可比较时明确说明数据缺口。",
+        "优先用真实业务指标对比图；数据不适合横向比较时，可用结论类型、可信度或证据覆盖的可视化辅助阅读。",
+    ],
+    "delivery_workflow": [
+        "先一次性确定报告信息架构、数据字段和文件清单，再集中生成 HTML 报告组件；只在明确校验失败或用户反馈后局部修正。",
+        "不固定页面布局、图表数量或组件实现，不因展示偏好增加模型轮次或阻断式校验。",
+    ],
+}
+
 
 def build_fact_selection_request(spec: AnalysisSpec, catalog: FactCatalog) -> dict:
     """Create a handoff asking the current model to select persisted facts."""
@@ -170,6 +187,7 @@ def build_model_analysis_request(
             "fact_refs": selected_refs,
             "system_rules": rules,
             "response_schema": RESPONSE_SCHEMA,
+            "report_presentation_guidance": REPORT_PRESENTATION_GUIDANCE,
         },
         "local_audit": {
             "analysis_id": spec.analysis_id,

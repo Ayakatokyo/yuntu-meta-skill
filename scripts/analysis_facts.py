@@ -332,20 +332,30 @@ def execute_fact_selection(run_root: Path, selection):
         from fact_selection import FactSelectionResult, SelectionOperator
 
     catalog = build_fact_catalog(run_root)
+    def unknown_field(package, field):
+        legal = list(catalog.fields.get(package, ()))
+        return ValueError(
+            f"unknown fact field: {package.value}.{field}; "
+            f"该事实包合法字段: {', '.join(legal) or '无'}"
+        )
+
     for item in selection.filters:
         if item.package not in catalog.fields or item.field not in catalog.fields[item.package]:
-            raise ValueError(f"unknown fact field: {item.package.value}.{item.field}")
+            raise unknown_field(item.package, item.field)
     for package, fields in selection.fields.items():
         for field in fields:
             if field not in catalog.fields.get(package, ()):
-                raise ValueError(f"unknown fact field: {package.value}.{field}")
+                raise unknown_field(package, field)
     for aggregation in selection.aggregations:
         capability = catalog.capabilities.get(aggregation.package, {}).get(aggregation.field, {}) if catalog.capabilities else {}
         if aggregation.operation.value not in capability.get("aggregations", ()):
             raise ValueError(f"unsupported local aggregation: {aggregation.package.value}.{aggregation.field}.{aggregation.operation.value}")
     for rule in selection.order_by:
         if not any(rule.field in catalog.fields.get(package, ()) for package in selection.packages):
-            raise ValueError(f"unknown fact field: {rule.field}")
+            legal = sorted({field for package in selection.packages for field in catalog.fields.get(package, ())})
+            raise ValueError(
+                f"unknown fact field: {rule.field}; 本次已选事实包合法字段: {', '.join(legal) or '无'}"
+            )
 
     root = Path(run_root)
     manifest = _read_json(root / "facts" / "manifest.json")
