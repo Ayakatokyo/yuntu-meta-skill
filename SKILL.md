@@ -2,7 +2,7 @@
 name: 云图行业素材数据工作台
 description: 围绕行业、品牌、人群与内容表现采集巨量云图素材及诊断事实，形成可审计的数据资产和素材数据工作台，供后续自定义内容分析与经营使用。
 metadata:
-  argument_hint: 输入行业、时间范围、榜单类型、品牌和人群筛选、素材列表本地筛选及详情素材数。高光帧默认不生成；如选择生成，按下方高光帧设置填写封面、指标、提取规则和帧数。
+  argument_hint: 输入行业、时间范围、榜单类型、品牌和人群筛选、素材列表本地筛选及详情素材数。高光帧默认不生成；如选择生成，直接输入包含封面、指标、提取规则和帧数的自然语言规则。
   pre_input: |
     请采集云图行业素材及相关数据。
     云图授权账号：__field:rpa_shop__（必填）
@@ -13,13 +13,8 @@ metadata:
     年龄筛选：__field:ages__；性别筛选：__field:genders__；八大人群筛选：__field:crowd_groups__（可选）
     素材筛选与排序：__field:material_list__ （可选，例如按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）
     详情素材数 __field:detail_top_n__（包含秒级拆解和内容公式数据，默认10）
-    是否同时生成高光帧图片：__field:highlight_mode__（如选择否，则可无视下方高光帧规则，选择是则反之）
-    - 封面是否保留：__field:highlight_include_cover__
-    - 点赞指数：__field:highlight_like_enabled__；提取规则 __field:highlight_like_strategy__；帧数 __field:highlight_like_limit__
-    - 流失指数：__field:highlight_loss_enabled__；提取规则 __field:highlight_loss_strategy__；帧数 __field:highlight_loss_limit__
-    - 点击指数：__field:highlight_click_enabled__；提取规则 __field:highlight_click_strategy__；帧数 __field:highlight_click_limit__
-    - 互动指数：__field:highlight_interaction_enabled__；提取规则 __field:highlight_interaction_strategy__；帧数 __field:highlight_interaction_limit__
-    - 评论指数：__field:highlight_comment_enabled__；提取规则 __field:highlight_comment_strategy__；帧数 __field:highlight_comment_limit__
+    是否同时生成高光帧图片：__field:highlight_mode__（选择否时无需填写高光帧规则）
+    高光帧规则：__field:highlight_rules__（选择是时填写；可用指标：点赞指数、流失指数、点击指数、互动指数、评论指数；规则案例：不保留封面，提取点赞指数局部峰值3帧、互动指数最高值2帧，不提取其他指标）
 ---
 
 # 云图行业素材数据工作台

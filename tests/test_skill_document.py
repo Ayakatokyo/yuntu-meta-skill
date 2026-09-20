@@ -24,7 +24,7 @@ class SkillDocumentTests(unittest.TestCase):
         pre_input = metadata["metadata"]["pre_input"]
 
         self.assertTrue(pre_input.startswith("请采集云图行业素材及相关数据。"))
-        self.assertGreaterEqual(pre_input.count("\n"), 14)
+        self.assertGreaterEqual(pre_input.count("\n"), 11)
         self.assertNotIn("<p>", pre_input)
         self.assertNotIn("data-pre-input-blank", pre_input)
         self.assertNotIn("____", pre_input)
@@ -32,15 +32,20 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertIn("__field:industry__", pre_input)
         self.assertIn("__field:date_range__", pre_input)
         self.assertIn("__field:highlight_mode__", pre_input)
+        self.assertIn("__field:highlight_rules__", pre_input)
+        self.assertIn("可用指标：点赞指数、流失指数、点击指数、互动指数、评论指数", pre_input)
+        self.assertIn("不保留封面，提取点赞指数局部峰值3帧、互动指数最高值2帧", pre_input)
 
     def test_pre_input_keeps_query_before_highlight_rules(self):
         metadata, _ = load_skill_document()
         pre_input = metadata["metadata"]["pre_input"]
 
         self.assertLess(pre_input.index("行业是"), pre_input.index("是否同时生成高光帧图片"))
-        self.assertIn("封面是否保留", pre_input)
+        self.assertIn("高光帧规则", pre_input)
         for metric in ("点赞指数", "流失指数", "点击指数", "互动指数", "评论指数"):
             self.assertIn(metric, pre_input)
+        self.assertNotIn("highlight_include_cover", pre_input)
+        self.assertNotIn("highlight_like_enabled", pre_input)
 
     def test_pre_input_references_every_typed_form_field_once(self):
         metadata, _ = load_skill_document()
@@ -50,9 +55,19 @@ class SkillDocumentTests(unittest.TestCase):
         references = __import__("re").findall(r"__field:([a-z0-9_]+)__", pre_input)
 
         self.assertEqual(keys[0], "rpa_shop")
-        self.assertEqual(len(keys), 28)
+        self.assertEqual(len(keys), 13)
         self.assertEqual(set(references), set(keys))
         self.assertEqual(len(references), len(keys))
+
+    def test_highlight_rules_is_a_conditional_textarea(self):
+        fields = {field["key"]: field for field in load_skill_form()}
+
+        self.assertEqual(fields["highlight_rules"]["type"], "textarea")
+        self.assertTrue(fields["highlight_rules"]["required"])
+        self.assertEqual(fields["highlight_rules"]["visible_when"], {"field": "highlight_mode", "equals": "on"})
+        self.assertEqual(fields["highlight_rules"]["depends_on"], {"highlight_mode": "on"})
+        self.assertIn("封面", fields["highlight_rules"]["description"])
+        self.assertIn("点赞指数", fields["highlight_rules"]["placeholder"])
 
     def test_rpa_selector_is_the_only_collection_account_field(self):
         fields = {field["key"]: field for field in load_skill_form()}
