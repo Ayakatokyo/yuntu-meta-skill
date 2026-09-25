@@ -25,6 +25,12 @@ def load_skill_form():
 
 
 class SkillDocumentTests(unittest.TestCase):
+    def test_derived_skill_keeps_runtime_date_policy(self):
+        _, body = load_skill_document()
+        self.assertIn("## 从完整运行创建新 Skill", body)
+        self.assertIn("scripts/date_policy.py", body)
+        self.assertIn("非法日期不会提交任何 RPA", body)
+
     def test_pre_input_uses_typed_field_placeholders(self):
         pre_input = load_skill_metadata()["pre_input"]
 

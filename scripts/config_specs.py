@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
 import math
-from zoneinfo import ZoneInfo
+
+try:
+    from .date_policy import validate_custom_period
+except ImportError:
+    from date_policy import validate_custom_period
 
 try:
     from .material_field_registry import (
@@ -52,7 +56,6 @@ _LEGACY_HIGHLIGHT_STRATEGIES = {"top_values": "global_top_values"}
 DEFAULT_MATERIAL_LIST = {
     "filters": [], "sort": {"field": "rank", "direction": "asc"}
 }
-SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 class ConfigSpecError(ValueError):
@@ -187,13 +190,10 @@ def resolve_query_spec(payload: dict) -> dict:
             raise ConfigSpecError("CUSTOM requires period.start_date and period.end_date")
         start = _date(period["start_date"], "period.start_date")
         end = _date(period["end_date"], "period.end_date")
-        today = datetime.now(SHANGHAI_TIMEZONE).date()
-        if start < today - timedelta(days=369):
-            raise ConfigSpecError("period.start_date cannot be more than 369 days before today")
-        if end > today - timedelta(days=4):
-            raise ConfigSpecError("period.end_date cannot be later than today-4")
-        if end < start or (end - start).days > 44:
-            raise ConfigSpecError("period must be an inclusive range of 1 to 45 days")
+        try:
+            validate_custom_period(start, end)
+        except ValueError as exc:
+            raise ConfigSpecError(str(exc)) from exc
         normalized_period.update(start_date=period["start_date"], end_date=period["end_date"])
     elif period.get("start_date") is not None or period.get("end_date") is not None:
         raise ConfigSpecError("period dates are only valid for CUSTOM")
