@@ -14,14 +14,19 @@ def load_skill_document():
     return yaml.safe_load(frontmatter), body
 
 
+def load_skill_metadata():
+    frontmatter, _ = load_skill_document()
+    sidecar = yaml.safe_load(METADATA_PATH.read_text(encoding="utf-8"))
+    return {**frontmatter.get("metadata", {}), **sidecar}
+
+
 def load_skill_form():
-    return yaml.safe_load(METADATA_PATH.read_text(encoding="utf-8"))["skill_form"]
+    return load_skill_metadata()["skill_form"]
 
 
 class SkillDocumentTests(unittest.TestCase):
     def test_pre_input_uses_typed_field_placeholders(self):
-        metadata, _ = load_skill_document()
-        pre_input = metadata["metadata"]["pre_input"]
+        pre_input = load_skill_metadata()["pre_input"]
 
         self.assertTrue(pre_input.startswith("请采集云图行业素材及相关数据。"))
         self.assertGreaterEqual(pre_input.count("\n"), 11)
@@ -37,8 +42,7 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertIn("不保留封面，提取点赞指数局部峰值3帧、互动指数最高值2帧", pre_input)
 
     def test_pre_input_keeps_query_before_highlight_rules(self):
-        metadata, _ = load_skill_document()
-        pre_input = metadata["metadata"]["pre_input"]
+        pre_input = load_skill_metadata()["pre_input"]
 
         self.assertLess(pre_input.index("行业是"), pre_input.index("是否同时生成高光帧图片"))
         self.assertIn("高光帧规则", pre_input)
@@ -48,8 +52,7 @@ class SkillDocumentTests(unittest.TestCase):
         self.assertNotIn("highlight_like_enabled", pre_input)
 
     def test_pre_input_references_every_typed_form_field_once(self):
-        metadata, _ = load_skill_document()
-        pre_input = metadata["metadata"]["pre_input"]
+        pre_input = load_skill_metadata()["pre_input"]
         form = load_skill_form()
         keys = [field["key"] for field in form]
         references = __import__("re").findall(r"__field:([a-z0-9_]+)__", pre_input)

@@ -1,10 +1,6 @@
 short-description: "采集云图行业榜单、品牌、人群与素材事实，形成支持自定义分析的数据工作台"
 tags:
   - 云图
-compatibility:
-  - data-analysis
-  - python
-  - html-report
 requires:
   env:
     - ENV_BACKEND_HOST
@@ -27,6 +23,18 @@ market:
       prompt: "采集并对比指定品牌的云图素材表现与内容事实，为后续自定义分析提供数据"
     - title: 高光帧数据提取
       prompt: "提取云图素材中的点击与互动高光时刻，为后续自定义内容分析提供证据"
+pre_input: |
+  请采集云图行业素材及相关数据。
+  云图授权账号：__field:rpa_shop__（必填）
+  行业是 __field:industry__（必填，云图行业筛选）
+  分析周期是 __field:date_range__
+  截取方式是 __field:ranking_metric__
+  品牌范围是 __field:brand_scope__；指定品牌是 __field:brands__（品牌数量范围3-10个）
+  年龄筛选：__field:ages__；性别筛选：__field:genders__；八大人群筛选：__field:crowd_groups__（可选）
+  素材筛选与排序：__field:material_list__ （可选，例如按“曝光量”>=1000000且“视频标题”包含“燕窝”，再按“互动率”降序）
+  详情素材数 __field:detail_top_n__（包含秒级拆解和内容公式数据，默认10）
+  是否同时生成高光帧图片：__field:highlight_mode__（选择否时无需填写高光帧规则）
+  高光帧规则：__field:highlight_rules__（选择是时填写；可用指标：点赞指数、流失指数、点击指数、互动指数、评论指数；规则案例：不保留封面，提取点赞指数局部峰值3帧、互动指数最高值2帧，不提取其他指标）
 skill_form:
   - key: rpa_shop
     type: rpa_shop
