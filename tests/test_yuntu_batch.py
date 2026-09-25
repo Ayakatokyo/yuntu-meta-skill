@@ -1,4 +1,5 @@
 import importlib.util
+import csv
 from concurrent.futures import ThreadPoolExecutor as RealThreadPoolExecutor
 import json
 import subprocess
@@ -20,7 +21,27 @@ def load_batch():
     spec = importlib.util.spec_from_file_location("yuntu_batch", BATCH_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.FileDownloader = FixtureCsvDownloader
     return module
+
+
+class FixtureCsvDownloader:
+    """Make gateway fixtures exercise the actual CSV parser."""
+    def download_file(self, file_url, target_path):
+        records = json.loads(file_url)
+        path = Path(target_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        headers = list(dict.fromkeys(key for record in records for key in record))
+        with path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=headers)
+            writer.writeheader()
+            writer.writerows({key: json.dumps(value) if isinstance(value, (dict, list)) else value
+                             for key, value in record.items()} for record in records)
+        return path
+
+
+def fixture_csv_response(records):
+    return {"status": "completed", "files": [{"fileUrl": json.dumps(records)}]}
 
 
 class DetailInvoker:
@@ -46,10 +67,8 @@ class BatchInvoker:
         self.detail_calls.append(detail_params)
         material_id = detail_params["material_id"]
         if material_id in self.failed_material_ids:
-            raise RuntimeError(f"detail rejected for {material_id}")
-        return {
-            "success": True,
-            "data": [{
+            raise RuntimeError(f"RPA task failed: detail rejected for {material_id}")
+        return fixture_csv_response([{
                 "materialId": material_id,
                 "dateRangeType": detail_params["date_range_type"],
                 "trends": [],
@@ -64,8 +83,7 @@ class BatchInvoker:
                     )
                     if field in detail_params
                 },
-            }],
-        }
+            }])
 
 
 class AsyncBatchInvoker(BatchInvoker):
@@ -87,10 +105,7 @@ class AsyncBatchInvoker(BatchInvoker):
             self.fail_waits -= 1
             raise RuntimeError("temporary poll transport timeout")
         material_id = task_group_id.removeprefix("tg-")
-        return {
-            "status": "completed",
-            "data": [{"materialId": material_id, "dateType": "LAST_7_DAYS", "trends": []}],
-        }
+        return fixture_csv_response([{"materialId": material_id, "dateType": "LAST_7_DAYS", "trends": []}])
 
 
 def list_record(material_id, group_id):
@@ -539,7 +554,8 @@ class YuntuBatchTests(unittest.TestCase):
 
         def invoke_detail(_shop_id, detail_params):
             response = BatchInvoker.invoke_detail(invoker, _shop_id, detail_params)
-            response["data"][0]["trends"] = [{
+            records = json.loads(response["files"][0]["fileUrl"])
+            records[0]["trends"] = [{
                 "trendName": "点击指数",
                 "tendList": [
                     {"x": 0, "y": 0},
@@ -547,7 +563,7 @@ class YuntuBatchTests(unittest.TestCase):
                     {"x": 2, "y": 0},
                 ],
             }]
-            return response
+            return fixture_csv_response(records)
 
         invoker.invoke_detail = invoke_detail
 

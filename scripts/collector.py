@@ -912,7 +912,10 @@ def _build_facts_after_run(output_dir: str | Path) -> dict:
 
 def _print_batch_result(output_dir, facts_manifest):
     receipt = build_ready_receipt(output_dir)
+    status = collection_status(output_dir=output_dir)
     print(json.dumps({
+        "firstBatchCsvGate": status.get("firstBatchCsvGate"),
+        "rpa_paused": status.get("rpa_paused", False),
         "batch_manifest_path": str(Path(output_dir) / "batch-manifest.json"),
         "facts_manifest_path": str(Path(output_dir) / "facts/manifest.json"),
         "facts_coverage": facts_manifest["coverage"],

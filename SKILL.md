@@ -74,7 +74,7 @@ WORKSPACE_ROOT="$PWD"
 test "$WORKSPACE_ROOT" != "$SKILL_ROOT" || { echo "WORKSPACE_ROOT 不能是技能安装目录" >&2; exit 2; }
 ```
 
-列表客户端为 `scripts/rpa_dynamic_client.py`，详情客户端为 `scripts/rpa_dynamic_detail_client.py`。每次取数都先 `detail`/`schema` 获取实时 `platformCode`、`inParamJsonSchemaText` 或 `inParamList`，再把业务参数作为一个完整 JSON 用 `validate` 校验；`fetch` 会二次反查和校验，然后统一走异步 task/status、下载并解析 CSV。schema text 非空时不得读取 `inParamList`；平台值原样透传，不补 `_ACCOUNT_PASSWORD`。外层工具执行真实 `fetch` 时显式设置 3600 秒超时。
+列表客户端为 `scripts/rpa_dynamic_client.py`，详情客户端为 `scripts/rpa_dynamic_detail_client.py`。完整采集统一使用 `collector.py collect`；动态详情客户端保留元数据/参数诊断，其 `fetch`（含 `--no-download`）拒绝直接提交。动态榜单 `fetch` 先校验输出目录和所属运行的持久暂停门禁。每次取数都先 `detail`/`schema` 获取实时 `platformCode`、`inParamJsonSchemaText` 或 `inParamList`，再把业务参数作为一个完整 JSON 用 `validate` 校验；`fetch` 会二次反查和校验，然后统一走异步 task/status、下载并解析 CSV。schema text 非空时不得读取 `inParamList`；平台值原样透传，不补 `_ACCOUNT_PASSWORD`。外层工具执行真实 `fetch` 时显式设置 3600 秒超时。
 
 ```bash
 # 榜单连接器
@@ -90,9 +90,7 @@ python "$SKILL_ROOT/scripts/rpa_dynamic_client.py" fetch --shop-id "<shop_id>" \
 python "$SKILL_ROOT/scripts/rpa_dynamic_detail_client.py" detail
 python "$SKILL_ROOT/scripts/rpa_dynamic_detail_client.py" schema
 python "$SKILL_ROOT/scripts/rpa_dynamic_detail_client.py" validate --params-file config/rpa-detail-params.json
-python "$SKILL_ROOT/scripts/rpa_dynamic_detail_client.py" fetch --shop-id "<shop_id>" \
-  --params-file config/rpa-detail-params.json \
-  --output-dir "$WORKSPACE_ROOT/云图数据资源/example/rpa-details"
+# 详情实际采集使用下方 collector.py collect，不直调动态 fetch。
 ```
 
 ```bash
@@ -134,6 +132,10 @@ python "$SKILL_ROOT/scripts/collector.py" analyze --run-dir "$WORKSPACE_ROOT/云
   --analysis-result "$WORKSPACE_ROOT/云图数据资源/example/model-result.json" --output "$WORKSPACE_ROOT/云图数据资源/example/analysis.md"
 python "$SKILL_ROOT/scripts/check_runtime_sync.py" --target .system/skills/custom/yuntu-meta-skill
 ```
+
+素材详情连接器 `rpa_rpa.conn.juliang.yt.industry.content.rankings.details`（connector code 为 `rpa.conn.juliang.yt.industry.content.rankings.details`）执行首批 CSV 门禁：`collector.py collect` 委托 `scripts/yuntu_batch.py::fetch_batch`，首次最多提交 3 条详情，并在全部结果确认前禁止后续批次。仅当下载后的 CSV 可解析、有真实详情业务字段、显式素材身份且通过素材/日期校验，才算有效 CSV；仅有成功状态、链接、JSON payload、空文件、错误页或错误字段不算成功。首批全部确认后有效 CSV 为 0 时，持久化 `firstBatchCsvGate.status=blocked`、`errorCode=first_batch_no_valid_csv`，暂停本次运行后续所有 RPA（含榜单、详情、补位和重提），提示“当前入参可能有问题”。状态未确认时为 `unconfirmed`，同样禁止后续提交，只能查询已登记的原任务。首批部分有效且全部任务已确认才允许继续；有效 CSV 后的视频、落盘或高光处理失败按原失败规则处理，不归因于入参。
+
+门禁记录保存在 `batch-manifest.json` 和 `run-summary.json`，`collect`/`status` 回执包含 `firstBatchCsvGate` 与 `rpa_paused`。重新执行、恢复或 `retry-highlights` 都不能清除暂停；修正参数后须使用新运行目录重新验证首批，不在原目录补位或自动重试。旧运行恢复时也检查已提交首批的真实 CSV，不得把后续素材改作“新首批”。
 
 采集或后处理返回 `partial`、`failed` 或非零退出码后，默认动作是停止并保留现场。RPA 失败项不自动重试，也不提供失败项或 unresolved 项的 RPA 重提命令；先向用户说明失败事实和已有落盘数据。`retry-highlights` 只处理本地已落盘详情的图片后处理，不调用 RPA，只有用户明确选择恢复后才执行。用户在当前会话表达过暂停、停止或质疑重跑时，后续外部采集动作必须再次取得明确授权。只读诊断、状态查询和本地完整性核对可以直接执行。
 
@@ -196,3 +198,7 @@ python "$SKILL_ROOT/scripts/collector.py" --runtime-config-stdin --expected-gate
 派生 Skill 的自定义日期表单须声明 `max_policy: t_plus_4`，说明“前 4 天及以前”，但表单只是第一道提示。新 Skill 的每条自定义日期实时取数路径在提交榜单或详情 RPA **之前**都必须调用随包交付的 `scripts/date_policy.py` 的 `validate_custom_period`（或委托本元技能的 `QuerySpec`/`collector.py collect`），并让非零退出阻断网络请求。若新 Skill 独立安装，须将该日期校验代码与调用点、测试一同纳入自己的包；只复制表单或提示词不算完成。自定义日报默认统计日可设为北京时间前 4 天；明确请求较晚日期时返回可用上限并请用户改选，不自动替用户改日。`LAST_7_DAYS`/`LAST_30_DAYS` 继续传原生周期枚举，不伪造自定义日期。可用命令：`python "$SKILL_ROOT/scripts/date_policy.py" --start-date YYYYMMDD --end-date YYYYMMDD`。
 
 交付派生包前至少验证北京时间边界 T-4 通过、T-3/今天/未来拒绝、369 天下界及 45 天跨度、非法日期不会提交任何 RPA；检查新包中的脚本、表单、依赖、报告资源和回执路径均存在且可从干净解包目录运行。若引入直接连接器调用，不得绕过日期门禁、账号授权与事实校验。
+
+派生 Skill 必须继承上述首批 CSV 门禁。所有榜单/详情提交路径应委托本元技能的 `collector.py collect` 或 `scripts/yuntu_batch.py::fetch_batch`；完全独立安装时，须随包交付同等门禁代码、CSV 业务校验、持久状态和实际调度调用点及全部依赖。只复制提示词、表单或独立调用动态详情客户端不算完成；不得让补位、恢复、重试或替代入口绕过 `blocked`/`unconfirmed`，不得因已有成功状态、链接或后处理失败误判门禁。
+
+派生包交付前必须做行为测试：首批全无有效 CSV 只提交首批并提示入参风险、部分有效且全体确认才继续、pending/超时/未知状态不提交下一批、下载失败/空或错误 CSV 不放行、视频或高光失败不误触发、重启/恢复后仍暂停且没有新 RPA、修正参数在新运行重新验证。必须从干净解包目录执行这些验收，核对门禁运行代码、调用点及依赖都包含在独立交付闭包中，验收测试保留在派生源码仓；不能用旧运行或说明文字代替实际验收。

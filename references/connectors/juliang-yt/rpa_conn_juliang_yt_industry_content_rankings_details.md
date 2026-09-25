@@ -21,3 +21,7 @@
 ## 新详情字段
 
 规范化器读取 `coreData`、`audiencePortrait`、`secondTrend`、`contentFormula`、`creativeBreakdown` 和 `videoScript`。五个 `secondTrend` key 映射为点赞、流失、点击、互动、评论 canonical 趋势；根 `materialId` 与 `coreData.objectId` 冲突、`dateType` 与请求 `date_type` 不一致时拒绝。
+
+## 首批 CSV 保护入口
+
+详情实际取数通过 `collector.py collect` / `yuntu_batch.fetch_batch` 调度，首次最多 3 条，首批零有效 CSV 暂停后续所有 RPA，并提示入参可能有问题；未知状态只核实已登记任务。`rpa_dynamic_detail_client.py` 的 `detail`、`schema`、`validate` 保留用于诊断，`fetch`（含 `--no-download`）拒绝直提交，防止循环单素材调用绕过批次门禁。动态榜单客户端也先检查输出目录及所属运行的暂停记录。

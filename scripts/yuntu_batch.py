@@ -223,6 +223,108 @@ def _materialize_records(result, *, csv_path, json_path, downloader):
     return unpacked.records, str(json_path)
 
 
+def validate_detail_csv_records(records):
+    """Require connector business fields and an explicit identity before normalization.
+
+    The normalizer's historical identity fallback must not turn an error CSV
+    into successful first-batch evidence.
+    """
+    if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+        raise YuntuBatchError("detail CSV must contain exactly one business record")
+    raw = records[0]
+    core = raw.get("coreData") if isinstance(raw.get("coreData"), dict) else {}
+    identities = [raw.get(key) for key in (
+        "materialId", "material_id", "coreData.materialId", "core_data.material_id"
+    )] + [core.get("objectId"), core.get("materialId")]
+    structured_fields = ("trends", "coreData", "secondTrend", "contentFormula",
+                         "creativeBreakdown", "audiencePortrait")
+    business_values = any(isinstance(raw.get(key), (dict, list)) for key in structured_fields)
+    business_values = business_values or any(
+        isinstance(raw.get(key), str) and raw[key].strip() for key in ("title", "videoUrl", "video_url")
+    ) or any(value not in (None, "") and key not in raw.get("__parse_failed_fields__", [])
+             for key, value in raw.items() if key.startswith((
+                 "coreData.", "secondTrend.", "contentFormula.", "creativeBreakdown."
+             )))
+    if not any(value not in (None, "") for value in identities) or not business_values:
+        raise YuntuBatchError("detail CSV lacks explicit material identity or business fields")
+
+
+def _update_first_batch_gate(manifest, *, drained=False):
+    gate = manifest.get("firstBatchCsvGate")
+    if not gate or gate.get("status") in {"passed", "blocked"}:
+        return gate
+    ids = gate["materialIds"]
+    outcomes = gate.setdefault("outcomes", {})
+    gate["validCsvCount"] = sum(outcomes.get(mid) == "valid_csv" for mid in ids)
+    if not drained:
+        return gate
+    if any(outcomes.get(mid) in (None, "unconfirmed") for mid in ids):
+        gate.update(status="unconfirmed", errorCode="first_batch_unconfirmed",
+                    message="首批素材详情任务状态尚未确认，已暂停后续所有 RPA 提交；仅可查询已登记任务，不能补位或重新提交。")
+    elif gate["validCsvCount"]:
+        gate.update(status="passed", errorCode=None, message="首批详情 CSV 已验证，可继续后续批次。")
+    else:
+        gate.update(status="blocked", errorCode="first_batch_no_valid_csv",
+                    message="首批素材详情未返回有效 CSV 数据，当前入参可能有问题。已暂停本次运行后续所有 RPA 任务；请核对账号、日期及详情入参，修正后使用新运行目录重测首批。")
+    return gate
+
+
+def _set_first_batch_outcome(manifest, material_id, outcome):
+    gate = manifest.get("firstBatchCsvGate", {})
+    if material_id in gate.get("materialIds", []):
+        # Once business CSV has been verified, later persistence/media failures
+        # cannot relabel the request as an input failure.
+        if gate.setdefault("outcomes", {}).get(material_id) != "valid_csv":
+            gate["outcomes"][material_id] = outcome
+    _update_first_batch_gate(manifest)
+
+
+def _restore_first_batch_gate(root, manifest, detail_date_params):
+    """Recover first-wave evidence without allowing a later wave to become a probe."""
+    gate = manifest.get("firstBatchCsvGate")
+    if not gate:
+        ids = list(dict.fromkeys(item["material_id"] for item in
+            manifest.get("submittedMaterials", []) if isinstance(item, dict) and item.get("material_id")))
+        if not ids:
+            return
+        gate = manifest["firstBatchCsvGate"] = {
+            "status": "pending", "functionCode": detail_dynamic_rpa.CONNECTOR_CODE,
+            "materialIds": ids[:DETAIL_WAVE_CONCURRENCY], "outcomes": {}, "validCsvCount": 0,
+        }
+    if gate.get("status") in {"passed", "blocked"}:
+        return
+    terminal_ids = {item.get("material_id") for bucket in ("selectedMaterials", "rejectedMaterials")
+                    for item in manifest.get(bucket, []) if isinstance(item, dict)}
+    candidates = {item.get("material_id"): item for item in manifest.get("candidateMaterials", [])}
+    for mid in gate["materialIds"]:
+        csv_path = root / "raw-csv" / "details" / f"{mid}.csv"
+        try:
+            records = parse_csv_records(csv_path)
+            validate_detail_csv_records(records)
+            normalize_detail_records(records, material_id=mid,
+                source_path=_relative(root, csv_path), expected_context=detail_date_params,
+                expected_selection_group=_expected_selection_group(candidates.get(mid, {})))
+        except Exception:
+            if mid in terminal_ids:
+                _set_first_batch_outcome(manifest, mid, "no_valid_csv")
+        else:
+            _set_first_batch_outcome(manifest, mid, "valid_csv")
+    _update_first_batch_gate(manifest, drained=True)
+
+
+def _pause_for_first_batch(root, manifest, summary, manifest_path):
+    gate = manifest["firstBatchCsvGate"]
+    manifest.update(status="paused", error=gate["message"])
+    summary.update(status="paused", collectionStatus="paused", firstBatchCsvGate=gate,
+                   taskRuns=manifest.get("taskRuns", {}))
+    summary["stages"]["details"]["requestStatus"] = "paused"
+    _sync_stage_counts(summary, manifest, root)
+    write_json_atomically(manifest, manifest_path)
+    _save_summary(root, summary)
+    set_stage(root, "partial", reason=gate["message"])
+    return 1
+
+
 def _new_manifest(
     *,
     list_params,
@@ -800,6 +902,7 @@ def _finalize_details(
     )
     manifest["status"] = "success" if succeeded else incomplete_status
     summary["status"] = manifest["status"]
+    summary["firstBatchCsvGate"] = manifest.get("firstBatchCsvGate")
     summary["stages"]["details"]["requestStatus"] = (
         "completed" if succeeded else "partial"
     )
@@ -832,16 +935,19 @@ def _invoke_detail_result(*, item, shop_id, detail_date_params, invoker):
 
 def _persist_detail(
     *, root, summary, item, gateway_result, downloader, detail_fetch_sec,
-    expected_context=None,
+    expected_context=None, on_csv_valid=None,
 ):
     """Normalize a successful detail response and build its durable manifest entry."""
     material_id = item["material_id"]
+    if unpack_gateway_result(gateway_result).kind != "files":
+        raise YuntuBatchError("detail response must return a downloadable CSV file")
     raw_detail, detail_source = _materialize_records(
         gateway_result,
         csv_path=root / "raw-csv" / "details" / f"{material_id}.csv",
         json_path=root / "raw-json" / "details" / f"{material_id}.json",
         downloader=downloader,
     )
+    validate_detail_csv_records(raw_detail)
     detail_record = normalize_detail_records(
         raw_detail,
         material_id=material_id,
@@ -849,6 +955,8 @@ def _persist_detail(
         expected_selection_group=_expected_selection_group(item),
         expected_context=expected_context,
     )
+    if on_csv_valid is not None:
+        on_csv_valid()
     detail_output = root / "normalized" / "detail-records" / f"{material_id}.json"
     write_json_atomically(detail_record, detail_output)
     _record_artifact(
@@ -1095,6 +1203,12 @@ def fetch_batch(
         summary = _open_collection_summary(root, contract)
     except run_state.YuntuRunStateError as exc:
         raise YuntuBatchError(str(exc)) from exc
+    if manifest_path.is_file():
+        existing = _load_json(manifest_path)
+        _restore_first_batch_gate(root, existing, detail_date_params)
+        write_json_atomically(existing, manifest_path)
+        if existing.get("firstBatchCsvGate", {}).get("status") == "blocked":
+            return _pause_for_first_batch(root, existing, summary, manifest_path)
     if get_workflow_status(root)["stage"] in {"not_started", "collecting"}:
         summary = set_stage(root, "collecting")
     manifest = _open_or_new_manifest(
@@ -1111,7 +1225,14 @@ def fetch_batch(
     started = time.monotonic()
     try:
         reusable_list = _reusable_list_artifact(root, list_params, detail_date_params)
-        if reusable_list is not None:
+        resuming_gate = bool(manifest.get("firstBatchCsvGate"))
+        if resuming_gate:
+            # Contract was checked above. Resume only the existing first-batch
+            # tasks; even a new list request would violate the closed gate.
+            list_records = _load_json(root / "normalized" / "list-records.json")
+            raw_list, list_source = None, None
+            summary["stages"]["list"]["requestStatus"] = "reused"
+        elif reusable_list is not None:
             raw_list, list_source = parse_csv_records(reusable_list), str(reusable_list)
             summary["stages"]["list"]["requestStatus"] = "reused"
         else:
@@ -1123,7 +1244,8 @@ def fetch_batch(
                 json_path=root / "raw-json" / "list-response.json",
                 downloader=downloader,
             )
-        list_records = normalize_list_records(raw_list, source_path=_relative(root, list_source))
+        if not resuming_gate:
+            list_records = normalize_list_records(raw_list, source_path=_relative(root, list_source))
         manifest["fullListCount"] = len(list_records)
         list_record_path = root / "normalized" / "list-records.json"
         write_json_atomically(list_records, list_record_path)
@@ -1226,6 +1348,7 @@ def fetch_batch(
     next_index = 0
 
     def checkpoint():
+        summary["firstBatchCsvGate"] = manifest.get("firstBatchCsvGate")
         _sync_task_run_field_aliases(manifest)
         if highlight_spec is not None:
             write_highlights_manifest(root, frames_by_material, configuration_fingerprint)
@@ -1263,6 +1386,11 @@ def fetch_batch(
             # task id is the authority; submittedMaterials alone is not enough
             # to justify another remote submission.
             for item in candidates:
+                gate = manifest.get("firstBatchCsvGate", {})
+                if item["material_id"] in selected_ids or (
+                    gate.get("status") != "passed" and item["material_id"] not in gate.get("materialIds", [])
+                ):
+                    continue
                 attempt = _active_detail_task_attempt(manifest, item["material_id"])
                 if attempt is None:
                     continue
@@ -1288,6 +1416,10 @@ def fetch_batch(
 
         while True:
             if not pending_details and not pending_highlights:
+                gate = _update_first_batch_gate(manifest, drained=True)
+                if gate and gate["status"] in {"blocked", "unconfirmed"}:
+                    checkpoint()
+                    break
                 wave, next_index = _next_detail_wave(
                     candidates,
                     next_index,
@@ -1297,6 +1429,13 @@ def fetch_batch(
                 )
                 if not wave:
                     break
+                if not manifest.get("firstBatchCsvGate"):
+                    manifest["firstBatchCsvGate"] = {
+                        "status": "pending", "functionCode": detail_dynamic_rpa.CONNECTOR_CODE,
+                        "materialIds": [item["material_id"] for item in wave],
+                        "outcomes": {}, "validCsvCount": 0,
+                    }
+                    checkpoint()
                 for item in wave:
                     manifest["submittedMaterials"].append(_manifest_material(item))
                     if async_details:
@@ -1311,6 +1450,7 @@ def fetch_batch(
                                 shop_id, _detail_request(item, detail_date_params)
                             )
                         except Exception as exc:
+                            _set_first_batch_outcome(manifest, item["material_id"], "unconfirmed")
                             task_run = _task_run(manifest, item, detail_date_params)
                             attempt.update({
                                 "request_status": "unresolved",
@@ -1328,6 +1468,7 @@ def fetch_batch(
                             })
                             continue
                         if not isinstance(task_group_id, str) or not task_group_id.strip():
+                            _set_first_batch_outcome(manifest, item["material_id"], "unconfirmed")
                             error_text = "detail task submission returned an empty task_group_id"
                             attempt.update({
                                 "request_status": "unresolved",
@@ -1372,6 +1513,8 @@ def fetch_batch(
                         )
                     pending_details[future] = item["material_id"]
                 checkpoint()
+                if not pending_details and not pending_highlights:
+                    continue
 
             done, _ = wait(
                 set(pending_details) | set(pending_highlights),
@@ -1389,7 +1532,8 @@ def fetch_batch(
                             if task_attempt is not None:
                                 error_text = str(result["error"])
                                 error_class = _detail_wait_error_class(result["error"])
-                                if error_class not in {"remote_failed", "protocol"}:
+                                if error_class != "remote_failed":
+                                    _set_first_batch_outcome(manifest, material_id, "unconfirmed")
                                     task_attempt.update({
                                         "request_status": "unresolved",
                                         "remote_status": task_attempt.get("remote_status", "submitted"),
@@ -1415,6 +1559,15 @@ def fetch_batch(
                                         })
                                     continue
                             raise result["error"]
+                        response = result["result"]
+                        if task_attempt is None and isinstance(response, dict) and "status" in response:
+                            if str(response["status"]).casefold() not in {"completed", "partial_success", "failed"}:
+                                _set_first_batch_outcome(manifest, material_id, "unconfirmed")
+                                unresolved_ids.add(material_id)
+                                manifest["unresolvedMaterials"].append({
+                                    **_manifest_material(item), "reason": "poll_unconfirmed",
+                                })
+                                continue
                         if task_attempt is not None:
                             terminal_status = str(
                                 result["result"].get("status") or ""
@@ -1424,9 +1577,16 @@ def fetch_batch(
                                     f"RPA task failed: {material_id}"
                                 )
                             if terminal_status not in {"completed", "partial_success"}:
-                                raise YuntuBatchError(
-                                    f"RPA task returned unknown status {terminal_status!r}: {material_id}"
-                                )
+                                _set_first_batch_outcome(manifest, material_id, "unconfirmed")
+                                task_attempt.update(request_status="unresolved", remote_status="pending")
+                                _task_run(manifest, item, detail_date_params)["status"] = "unresolved"
+                                unresolved_ids.add(material_id)
+                                _remove_material_from_bucket(manifest, "unresolvedMaterials", material_id)
+                                manifest["unresolvedMaterials"].append({
+                                    **_manifest_material(item), "reason": "poll_unconfirmed",
+                                    "error": f"unconfirmed remote status: {terminal_status}",
+                                })
+                                continue
                             task_run = _task_run(manifest, item, detail_date_params)
                             task_attempt.update({
                                 "request_status": "completed",
@@ -1445,6 +1605,7 @@ def fetch_batch(
                             downloader=downloader,
                             detail_fetch_sec=_elapsed(result["started"]),
                             expected_context=detail_date_params,
+                            on_csv_valid=lambda: _set_first_batch_outcome(manifest, material_id, "valid_csv"),
                         )
                         if task_attempt is not None:
                             task_run = _task_run(manifest, item, detail_date_params)
@@ -1464,12 +1625,22 @@ def fetch_batch(
                         unresolved_ids.discard(material_id)
                         submit_highlight(highlight_executor, detail_record)
                     except Exception as exc:
+                        if (task_attempt is None and result["error"] is not None
+                                and _detail_wait_error_class(exc) != "remote_failed"):
+                            _set_first_batch_outcome(manifest, material_id, "unconfirmed")
+                            unresolved_ids.add(material_id)
+                            manifest["unresolvedMaterials"].append({
+                                **_manifest_material(item), "reason": "poll_unconfirmed", "error": str(exc),
+                            })
+                            continue
+                        _set_first_batch_outcome(manifest, material_id, "no_valid_csv")
                         rejected_ids.add(material_id)
                         if task_attempt is not None:
                             error_text = str(exc)
                             task_run = _task_run(manifest, item, detail_date_params)
                             task_attempt.update({
                                 "request_status": "failed",
+                                "remote_status": "failed",
                                 "artifact_status": "failed",
                                 "last_observed_at": _now_iso(),
                                 "error_class": (
@@ -1496,6 +1667,8 @@ def fetch_batch(
                     _record_highlight_result(manifest, frames_by_material, result)
             checkpoint()
 
+    if manifest.get("firstBatchCsvGate", {}).get("status") in {"blocked", "unconfirmed"}:
+        return _pause_for_first_batch(root, manifest, summary, manifest_path)
     manifest["selectedMaterials"] = sorted(
         manifest["selectedMaterials"], key=lambda item: item.get("rank", 0)
     )
@@ -1549,6 +1722,8 @@ def collection_status(*, output_dir):
         "parameterFingerprint": summary.get("parameterFingerprint"),
         "collectionContract": summary.get("collectionContract"),
         "taskRuns": manifest.get("taskRuns", {}),
+        "firstBatchCsvGate": manifest.get("firstBatchCsvGate"),
+        "rpa_paused": manifest.get("firstBatchCsvGate", {}).get("status") in {"blocked", "unconfirmed"},
         "stages": {
             "list": {
                 "requestStatus": list_stage.get("requestStatus", "unknown"),
@@ -1619,6 +1794,8 @@ def retry_highlights_batch(*, output_dir, highlight_spec):
         manifest = _load_json(manifest_path)
     except (OSError, ValueError) as exc:
         raise YuntuBatchError("existing batch manifest is unreadable") from exc
+    if manifest.get("firstBatchCsvGate", {}).get("status") in {"blocked", "unconfirmed"}:
+        return _pause_for_first_batch(root, manifest, summary, manifest_path)
     summary = set_stage(root, "collecting", recovery="retry_highlights")
 
     details = []

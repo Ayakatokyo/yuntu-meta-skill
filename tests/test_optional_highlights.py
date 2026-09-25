@@ -1,4 +1,5 @@
 import json
+import csv
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,11 +22,18 @@ class _Invoker:
         return {"success": True, "data": [{"materialId": "101"}]}
 
     def invoke_detail(self, _shop_id, params):
-        return {"success": True, "data": [{
-            "materialId": params["material_id"],
-            "dateRangeType": params["date_range_type"],
-            "trends": [{"trendName": "点击指数", "series": [{"second": 0, "value": 1}]}],
-        }]}
+        return {"status": "completed", "files": [{"fileUrl": params["material_id"]}]}
+
+    def download_file(self, material_id, target):
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(["materialId", "dateRangeType", "trends"])
+            writer.writerow([material_id, "LAST_7_DAYS", json.dumps([
+                {"trendName": "点击指数", "series": [{"second": 0, "value": 1}]}
+            ])])
+        return path
 
 
 class OptionalHighlightTests(unittest.TestCase):
@@ -53,6 +61,7 @@ class OptionalHighlightTests(unittest.TestCase):
                 candidate_top_n=1000,
                 output_dir=Path(directory),
                 invoker=_Invoker(),
+                downloader=_Invoker(),
                 highlight_spec=None,
             )
             manifest = json.loads((Path(directory) / "batch-manifest.json").read_text(encoding="utf-8"))

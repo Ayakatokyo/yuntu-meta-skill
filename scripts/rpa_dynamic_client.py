@@ -513,14 +513,35 @@ def cmd_list_accounts(_args: argparse.Namespace) -> None:
     print(json.dumps(list_accounts(detail), ensure_ascii=False, indent=2))
 
 
+def _assert_output_rpa_not_paused(output_dir: Path) -> None:
+    """A nested artifact directory remains part of its enclosing paused run."""
+    for root in (output_dir, *output_dir.parents):
+        for name in ("batch-manifest.json", "run-summary.json"):
+            path = root / name
+            if not path.is_file():
+                continue
+            try:
+                state = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(state, dict):
+                    raise ValueError("state must be an object")
+            except (OSError, ValueError) as exc:
+                raise ContractError("无法核对运行门禁，暂停 RPA；请使用 collector.py status 检查。") from exc
+            gate = state.get("firstBatchCsvGate") or {}
+            if not isinstance(gate, dict) or gate.get("status") in {"blocked", "unconfirmed"} or (
+                gate.get("status") == "pending" and gate.get("materialIds")
+            ) or state.get("status") == "paused":
+                raise ContractError("首批详情 CSV 门禁已暂停后续所有 RPA；请使用 collector.py status 核对现有运行。")
+
+
 def cmd_fetch(args: argparse.Namespace) -> None:
-    detail = fetch_connector_detail()
-    params = validate_business_params(detail, load_params(args))
-    result = invoke(detail, args.shop_id, params)
     output_dir = external_runtime_path(
         workspace_root / args.output_dir,
         label="RPA output directory",
     )
+    _assert_output_rpa_not_paused(output_dir)
+    detail = fetch_connector_detail()
+    params = validate_business_params(detail, load_params(args))
+    result = invoke(detail, args.shop_id, params)
     file_summaries = [] if args.no_download else download_and_parse_files(detail, result, output_dir, args.preview_limit)
     print(
         json.dumps(
