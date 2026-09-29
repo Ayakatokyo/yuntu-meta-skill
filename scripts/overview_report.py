@@ -472,10 +472,10 @@ def build_overview_data(run_dir: Path, registry_path: Path, io_cache=None, asset
         brand_views = {}
         for tab in brand_overview.get("tabs", []):
             tab_id = tab["id"]
-            material_ids = set(brand_overview["materialIdsByTab"].get(tab_id, []))
+            brand_material_ids = set(brand_overview["materialIdsByTab"].get(tab_id, []))
             if tab_id == "all":
                 brand_views[tab_id] = {
-                    "materialCount": len(material_ids),
+                    "materialCount": len(brand_material_ids),
                     "audienceOverview": audience_overview,
                     "scriptFormulaOverview": script_formula_overview,
                     "marketingSellingPointOverview": marketing_selling_point_overview,
@@ -483,25 +483,60 @@ def build_overview_data(run_dir: Path, registry_path: Path, io_cache=None, asset
                 }
                 continue
             try:
-                scoped_audience = build_audience_overview(run_root, material_ids, io_cache=io_cache)
+                scoped_audience = build_audience_overview(run_root, brand_material_ids, io_cache=io_cache)
             except AudienceOverviewError:
                 scoped_audience = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "audience_overview_unavailable"}]}
             try:
-                scoped_script = build_script_formula_overview(run_root, material_ids, io_cache=io_cache)
+                scoped_script = build_script_formula_overview(run_root, brand_material_ids, io_cache=io_cache)
             except ScriptFormulaOverviewError:
                 scoped_script = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "script_formula_overview_unavailable"}]}
             try:
-                scoped_marketing = build_marketing_selling_point_overview(run_root, material_ids, io_cache=io_cache)
+                scoped_marketing = build_marketing_selling_point_overview(run_root, brand_material_ids, io_cache=io_cache)
             except MarketingSellingPointOverviewError:
                 scoped_marketing = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "marketing_selling_point_overview_unavailable"}]}
             brand_views[tab_id] = {
-                "materialCount": len(material_ids),
+                "materialCount": len(brand_material_ids),
                 "audienceOverview": scoped_audience,
                 "scriptFormulaOverview": scoped_script,
                 "marketingSellingPointOverview": scoped_marketing,
-                "highlightOverview": _filter_highlight_overview(highlight_overview, material_ids),
+                "highlightOverview": _filter_highlight_overview(highlight_overview, brand_material_ids),
             }
         brand_overview["views"] = brand_views
+
+    # Detail pages keep list-derived audience and selling-point facts, but
+    # aggregate them only over materials with verified detail records.
+    detail_ids = {
+        str(item["materialId"])
+        for item in single_material_overview.get("materials", [])
+        if isinstance(item, dict) and item.get("materialId") is not None
+    } & material_ids
+
+    def detail_list_view(scoped_ids: set[str]) -> dict:
+        try:
+            scoped_audience = build_audience_overview(run_root, scoped_ids, io_cache=io_cache)
+        except AudienceOverviewError:
+            scoped_audience = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "audience_overview_unavailable"}]}
+        try:
+            scoped_marketing = build_marketing_selling_point_overview(run_root, scoped_ids, io_cache=io_cache)
+        except MarketingSellingPointOverviewError:
+            scoped_marketing = {"schemaVersion": 1, "status": "unavailable", "gaps": [{"code": "marketing_selling_point_overview_unavailable"}]}
+        return {
+            "materialCount": len(scoped_ids),
+            "audienceOverview": scoped_audience,
+            "marketingSellingPointOverview": scoped_marketing,
+        }
+
+    detail_views = {"all": detail_list_view(detail_ids)}
+    if brand_overview.get("status") == "available":
+        for tab in brand_overview.get("tabs", []):
+            if tab["id"] == "all":
+                continue
+            brand_ids = set(brand_overview["materialIdsByTab"].get(tab["id"], []))
+            detail_views[tab["id"]] = detail_list_view(detail_ids & brand_ids)
+    detail_scope = {
+        "materialIds": [row["materialId"] for row in rows if row["materialId"] in detail_ids],
+        "views": detail_views,
+    }
     return {
         "schemaVersion": SCHEMA_VERSION,
         "kind": OVERVIEW_KIND,
@@ -522,6 +557,7 @@ def build_overview_data(run_dir: Path, registry_path: Path, io_cache=None, asset
         "highlightOverview": highlight_overview,
         "singleMaterialOverview": single_material_overview,
         "brandOverview": brand_overview,
+        "detailScope": detail_scope,
     }
 
 
@@ -543,6 +579,14 @@ def render_overview_html(model: dict) -> str:
 body { margin:0; padding:32px; background:var(--bg); }
 main { max-width:1120px; margin:0 auto; }
 h1 { margin:0 0 22px; font-size:30px; line-height:1.25; letter-spacing:-.02em; }
+.report-header { display:flex; align-items:center; justify-content:space-between; gap:18px; margin-bottom:22px; flex-wrap:wrap; }
+.report-header h1 { margin:0; }
+.scope-switch { display:flex; gap:10px; margin-left:auto; }
+.scope-switch button { width:150px; height:54px; padding:0 12px; border-color:var(--accent); border-radius:9px; background:#fff; color:var(--accent); font-size:16px; font-weight:650; line-height:1.3; }
+.scope-switch button:hover:not(:disabled) { border-color:#1d4ed8; background:var(--accent-soft); color:var(--accent); }
+.scope-switch button.active { background:var(--accent); color:#fff; }
+.scope-switch button.active:hover:not(:disabled) { border-color:#1d4ed8; background:#1d4ed8; }
+@media (max-width:760px) { .report-header { align-items:stretch; flex-direction:column; } .scope-switch { width:100%; margin-left:0; } .scope-switch button { flex:1; width:auto; min-width:0; } }
 .toolbar,.summary,.pager { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .toolbar { padding:14px; background:var(--surface); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 24px rgba(34,64,112,.06); }
 input[type=search] { min-width:300px; flex:1; height:44px; padding:10px 13px; border:1px solid var(--line-strong); border-radius:9px; background:var(--surface); color:var(--text); font-size:15px; outline:none; }
@@ -804,8 +848,8 @@ body.modal-open { overflow:hidden; }
 </head>
 <body>
 <main>
-<h1>云图素材榜单数据工作台</h1>
-<nav class="section-nav" aria-label="报告部分"><button type="button" data-section="filters" class="active">素材筛选条件</button><button type="button" data-section="materials">素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts">脚本内容公式</button><button type="button" data-section="marketing-selling-points">营销卖点</button><button type="button" data-section="highlights">高光帧数据</button><button type="button" data-section="single-material-data">单素材数据</button></nav>
+<header class="report-header"><h1>云图素材榜单数据工作台</h1><div id="material-scope-switch" class="scope-switch" role="group" aria-label="素材数据口径"><button type="button" data-material-scope="all" class="active" aria-pressed="true">全量素材</button><button type="button" data-material-scope="detail" aria-pressed="false">详情素材</button></div></header>
+<nav class="section-nav" aria-label="报告部分"><button type="button" data-section="filters" class="active">素材筛选条件</button><button type="button" data-section="materials">全量素材榜单</button><button type="button" data-section="audience">人群数据</button><button type="button" data-section="scripts" data-detail-only hidden>脚本内容公式</button><button type="button" data-section="marketing-selling-points">营销卖点</button><button type="button" data-section="highlights" data-detail-only hidden>高光帧数据</button><button type="button" data-section="single-material-data" data-detail-only hidden>单素材数据</button></nav>
 <section id="filters-panel" class="report-section" data-section-panel="filters"><div class="filter-config-shell"><h2>素材筛选条件</h2><div id="filter-config"></div></div></section>
 <section id="materials-panel" class="report-section" data-section-panel="materials" hidden>
 <div class="brand-tabs" data-brand-tabs="materials" role="tablist" aria-label="素材榜单品牌筛选"></div>
@@ -927,6 +971,9 @@ body.modal-open { overflow:hidden; }
   let scriptFormula = model.scriptFormulaOverview || {status: "unavailable"};
   let marketingSellingPointOverview = model.marketingSellingPointOverview || {status: "unavailable"};
   let highlightOverview = model.highlightOverview || {status: "unavailable", cards: []};
+  const detailScope = model.detailScope || {materialIds: [], views: {}};
+  const detailIds = new Set(detailScope.materialIds || []);
+  const scopeState = {selected: "all"};
   const brandOverview = model.brandOverview || {status: "unavailable", tabs: [], materialIdsByTab: {}, views: {}};
   const brandState = {selected: brandOverview.status === "available" && brandOverview.tabs.some(tab => tab.id === "all") ? "all" : null};
   const colors = ["#2563eb", "#60a5fa", "#14b8a6", "#f59e0b", "#ef6a6a", "#8b5cf6", "#64748b", "#22c55e"];
@@ -944,8 +991,8 @@ body.modal-open { overflow:hidden; }
   const singleCoreState = {visibleFieldIds: null, draftFieldIds: null, fieldSearch: "", activeFieldGroup: singleCoreFieldGroupOrder[0]};
   function activeBrandTab() { return (brandOverview.tabs || []).find(tab => tab.id === brandState.selected) || (brandOverview.tabs || []).find(tab => tab.id === "all") || null; }
   function updateBrandTabButtons() { document.querySelectorAll("[data-brand-tab-id]").forEach(button => { const active = button.dataset.brandTabId === brandState.selected; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); }); }
-  function renderBrandTabs() { document.querySelectorAll("[data-brand-tabs]").forEach(container => { const tabs = brandOverview.status === "available" ? (brandOverview.tabs || []) : []; container.innerHTML = tabs.map(tab => `<button type="button" role="tab" data-brand-tab-id="${escaped(tab.id)}" aria-selected="${tab.id === brandState.selected}">${escaped(tab.label)}<span class="brand-tabs-count">${escaped(tab.count)}</span></button>`).join(""); }); updateBrandTabButtons(); }
-  function applyBrandView() { const view = brandOverview.views?.[brandState.selected] || {}; audience = view.audienceOverview || model.audienceOverview || {status: "unavailable"}; scriptFormula = view.scriptFormulaOverview || model.scriptFormulaOverview || {status: "unavailable"}; marketingSellingPointOverview = view.marketingSellingPointOverview || model.marketingSellingPointOverview || {status: "unavailable"}; highlightOverview = view.highlightOverview || model.highlightOverview || {status: "unavailable", cards: []}; }
+  function renderBrandTabs() { document.querySelectorAll("[data-brand-tabs]").forEach(container => { const tabs = brandOverview.status === "available" ? (brandOverview.tabs || []) : []; container.innerHTML = tabs.map(tab => { const count = scopeState.selected === "detail" ? (detailScope.views?.[tab.id]?.materialCount ?? 0) : tab.count; return `<button type="button" role="tab" data-brand-tab-id="${escaped(tab.id)}" aria-selected="${tab.id === brandState.selected}">${escaped(tab.label)}<span class="brand-tabs-count">${escaped(count)}</span></button>`; }).join(""); }); updateBrandTabButtons(); }
+  function applyBrandView() { const view = brandOverview.views?.[brandState.selected] || {}; const scopedListView = scopeState.selected === "detail" ? (detailScope.views?.[brandState.selected || "all"] || detailScope.views?.all || {}) : view; audience = scopedListView.audienceOverview || (scopeState.selected === "all" ? model.audienceOverview : null) || {status: "unavailable"}; scriptFormula = view.scriptFormulaOverview || model.scriptFormulaOverview || {status: "unavailable"}; marketingSellingPointOverview = scopedListView.marketingSellingPointOverview || (scopeState.selected === "all" ? model.marketingSellingPointOverview : null) || {status: "unavailable"}; highlightOverview = view.highlightOverview || model.highlightOverview || {status: "unavailable", cards: []}; }
   function setBrandSelection(tabId) { if (!brandOverview.tabs.some(tab => tab.id === tabId)) return; brandState.selected = tabId; applyBrandView(); state.page = 1; state.exactMaterialId = null; scriptFormulaState.selectedPrimary = null; scriptFormulaState.selectedSecondary = null; marketingSellingPointState.selectedPrimary = null; marketingSellingPointState.selectedSecondary = null; highlightState.page = 1; updateBrandTabButtons(); render(); renderAudience(); renderScriptFormula(); renderMarketingSellingPoints(); renderHighlights(); }
   const singleSelector = document.getElementById("single-material-selector"), singleCoreModal = document.getElementById("single-core-field-management"), singleCoreFieldGroups = document.getElementById("single-core-field-groups"), singleCoreFieldSearch = document.getElementById("single-core-field-search"), singleCoreFieldOptions = document.getElementById("single-core-field-options"), singleCoreSelectedFields = document.getElementById("single-core-selected-fields"), singleCoreSelectedCount = document.getElementById("single-core-selected-count"), singleHighlightModal = document.getElementById("single-highlight-modal"), singleHighlightImage = document.getElementById("single-highlight-modal-image"), singleHighlightCaption = document.getElementById("single-highlight-modal-caption");
   function currentSingleMaterial() { return singleMaterials.find(item => item.materialId === singleState.materialId) || singleMaterials[0] || null; }
@@ -979,7 +1026,9 @@ body.modal-open { overflow:hidden; }
     const context = model.queryContext || {}, entries = [];
     const add = (label, value) => { if (filterConfigHasValue(value)) entries.push({ label, value: filterConfigText(value) }); };
     add(filterConfigLabels.industry, context.industry);
-    add(filterConfigLabels.period, context.period);
+    const period = context.period && typeof context.period === "object" ? { ...context.period } : context.period;
+    if (period && period.type === "CUSTOM") delete period.type;
+    add(filterConfigLabels.period, period);
     add(filterConfigLabels.filters, context.filters);
     add(filterConfigLabels.ranking, context.ranking);
     add(filterConfigLabels.materialList, context.materialList);
@@ -1088,7 +1137,6 @@ body.modal-open { overflow:hidden; }
   function display(value, field) { if (missing(value)) return "—"; if (field.id === "video_duration") return `${escaped(value)} 秒`; if (field.valueType === "rate") return `${new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 2}).format(Number(value) * 100)}%`; if (field.valueType === "number") return new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 2}).format(Number(value)); if (field.valueType === "list") return escaped(value.join("、")); if (field.valueType === "date") { const raw = String(value); return escaped(raw.length === 8 ? `${raw.slice(0, 4)}-${raw.slice(4, 6)}-${raw.slice(6)}` : raw); } return escaped(value); }
   function compareValues(left, right, field) { const leftMissing = missing(left), rightMissing = missing(right); if (leftMissing || rightMissing) return leftMissing === rightMissing ? 0 : (leftMissing ? 1 : -1); if (field.valueType === "number" || field.valueType === "rate") return Number(left) - Number(right); if (field.valueType === "date") return String(left).localeCompare(String(right)); return normalize(left).localeCompare(normalize(right)); }
   function compareRows(left, right) { const field = fieldMap[state.sort.field]; if (missing(left.values[field.id]) || missing(right.values[field.id])) return compareValues(left.values[field.id], right.values[field.id], field); const result = compareValues(left.values[field.id], right.values[field.id], field); if (result) return state.sort.direction === "desc" ? -result : result; const rank = compareValues(left.values.rank, right.values.rank, {valueType: "number"}); if (rank) return rank; return normalize(left.materialId).localeCompare(normalize(right.materialId)); }
-  function matchingRows() { const query = normalize(state.query); const rows = state.exactMaterialId ? model.rows.filter(row => row.materialId === state.exactMaterialId) : model.rows.filter(row => !query || normalize(row.materialId).includes(query) || normalize(row.values.title).includes(query)); if (state.sort.field && state.sort.direction !== "none" && fieldMap[state.sort.field] && fieldMap[state.sort.field].sortable) rows.sort(compareRows); return rows; }
   function renderFieldDialog() { state.draftFieldIds = orderedVisibleFieldIds(state.draftFieldIds || state.visibleFieldIds); fieldGroups.innerHTML = groupNames.map(group => `<button type="button" class="${!state.fieldSearch && state.activeFieldGroup === group ? "active" : ""}" data-field-group="${escaped(group)}">${escaped(group)}<span>${orderedFields.filter(field => field.group === group).length}</span></button>`).join(""); const query = normalize(state.fieldSearch); const available = query ? orderedFields.filter(field => normalize(field.label).includes(query) || normalize(field.id).includes(query)) : orderedFields.filter(field => field.group === state.activeFieldGroup); const grouped = {}; available.forEach(field => (grouped[field.group] ||= []).push(field)); fieldOptions.innerHTML = Object.entries(grouped).map(([group, fields]) => `<section class="field-option-section"><h3>${escaped(group)}</h3><div class="field-option-grid">${fields.map(field => `<label class="field-option"><input type="checkbox" data-field-id="${escaped(field.id)}"${state.draftFieldIds.includes(field.id) ? " checked" : ""}${requiredFieldIds.includes(field.id) ? " disabled" : ""}><span>${escaped(field.label)}</span></label>`).join("")}</div></section>`).join("") || '<div class="empty">没有匹配字段</div>'; const selected = state.draftFieldIds.map(id => fieldMap[id]).filter(Boolean); selectedCount.textContent = `（${selected.length}）`; selectedFields.innerHTML = selected.map(field => `<li class="field-modal-selected-item"><span class="field-drag-handle">☷</span><span>${escaped(field.label)}</span>${requiredFieldIds.includes(field.id) ? '<span class="field-required">固定</span>' : `<button type="button" data-remove-field-id="${escaped(field.id)}" aria-label="移除${escaped(field.label)}">×</button>`}</li>`).join(""); }
   function openFieldDialog() { state.draftFieldIds = orderedVisibleFieldIds(state.visibleFieldIds); state.fieldSearch = ""; state.activeFieldGroup = groupNames[0] || ""; fieldSearch.value = ""; modal.hidden = false; document.body.classList.add("modal-open"); renderFieldDialog(); fieldSearch.focus(); }
   function closeFieldDialog() { modal.hidden = true; state.draftFieldIds = null; state.fieldSearch = ""; document.body.classList.remove("modal-open"); }
@@ -1103,6 +1151,24 @@ body.modal-open { overflow:hidden; }
   highlightGrid.addEventListener("click", event => { const open = event.target.closest("[data-highlight-open]"); if (open) { openHighlightModal(open.dataset.highlightOpen, open); return; } const material = event.target.closest("[data-highlight-material-id]"); if (material) { event.preventDefault(); jumpToMaterial(material.dataset.highlightMaterialId); } });
   highlightModal.addEventListener("click", event => { if (event.target.closest("[data-highlight-action=close]")) closeHighlightModal(); });
   document.addEventListener("keydown", event => { if (event.key === "Escape" && !singleHighlightModal.hidden) closeSingleHighlight(); else if (event.key === "Escape" && !highlightModal.hidden) closeHighlightModal(); else if (event.key === "Escape" && !singleCoreModal.hidden) closeSingleCoreFieldDialog(); else if (event.key === "Escape" && !modal.hidden) closeFieldDialog(); else if (event.key === "Escape") hideChartTooltip(); });
+  const scopeSwitch = document.getElementById("material-scope-switch");
+  scopeSwitch.addEventListener("click", event => {
+    const selected = event.target.closest("[data-material-scope]")?.dataset.materialScope;
+    if (!selected || selected === scopeState.selected) return;
+    scopeState.selected = selected;
+    const detail = scopeState.selected === "detail";
+    scopeSwitch.querySelectorAll("[data-material-scope]").forEach(button => { const active = button.dataset.materialScope === selected; button.classList.toggle("active", active); button.setAttribute("aria-pressed", String(active)); });
+    document.querySelector('.section-nav [data-section="materials"]').textContent = detail ? "详情素材榜单" : "全量素材榜单";
+    document.querySelectorAll(".section-nav [data-detail-only]").forEach(button => { button.hidden = !detail; });
+    applyBrandView(); renderBrandTabs();
+    state.page = 1; state.exactMaterialId = null;
+    scriptFormulaState.selectedPrimary = null; scriptFormulaState.selectedSecondary = null;
+    marketingSellingPointState.selectedPrimary = null; marketingSellingPointState.selectedSecondary = null;
+    highlightState.page = 1;
+    if (document.querySelector(".section-nav button.active")?.hidden) document.querySelector('.section-nav button[data-section="filters"]').click();
+    render(); renderAudience(); renderMarketingSellingPoints();
+    if (detail) { renderScriptFormula(); renderHighlights(); }
+  });
   document.querySelectorAll("[data-section]").forEach(button => button.addEventListener("click", event => { const section = event.currentTarget.dataset.section; document.querySelectorAll("[data-section]").forEach(item => item.classList.toggle("active", item.dataset.section === section)); document.querySelectorAll("[data-section-panel]").forEach(panel => { panel.hidden = panel.dataset.sectionPanel !== section; }); if (section === "filters") renderFilterConfig(); if (section === "single-material-data") { renderSingleMaterial(); setSingleMaterialTab("core"); } if (section === "audience") renderAudience(); if (section === "scripts") renderScriptFormula(); if (section === "marketing-selling-points") renderMarketingSellingPoints(); if (section === "highlights") renderHighlights(); hideChartTooltip(); }));
   document.querySelectorAll("[data-material-tab]").forEach(button => button.addEventListener("click", event => { const tabId = event.currentTarget.dataset.materialTab; setSingleMaterialTab(tabId); document.getElementById(`single-material-${tabId}`)?.scrollIntoView({behavior:"smooth", block:"start"}); }));
   if (singleSelector) singleSelector.addEventListener("click", event => { const button = event.target.closest("[data-material-selector]"); if (!button) return; singleState.materialId = button.dataset.materialSelector; singleState.tab = "core"; singleState.page = 1; renderSingleMaterial(); document.querySelector(".single-material-main")?.scrollIntoView({behavior:"auto", block:"start"}); });
@@ -1118,7 +1184,7 @@ body.modal-open { overflow:hidden; }
   document.getElementById("field-button").addEventListener("click", openFieldDialog);
   document.getElementById("first").addEventListener("click", () => { state.page = 1; render(); }); document.getElementById("previous").addEventListener("click", () => { state.page = Math.max(1, state.page - 1); render(); }); document.getElementById("next").addEventListener("click", () => { state.page += 1; render(); }); document.getElementById("last").addEventListener("click", () => { state.page = Math.max(1, Math.ceil(matchingRows().length / pageSize)); render(); });
   document.getElementById("highlight-first").addEventListener("click", () => { highlightState.page = 1; renderHighlights(); }); document.getElementById("highlight-previous").addEventListener("click", () => { highlightState.page = Math.max(1, highlightState.page - 1); renderHighlights(); }); document.getElementById("highlight-next").addEventListener("click", () => { highlightState.page += 1; renderHighlights(); }); document.getElementById("highlight-last").addEventListener("click", () => { highlightState.page = Math.max(1, Math.ceil((highlightOverview.cards || []).length / highlightPageSize)); renderHighlights(); });
-  function matchingRows() { const query = normalize(state.query), selectedIds = brandOverview.status === "available" ? new Set(brandOverview.materialIdsByTab?.[brandState.selected] || []) : null, matchesBrand = row => !selectedIds || selectedIds.has(row.materialId); const rows = state.exactMaterialId ? model.rows.filter(row => row.materialId === state.exactMaterialId && matchesBrand(row)) : model.rows.filter(row => matchesBrand(row) && (!query || normalize(row.materialId).includes(query) || normalize(row.values.title).includes(query))); if (state.sort.field && state.sort.direction !== "none" && fieldMap[state.sort.field] && fieldMap[state.sort.field].sortable) rows.sort(compareRows); return rows; }
+  function matchingRows() { const query = normalize(state.query), selectedIds = brandOverview.status === "available" ? new Set(brandOverview.materialIdsByTab?.[brandState.selected] || []) : null, matchesBrand = row => !selectedIds || selectedIds.has(row.materialId), matchesScope = row => scopeState.selected === "all" || detailIds.has(row.materialId); const rows = state.exactMaterialId ? model.rows.filter(row => row.materialId === state.exactMaterialId && matchesBrand(row) && matchesScope(row)) : model.rows.filter(row => matchesBrand(row) && matchesScope(row) && (!query || normalize(row.materialId).includes(query) || normalize(row.values.title).includes(query))); if (state.sort.field && state.sort.direction !== "none" && fieldMap[state.sort.field] && fieldMap[state.sort.field].sortable) rows.sort(compareRows); return rows; }
   document.addEventListener("click", event => { const tab = event.target.closest("[data-brand-tab-id]"); if (tab) setBrandSelection(tab.dataset.brandTabId); });
   renderBrandTabs(); applyBrandView(); renderFilterConfig(); loadVisibleFields(); renderSingleMaterial(); render();
 })();

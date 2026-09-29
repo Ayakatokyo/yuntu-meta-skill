@@ -4,6 +4,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.overview_report import (
     OverviewReportError,
@@ -220,6 +221,83 @@ class OverviewDataTests(OverviewFixtureMixin, unittest.TestCase):
             {"燕窝": 2},
         )
         self.assertNotIn("未细分", overview["secondaryBucketsByPrimary"])
+
+    def test_detail_scope_reaggregates_list_facts_and_intersects_brand(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = self.make_run(directory)
+            content_records = [
+                {
+                    "material_id": material_id,
+                    "platform_content_tags": [tag],
+                    "data_availability": {"material_tags": {"available": True}},
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                    "brand_classification": {"matchedBrands": [brand]},
+                }
+                for material_id, tag, brand in (
+                    ("101", "成分_燕窝", "甲品牌"),
+                    ("102", "场景_送礼", "乙品牌"),
+                    ("103", "成分_燕窝", "甲品牌"),
+                )
+            ]
+            self.install_content_tags_package(run_dir, content_records)
+            audience_path = run_dir / "facts/audience.json"
+            audience_records = [
+                {
+                    "material_id": material_id,
+                    "observations": [{"dimension": "crowd_group", "tag": tag}],
+                    "source_paths": {"normalized": "normalized/list-records.json"},
+                }
+                for material_id, tag in (("101", "年轻人"), ("102", "成熟人群"), ("103", "年轻人"))
+            ]
+            audience_path.write_text(json.dumps({"records": audience_records}, ensure_ascii=False), encoding="utf-8")
+            manifest_path = run_dir / "facts/manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["packages"]["audience"] = {
+                "path": "facts/audience.json",
+                "record_count": 3,
+                "material_ids": ["101", "102", "103"],
+                "source_paths": ["normalized/list-records.json"],
+                "sha256": hashlib.sha256(audience_path.read_bytes()).hexdigest(),
+                "sizeBytes": audience_path.stat().st_size,
+            }
+            manifest["brand_classification"] = {
+                "candidate_brands": ["甲品牌", "乙品牌"],
+                "rule_version": "test-v1",
+                "counts": {"甲品牌": 2, "乙品牌": 1},
+                "unknown_count": 0,
+            }
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+            details = {"status": "available", "materials": [{"materialId": "101"}, {"materialId": "102"}]}
+            with patch("scripts.overview_report.build_single_material_overview", return_value=details):
+                model = build_overview_data(run_dir, REGISTRY)
+
+        self.assertEqual(model["detailScope"]["materialIds"], ["101", "102"])
+        self.assertEqual(model["brandOverview"]["views"]["brand:甲品牌"]["materialCount"], 2)
+        self.assertEqual(model["detailScope"]["views"]["brand:甲品牌"]["materialCount"], 1)
+        full_audience = model["audienceOverview"]["dimensions"]["crowd_group"]["buckets"]
+        detail_audience = model["detailScope"]["views"]["all"]["audienceOverview"]["dimensions"]["crowd_group"]["buckets"]
+        self.assertEqual(next(item["value"] for item in full_audience if item["label"] == "年轻人"), 2)
+        self.assertEqual(next(item["value"] for item in detail_audience if item["label"] == "年轻人"), 1)
+        full_marketing = model["marketingSellingPointOverview"]["primaryBuckets"]
+        detail_marketing = model["detailScope"]["views"]["all"]["marketingSellingPointOverview"]["primaryBuckets"]
+        self.assertEqual(next(item["value"] for item in full_marketing if item["label"] == "成分"), 2)
+        self.assertEqual(next(item["value"] for item in detail_marketing if item["label"] == "成分"), 1)
+        self.assertEqual(
+            model["detailScope"]["views"]["brand:甲品牌"]["marketingSellingPointOverview"]["source"]["recordCount"],
+            1,
+        )
+
+        html = render_overview_html(model)
+        self.assertIn('id="material-scope-switch"', html)
+        self.assertIn('data-material-scope="all" class="active" aria-pressed="true">全量素材</button>', html)
+        self.assertIn('data-material-scope="detail" aria-pressed="false">详情素材</button>', html)
+        self.assertIn('data-section="materials">全量素材榜单</button>', html)
+        self.assertIn('detail ? "详情素材榜单" : "全量素材榜单"', html)
+        self.assertIn('if (period && period.type === "CUSTOM") delete period.type;', html)
+        self.assertIn('data-section="scripts" data-detail-only hidden', html)
+        self.assertIn('data-section="highlights" data-detail-only hidden', html)
+        self.assertIn('data-section="single-material-data" data-detail-only hidden', html)
+        self.assertIn('matchesScope = row => scopeState.selected === "all" || detailIds.has(row.materialId)', html)
 
     def test_real_overview_projects_persisted_brand_dimension_and_scoped_views(self):
         run_dir = ROOT / "runs/food-beverage-20260914"
