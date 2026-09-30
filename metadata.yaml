@@ -1,6 +1,7 @@
 short-description: "采集云图行业榜单、品牌、人群与素材事实，形成支持自定义分析的数据工作台"
 tags:
   - 云图
+  - 元技能
 requires:
   env:
     - ENV_BACKEND_HOST
